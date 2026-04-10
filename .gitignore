@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.log
+.env
+downloads/
+1.csv
+2.csv
+output/*.xlsx
+output/*.png
+output/_cache_*.parquet
+logs/
+*.lock
+[[]OBT]*.xlsx
+booking snapshot.xlsx
+compare_ref_vs_dashboard.py
+run_daily.bat
