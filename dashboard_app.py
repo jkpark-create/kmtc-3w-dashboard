@@ -167,8 +167,9 @@ def load_data():
             bkg.to_parquet(cache, index=False)
             print(f"  cached in {time.time()-t0:.0f}s", flush=True)
 
-    # YYYYMM/week는 actual(week_start_date) 기준 유지
-    # 3주전 필터만 Lead_time (BKG_Sche) 사용
+    # YYYYMM = week_start_date(actual)의 연월로 직접 계산
+    bkg['week_dt'] = bkg['week_start_date'].apply(parse_kd)
+    bkg['YYYYMM'] = bkg['week_dt'].apply(lambda d: d.strftime('%Y%m') if pd.notna(d) else '')
 
     bsa = None
     if sf:
@@ -555,6 +556,9 @@ def logout():
 
 @server.before_request
 def check_auth():
+    # localhost에서는 인증 건너뛰기
+    if request.host.startswith('127.0.0.1') or request.host.startswith('localhost'):
+        return
     if request.path in ('/login', '/auth/google') or request.path.startswith('/assets'):
         return
     if 'user' not in session:

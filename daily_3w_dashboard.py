@@ -306,16 +306,8 @@ def process_snapshot():
             key_str = key.strftime('%Y-%m-%d') if isinstance(key, datetime) else str(key).strip()
             week_month_lookup[key_str] = val
 
-    # 고저 lookup: (BKG_SHPR_CST_NO, POR_PLC_CD, DLY_PLC_CD) -> 고/저(DLY)
-    gojeo_lookup = {}
-    for row in wb['\uace0\uc800'].iter_rows(min_row=2, values_only=True):
-        if row[0] is not None:
-            key = (str(row[0]).strip(), str(row[1]).strip() if row[1] else '',
-                   str(row[3]).strip() if row[3] else '')
-            gojeo_lookup[key] = str(row[5]).strip() if row[5] else ''
-
     wb.close()
-    print(f"  grade: {len(grade_lookup)}, 주차월: {len(week_month_lookup)}, 고저: {len(gojeo_lookup)}")
+    print(f"  grade: {len(grade_lookup)}, 주차월: {len(week_month_lookup)}")
 
     # --- Read CSV data ---
     print("[Process] Reading CSV files...")
@@ -427,11 +419,34 @@ def process_snapshot():
         return week_month_lookup.get(s, '')
     output['YYYYMM'] = [lookup_yyyymm(w) for w in output['week_start_date']]
 
-    # 고/저: INDEX/MATCH on 고저 sheet (BKG_SHPR_CST_NO + POR_PLC_CD + DLY_PLC_CD)
-    print("  Computing 고/저...")
+    # 고/저: POR_PORT + DLY_PORT 루트별 화주 CM1/TEU vs 루트 평균
+    print("  Computing 고/저 (루트별 CM1/TEU 평균 대비)...")
+    cm1_num = pd.to_numeric(output['CM1'].str.replace(',', ''), errors='coerce').fillna(0)
+    teu_num = pd.to_numeric(output['LST_TEU'].str.replace(',', ''), errors='coerce').fillna(0)
+    status_str = output['LST_Status'].astype(str).str.strip()
+    # Normal + CM1 있는 건만 대상으로 루트 평균 및 화주별 CM1/TEU 계산
+    mask = (status_str == 'Normal') & (cm1_num != 0) & (teu_num > 0)
+    calc_df = pd.DataFrame({
+        'shpr': output['BKG_SHPR_CST_NO'], 'por': output['POR_PLC_CD'],
+        'dly': output['DLY_PLC_CD'], 'cm1': cm1_num, 'teu': teu_num, 'mask': mask
+    })
+    valid = calc_df[calc_df['mask']]
+    # 루트 평균
+    route_agg = valid.groupby(['por', 'dly']).agg(r_cm1=('cm1', 'sum'), r_teu=('teu', 'sum')).reset_index()
+    route_agg['r_avg'] = route_agg['r_cm1'] / route_agg['r_teu']
+    # 화주-루트별 CM1/TEU
+    shpr_agg = valid.groupby(['shpr', 'por', 'dly']).agg(s_cm1=('cm1', 'sum'), s_teu=('teu', 'sum')).reset_index()
+    shpr_agg['s_avg'] = shpr_agg['s_cm1'] / shpr_agg['s_teu']
+    shpr_agg = shpr_agg.merge(route_agg[['por', 'dly', 'r_avg']], on=['por', 'dly'])
+    shpr_agg['pt'] = shpr_agg.apply(lambda r: '고수익화주' if r['s_avg'] >= r['r_avg'] else '저수익화주', axis=1)
+    # 룩업 딕셔너리
+    pt_lookup = {(r['shpr'], r['por'], r['dly']): r['pt'] for _, r in shpr_agg.iterrows()}
     output['\uace0/\uc800'] = [
-        gojeo_lookup.get((str(s).strip(), str(p).strip(), str(d).strip()), '')
+        pt_lookup.get((str(s).strip(), str(p).strip(), str(d).strip()), '')
         for s, p, d in zip(output['BKG_SHPR_CST_NO'], output['POR_PLC_CD'], output['DLY_PLC_CD'])]
+    hi_cnt = sum(1 for v in output['\uace0/\uc800'] if v == '고수익화주')
+    lo_cnt = sum(1 for v in output['\uace0/\uc800'] if v == '저수익화주')
+    print(f"  고수익: {hi_cnt:,}, 저수익: {lo_cnt:,}, 미분류: {len(output)-hi_cnt-lo_cnt:,}")
 
     # week_start (BKG_Sche): =INT(O2)-WEEKDAY(O2,1)+1  (Booking_schedule 기준 주 시작 일요일)
     print("  Computing week_start (BKG_Sche)...")
@@ -549,8 +564,110 @@ GDRIVE_CREDS_DIR = Path(r'C:\Users\JKPARK\OneDrive\Documents\Claude\.gdrive-mcp'
 
 def upload_to_gdrive():
     """Upload parquet cache + BSA CSV to Google Drive for web dashboard."""
-    print("[Upload] Uploading to Google Drive...")
+    print("[Upload] Building summary JSON + uploading to Google Drive...")
     import json as _json
+
+    # --- Build aggregated JSON for static dashboard ---
+    out_dir = WORK_DIR / 'output'
+    bf = sorted(out_dir.glob('booking_snapshot_result_*.xlsx'), key=os.path.getmtime, reverse=True)
+    sf = sorted(out_dir.glob('BSA_raw_monthly3W_*.csv'), key=os.path.getmtime, reverse=True)
+    cache = sorted(out_dir.glob('_cache_*.parquet'), key=os.path.getmtime, reverse=True)
+
+    if cache:
+        bkg = pd.read_parquet(cache[0])
+    elif bf:
+        bkg = pd.read_excel(bf[0], sheet_name='raw', dtype=str)
+        bkg = bkg.rename(columns={'\uace0/\uc800': 'profit_type'})
+        for c in ['FST_TEU','LST_TEU','CM1']:
+            bkg[c] = bkg[c].astype(str).str.replace(',','')
+        bkg['fst'] = pd.to_numeric(bkg['FST_TEU'], errors='coerce').fillna(0)
+        bkg['lst'] = pd.to_numeric(bkg['LST_TEU'], errors='coerce').fillna(0)
+        bkg['cm1v'] = pd.to_numeric(bkg['CM1'], errors='coerce').fillna(0)
+    else:
+        print("  No data to aggregate, skipping JSON build")
+        return
+
+    # Ensure derived columns
+    if 'profit_type' not in bkg.columns and '\uace0/\uc800' in bkg.columns:
+        bkg = bkg.rename(columns={'\uace0/\uc800': 'profit_type'})
+    if 'dest' not in bkg.columns:
+        bkg['dest'] = bkg['DLY_CTR_CD']
+        bkg['origin'] = bkg['POR_CTR_CD']
+        bkg['ori_port'] = bkg['POR_PLC_CD']
+        bkg['dst_port'] = bkg['DLY_PLC_CD']
+        def _ct(o,d):
+            if o not in ('KR','JP') and d != 'KR': return 'OBT'
+            elif o == 'KR' and d != 'JP': return 'EST'
+            elif o != 'JP' and d == 'KR': return 'IST'
+            else: return 'JBT'
+        bkg['team'] = [_ct(o,d) for o,d in zip(bkg['POR_CTR_CD'], bkg['DLY_CTR_CD'])]
+    if 'fst' not in bkg.columns:
+        bkg['fst'] = pd.to_numeric(bkg.get('FST_TEU','0').astype(str).str.replace(',',''), errors='coerce').fillna(0)
+        bkg['lst'] = pd.to_numeric(bkg.get('LST_TEU','0').astype(str).str.replace(',',''), errors='coerce').fillna(0)
+        bkg['cm1v'] = pd.to_numeric(bkg.get('CM1','0').astype(str).str.replace(',',''), errors='coerce').fillna(0)
+
+    w3 = bkg['Lead_time (BKG_Sche)'] == 'WOS-3'
+    normal = bkg['LST_Status'] == 'Normal'
+    cancel = bkg['LST_Status'] == 'Cancel'
+    hi = bkg.get('profit_type','') == '고수익화주'
+
+    bkg['w3'] = w3.astype(int)
+    bkg['is_normal'] = normal.astype(int)
+    bkg['is_cancel'] = cancel.astype(int)
+    bkg['is_hi'] = hi.astype(int)
+    bkg['w3_fst'] = bkg['fst'] * bkg['w3']
+    bkg['w3_norm_fst'] = bkg['fst'] * bkg['w3'] * bkg['is_normal']
+    bkg['w3_canc_fst'] = bkg['fst'] * bkg['w3'] * bkg['is_cancel']
+    bkg['w3_hi_fst'] = bkg['fst'] * bkg['w3'] * bkg['is_hi']
+    bkg['w3_hi_norm_fst'] = bkg['fst'] * bkg['w3'] * bkg['is_hi'] * bkg['is_normal']
+    bkg['norm_fst'] = bkg['fst'] * bkg['is_normal']
+    bkg['cm1_norm'] = bkg['cm1v'] * bkg['is_normal'] * (bkg['cm1v'] != 0).astype(int)
+    bkg['lst_norm'] = bkg['lst'] * bkg['is_normal'] * (bkg['cm1v'] != 0).astype(int)
+
+    # Monthly aggregation with ports
+    gk = ['team','origin','ori_port','dest','dst_port','YYYYMM']
+    agg_cols = {'fst':'sum','norm_fst':'sum','w3_fst':'sum','w3_norm_fst':'sum',
+                'w3_canc_fst':'sum','w3_hi_fst':'sum','w3_hi_norm_fst':'sum',
+                'cm1_norm':'sum','lst_norm':'sum'}
+    monthly = bkg.groupby(gk).agg(agg_cols).reset_index()
+
+    # Weekly aggregation (simplified - no port detail)
+    wk_keys = ['team','origin','dest','YYYYMM','week_start_date']
+    weekly = bkg.groupby(wk_keys).agg(agg_cols).reset_index()
+
+    # WPM
+    import re as _re
+    def _pkd(s):
+        if pd.isna(s): return None
+        m = _re.match(r'(\d{4})\D+(\d{1,2})\D+(\d{1,2})', str(s))
+        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+    bkg['_wdt'] = bkg['week_start_date'].apply(_pkd)
+    wpm = bkg[bkg['_wdt'].notna()].groupby('YYYYMM')['week_start_date'].nunique().to_dict()
+
+    # BSA
+    bsa_data = []
+    if sf:
+        bsa = pd.read_csv(sf[0], dtype=str)
+        bsa = bsa[bsa['DLY_Country'].str.len() <= 3]
+        bsa = bsa[bsa['POR_Country'].str.len() <= 3]
+        bsa['teu_bsa'] = pd.to_numeric(bsa['TEU_BSA (Actual)'].str.replace(',',''), errors='coerce').fillna(0)
+        bsa_agg = bsa.groupby(['team','POR_Country','POR_PORT','DLY_Country','DLY_PORT','YYYYMM'])['teu_bsa'].sum().reset_index()
+        bsa_data = bsa_agg.to_dict('records')
+
+    summary = {
+        'data_date': TODAY_STR,
+        'wpm': wpm,
+        'months': sorted(bkg['YYYYMM'].dropna().unique().tolist()),
+        'monthly': monthly.round(1).to_dict('records'),
+        'weekly': weekly.round(1).to_dict('records'),
+        'bsa': bsa_data,
+    }
+
+    json_path = out_dir / f'dashboard_summary_{TODAY_STR}.json'
+    with open(json_path, 'w', encoding='utf-8') as f:
+        _json.dump(summary, f, ensure_ascii=False, separators=(',',':'))
+    print(f"  Summary JSON: {json_path.name} ({os.path.getsize(json_path):,} bytes)")
+    print(f"    monthly: {len(monthly):,} rows, weekly: {len(weekly):,} rows, bsa: {len(bsa_data):,} rows")
 
     with open(GDRIVE_CREDS_DIR / 'credentials.json') as f:
         creds = _json.load(f)['installed']
@@ -580,6 +697,12 @@ def upload_to_gdrive():
     sf = sorted(out_dir.glob('BSA_raw_monthly3W_*.csv'), key=os.path.getmtime, reverse=True)
     if sf:
         _upload_file(headers, sf[0], sf[0].name)
+
+    # Upload summary JSON (for static dashboard)
+    jf = sorted(out_dir.glob('dashboard_summary_*.json'), key=os.path.getmtime, reverse=True)
+    if jf:
+        # Always upload as fixed name so the static dashboard can find it
+        _upload_file(headers, jf[0], 'dashboard_summary.json')
 
     print("[Upload] Done.")
 
