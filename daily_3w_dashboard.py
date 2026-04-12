@@ -635,6 +635,19 @@ def upload_to_gdrive():
     wk_keys = ['team','origin','dest','YYYYMM','week_start_date']
     weekly = bkg.groupby(wk_keys).agg(agg_cols).reset_index()
 
+    # Shipper aggregation (화주별)
+    shpr_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','BKG_SHPR_CST_NO','BKG_SHPR_CST_ENM']
+    shipper = bkg.groupby(shpr_keys).agg(agg_cols).reset_index()
+    # Top shippers only (reduce JSON size)
+    shpr_rank = shipper.groupby(['team','YYYYMM','BKG_SHPR_CST_ENM'])['w3_fst'].sum().reset_index()
+    top_shprs = shpr_rank.groupby(['team','YYYYMM']).apply(
+        lambda g: g.nlargest(30, 'w3_fst')['BKG_SHPR_CST_ENM'].tolist(), include_groups=False)
+    top_set = set()
+    for v in top_shprs.values:
+        top_set.update(v)
+    shipper_top = shipper[shipper['BKG_SHPR_CST_ENM'].isin(top_set)]
+    print(f"    shipper: {len(shipper):,} → top: {len(shipper_top):,} rows")
+
     # WPM
     import re as _re
     def _pkd(s):
@@ -660,6 +673,7 @@ def upload_to_gdrive():
         'months': sorted(bkg['YYYYMM'].dropna().unique().tolist()),
         'monthly': monthly.round(1).to_dict('records'),
         'weekly': weekly.round(1).to_dict('records'),
+        'shipper': shipper_top.round(1).to_dict('records'),
         'bsa': bsa_data,
     }
 
