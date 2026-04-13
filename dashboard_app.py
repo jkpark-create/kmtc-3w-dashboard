@@ -442,7 +442,7 @@ def tab2():
                 value='ALL', clearable=False, style={'width': '120px'}), width='auto'),
         ], className='mb-3 align-items-center g-2'),
         dbc.Tabs([dbc.Tab(label='도착지별', tab_id='dest'), dbc.Tab(label='선적지별', tab_id='origin'), dbc.Tab(label='루트별', tab_id='route'),
-                  dbc.Tab(label='화주별', tab_id='cust')], id='t2-sub', active_tab='dest', className='mb-3'),
+                  dbc.Tab(label='화주별', tab_id='cust'), dbc.Tab(label='영업사원별', tab_id='sales')], id='t2-sub', active_tab='dest', className='mb-3'),
         dbc.Row([dbc.Col(dbc.Card(dbc.CardBody([st("3주전 BKG 현황", "BKG/BSA/소석률/실선적/실선적률"), html.Div(id='t2-wos')]), style=S))], className='mb-3 g-2'),
         dbc.Row([dbc.Col(dbc.Card(dbc.CardBody([st("주차별 3주전 BKG"),
             dcc.Graph(id='t2-wk', config={'displayModeBar': False}, style={'height': '290px'})]), style=S))], className='g-2'),
@@ -841,22 +841,29 @@ def cb2(team, ori, ori_p, dst, dst_p, view_mode, month, week, profit, subtab):
     df = gf(BKG, team, ori, ori_p, dst, dst_p, month, week)
     if profit == 'hi': df = df[df['profit_type'] == '고수익화주']
     elif profit == 'lo': df = df[df['profit_type'] == '저수익화주']
-    gc, gl = ('origin', '선적지') if subtab == 'origin' else ('dest', '도착지') if subtab == 'dest' else ('LST_route', '루트') if subtab == 'route' else ('BKG_SHPR_CST_ENM', '화주')
+    gc, gl = ('origin', '선적지') if subtab == 'origin' else ('dest', '도착지') if subtab == 'dest' else ('LST_route', '루트') if subtab == 'route' else ('Salesman_POR', '영업사원') if subtab == 'sales' else ('BKG_SHPR_CST_ENM', '화주')
 
-    # WOS-3 only (3W+4W) — consistent with Tab1
+    # WOS-3 only
     w3 = df[df['Lead_time (BKG_Sche)'] == 'WOS-3']
     w3_all = w3.groupby(gc)['fst'].sum().reset_index().rename(columns={'fst': 'bkg'})
     w3_n = w3[w3['LST_Status'] == 'Normal'].groupby(gc)['fst'].sum().reset_index().rename(columns={'fst': 'ship'})
     w3_hi = w3[w3['profit_type'] == '고수익화주'].groupby(gc)['fst'].sum().reset_index().rename(columns={'fst': 'hi'})
     tbl_df = w3_all.merge(w3_n, on=gc, how='left').merge(w3_hi, on=gc, how='left').fillna(0)
-    tbl_df = tbl_df.nlargest(15, 'bkg')
+    # 화주별일 때 영업사원 컬럼 추가
+    if subtab == 'cust' and 'Salesman_POR' in w3.columns:
+        sm_map = w3.groupby('BKG_SHPR_CST_ENM')['Salesman_POR'].agg(lambda x: ', '.join(sorted(set(x.dropna().astype(str)) - {'','nan'}))).to_dict()
+        tbl_df['영업사원'] = tbl_df[gc].map(sm_map).fillna('')
+    tbl_df = tbl_df.nlargest(15 if subtab != 'sales' else 30, 'bkg')
 
     rows = []
     for _, r in tbl_df.iterrows():
-        row = {gl: r[gc], 'BKG': f"{r['bkg']:,.0f}", '실선적': f"{r['ship']:,.0f}",
+        row = {gl: r[gc]}
+        if subtab == 'cust' and '영업사원' in tbl_df.columns:
+            row['영업사원'] = r['영업사원']
+        row.update({'BKG': f"{r['bkg']:,.0f}", '실선적': f"{r['ship']:,.0f}",
                '실선적률': f"{r['ship']/r['bkg']*100:.0f}%" if r['bkg'] else '-',
                '고수익BKG': f"{r['hi']:,.0f}",
-               '고수익%': f"{r['hi']/r['bkg']*100:.0f}%" if r['bkg'] else '-'}
+               '고수익%': f"{r['hi']/r['bkg']*100:.0f}%" if r['bkg'] else '-'})
         if subtab in ('dest', 'route') or gc == 'origin':
             bv = gf_bsa(team, ori, dst, ori_p, dst_p)
             bsa_key = 'origin' if gc == 'origin' else 'dest'
