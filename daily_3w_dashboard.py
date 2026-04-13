@@ -825,7 +825,7 @@ def upload_to_gdrive():
         bsa = bsa[bsa['DLY_Country'].str.len() <= 3]
         bsa = bsa[bsa['POR_Country'].str.len() <= 3]
         bsa['teu_bsa'] = pd.to_numeric(bsa['TEU_BSA (Actual)'].str.replace(',',''), errors='coerce').fillna(0)
-        bsa_agg = bsa.groupby(['team','POR_Country','POR_PORT','DLY_Country','DLY_PORT','YYYYMM'])['teu_bsa'].sum().reset_index()
+        bsa_agg = bsa.groupby(['team','POR_Country','POR_PORT','DLY_Country','DLY_PORT','YYYYMM','WW'])['teu_bsa'].sum().reset_index()
         bsa_data = bsa_agg.to_dict('records')
 
     summary = {

@@ -247,7 +247,18 @@ def gf(df, team, ori, ori_p, dst, dst_p, month=None, week=None):
         d = d[d['week_start_date'] == week]
     return d
 
-def gf_bsa(team, ori, dst, ori_p='ALL', dst_p='ALL'):
+def _week_to_ww(week_str):
+    """Convert week_start_date string to WW number (445 calendar)"""
+    if not week_str or week_str == 'ALL':
+        return None
+    dt = parse_kd(week_str)
+    if pd.isna(dt):
+        return None
+    start = datetime(2026, 1, 4)
+    diff = (dt - start).days // 7
+    return str(diff + 1) if diff >= 0 else None
+
+def gf_bsa(team, ori, dst, ori_p='ALL', dst_p='ALL', week=None):
     if BSA_DF is None:
         return pd.DataFrame(columns=['origin', 'dest', 'YYYYMM', 'teu_bsa'])
     b = BSA_DF
@@ -261,6 +272,10 @@ def gf_bsa(team, ori, dst, ori_p='ALL', dst_p='ALL'):
         b = b[b['dest'] == dst]
     if dst_p != 'ALL' and 'DLY_PORT' in b.columns:
         b = b[b['DLY_PORT'] == dst_p]
+    if week and week != 'ALL' and 'WW' in b.columns:
+        ww = _week_to_ww(week)
+        if ww:
+            b = b[b['WW'] == ww]
     return b
 
 
@@ -736,7 +751,7 @@ def cb1(team, ori, ori_p, dst, dst_p, view_mode, month, week):
     shipped_status = ['Normal']
     w3 = fd[fd['Lead_time (BKG_Sche)'] == 'WOS-3']
     w3_mw = fd_mw[fd_mw['Lead_time (BKG_Sche)'] == 'WOS-3']
-    bsa_m = gf_bsa(team, ori, dst, ori_p, dst_p)
+    bsa_m = gf_bsa(team, ori, dst, ori_p, dst_p, week)
     bsa_mm = bsa_m[bsa_m['YYYYMM'] == month]
     tbs = bsa_mm['teu_bsa'].sum()
 
@@ -857,7 +872,7 @@ def cb1(team, ori, ori_p, dst, dst_p, view_mode, month, week):
 
     # Summary table (Image 8 format)
     def bsa_lookup(m, it):
-        b = gf_bsa(team, ori, dst, ori_p, dst_p)
+        b = gf_bsa(team, ori, dst, ori_p, dst_p, week)
         b = b[b['YYYYMM'] == m]
         if it:
             bsa_key = 'origin' if vc == 'origin' else 'dest'
@@ -910,7 +925,7 @@ def cb2(team, ori, ori_p, dst, dst_p, view_mode, month, week, profit, subtab):
                '고수익BKG': f"{r['hi']:,.0f}",
                '고수익%': f"{r['hi']/r['bkg']*100:.0f}%" if r['bkg'] else '-'})
         if subtab in ('dest', 'route') or gc == 'origin':
-            bv = gf_bsa(team, ori, dst, ori_p, dst_p)
+            bv = gf_bsa(team, ori, dst, ori_p, dst_p, week)
             bsa_key = 'origin' if gc == 'origin' else 'dest'
             bv = bv[(bv['YYYYMM'] == month) & (bv[bsa_key] == r[gc])]['teu_bsa'].sum()
             row['BSA'] = f"{bv:,.0f}"
@@ -930,7 +945,7 @@ def cb2(team, ori, ori_p, dst, dst_p, view_mode, month, week, profit, subtab):
         tr['실선적률'] = f"{ts/tb*100:.0f}%" if tb else '-'
         tr['고수익%'] = f"{th/tb*100:.0f}%" if tb else '-'
         if 'BSA' in rows[0]:
-            bt = gf_bsa(team, ori, dst, ori_p, dst_p)
+            bt = gf_bsa(team, ori, dst, ori_p, dst_p, week)
             bt = bt[bt['YYYYMM'] == month]['teu_bsa'].sum()
             tr['소석률'] = f"{tb/bt*100:.0f}%" if bt else '-'
         rows.append(tr)
@@ -987,7 +1002,7 @@ def cb3(team, ori, ori_p, dst, dst_p, view_mode, month, week):
                      legend=dict(orientation='h', y=1.12), plot_bgcolor='#fff', paper_bgcolor='#fff')
 
     # 캔슬 분석 (WOS-3 기준)
-    bsa_data = gf_bsa(team, ori, dst, ori_p, dst_p)
+    bsa_data = gf_bsa(team, ori, dst, ori_p, dst_p, week)
     bsa_mm = bsa_data[bsa_data['YYYYMM'] == month]
     bsa_grp3 = 'origin' if vc == 'origin' else 'dest'
     bsa_vc = bsa_mm.groupby(bsa_grp3)['teu_bsa'].sum() if len(bsa_mm) else pd.Series(dtype=float)
@@ -1054,7 +1069,7 @@ def cb4(team, ori, ori_p, dst, dst_p, view_mode, month, week):
 
     fs = go.Figure()
     if len(cs):
-        bsa_v = gf_bsa(team, ori, dst, ori_p, dst_p)
+        bsa_v = gf_bsa(team, ori, dst, ori_p, dst_p, week)
         bsa_grp4 = 'origin' if vc == 'origin' else 'dest'
         bsa_v = bsa_v[bsa_v['YYYYMM'] == month].groupby(bsa_grp4)['teu_bsa'].sum()
         mx = cs['cm1'].max() or 1
