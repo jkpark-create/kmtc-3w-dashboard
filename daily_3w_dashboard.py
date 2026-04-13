@@ -71,16 +71,17 @@ def ensure_temp_workbook(s, api_ver, site_id):
     """Download original TWB, modify filter, publish as temp workbook."""
     import xml.etree.ElementTree as ET
 
-    # Check if temp workbook exists
+    # Check if temp workbook exists (search by name — contentUrl may have suffix)
     resp = s.get(
         f'{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/workbooks',
-        params={'filter': f'contentUrl:eq:{TEMP_WB_NAME}'},
+        params={'filter': f'name:eq:{TEMP_WB_NAME}'},
         headers={'Accept': 'application/json'}, timeout=30)
     wbs = resp.json().get('workbooks', {}).get('workbook', [])
 
     if wbs:
         # Verify filter is correct
         wb_id = wbs[0]['id']
+        actual_content_url = wbs[0].get('contentUrl', TEMP_WB_NAME)
         resp = s.get(f'{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/workbooks/{wb_id}/content',
                      timeout=120)
         tree = ET.parse(io.BytesIO(resp.content))
@@ -89,7 +90,7 @@ def ensure_temp_workbook(s, api_ver, site_id):
                 min_el = f.find('min')
                 if min_el is not None and BKG_SCHEDULE_START in (min_el.text or ''):
                     print(f"  Temp workbook exists with correct filter")
-                    return wbs[0].get('contentUrl', TEMP_WB_NAME)
+                    return actual_content_url
 
         # Filter wrong, delete and re-create
         print(f"  Temp workbook filter outdated, re-publishing...")
@@ -134,6 +135,7 @@ def ensure_temp_workbook(s, api_ver, site_id):
         f'filename="{TEMP_WB_NAME}.twb"\r\nContent-Type: application/xml\r\n\r\n'
     ).encode('utf-8') + twb_content + f'\r\n--{boundary}--\r\n'.encode('utf-8')
 
+    actual_content_url = TEMP_WB_NAME
     try:
         resp = s.post(
             f'{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/workbooks',
@@ -142,11 +144,31 @@ def ensure_temp_workbook(s, api_ver, site_id):
             timeout=600)
         if resp.status_code in (200, 201):
             print(f"  Published successfully")
+            # Extract actual contentUrl from response (Tableau may append suffix)
+            try:
+                import xml.etree.ElementTree as ET2
+                pub_tree = ET2.fromstring(resp.content)
+                ns = {'t': 'http://tableau.com/api'}
+                wb_el = pub_tree.find('.//t:workbook', ns) or pub_tree.find('.//workbook')
+                if wb_el is not None:
+                    actual_content_url = wb_el.get('contentUrl', TEMP_WB_NAME)
+            except Exception:
+                pass
     except requests.exceptions.ReadTimeout:
         print(f"  Publish timed out (likely succeeded)")
         time.sleep(5)
 
-    return TEMP_WB_NAME
+    # Fallback: query by name to get actual contentUrl
+    if actual_content_url == TEMP_WB_NAME:
+        resp = s.get(
+            f'{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/workbooks',
+            params={'filter': f'name:eq:{TEMP_WB_NAME}'},
+            headers={'Accept': 'application/json'}, timeout=30)
+        found = resp.json().get('workbooks', {}).get('workbook', [])
+        if found:
+            actual_content_url = found[0].get('contentUrl', TEMP_WB_NAME)
+
+    return actual_content_url
 
 
 def download_csv_from_tableau(content_url, view_name, save_path, vf_params=None):
@@ -620,28 +642,32 @@ def upload_to_gdrive():
     bkg['_wdt'] = bkg['week_start_date'].apply(_pkd)
     bkg['YYYYMM'] = bkg['_wdt'].apply(lambda d: d.strftime('%Y%m') if d else '')
 
-    w3 = bkg['Lead_time (BKG_Sche)'] == 'WOS-3'
+    lt = bkg['Lead_time (BKG_Sche)']
     normal = bkg['LST_Status'] == 'Normal'
     cancel = bkg['LST_Status'] == 'Cancel'
     hi = bkg.get('profit_type','') == '고수익화주'
 
-    bkg['w3'] = w3.astype(int)
     bkg['is_normal'] = normal.astype(int)
     bkg['is_cancel'] = cancel.astype(int)
     bkg['is_hi'] = hi.astype(int)
-    bkg['w3_fst'] = bkg['fst'] * bkg['w3']
-    bkg['w3_norm_fst'] = bkg['fst'] * bkg['w3'] * bkg['is_normal']
-    bkg['w3_canc_fst'] = bkg['fst'] * bkg['w3'] * bkg['is_cancel']
-    bkg['w3_hi_fst'] = bkg['fst'] * bkg['w3'] * bkg['is_hi']
-    bkg['w3_hi_norm_fst'] = bkg['fst'] * bkg['w3'] * bkg['is_hi'] * bkg['is_normal']
     bkg['norm_fst'] = bkg['fst'] * bkg['is_normal']
     bkg['cm1_norm'] = bkg['cm1v'] * bkg['is_normal'] * (bkg['cm1v'] != 0).astype(int)
     bkg['lst_norm'] = bkg['lst'] * bkg['is_normal'] * (bkg['cm1v'] != 0).astype(int)
 
+    # WOS stage columns
+    for wos, label in [('WOS-3','w3'),('WOS-2','w2'),('WOS-1','w1'),('Week of Sailing (WOS)','wos')]:
+        mask = (lt == wos).astype(int)
+        bkg[f'{label}_fst'] = bkg['fst'] * mask
+        bkg[f'{label}_norm_fst'] = bkg['fst'] * mask * bkg['is_normal']
+    bkg['w3_canc_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_cancel']
+    bkg['w3_hi_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi']
+    bkg['w3_hi_norm_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi'] * bkg['is_normal']
+
     # Monthly aggregation with ports
     gk = ['team','origin','ori_port','dest','dst_port','YYYYMM']
-    agg_cols = {'fst':'sum','norm_fst':'sum','w3_fst':'sum','w3_norm_fst':'sum',
-                'w3_canc_fst':'sum','w3_hi_fst':'sum','w3_hi_norm_fst':'sum',
+    agg_cols = {'fst':'sum','norm_fst':'sum',
+                'w3_fst':'sum','w3_norm_fst':'sum','w3_canc_fst':'sum','w3_hi_fst':'sum','w3_hi_norm_fst':'sum',
+                'w2_fst':'sum','w2_norm_fst':'sum','w1_fst':'sum','w1_norm_fst':'sum','wos_fst':'sum','wos_norm_fst':'sum',
                 'cm1_norm':'sum','lst_norm':'sum'}
     monthly = bkg.groupby(gk).agg(agg_cols).reset_index()
 

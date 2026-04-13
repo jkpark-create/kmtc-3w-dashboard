@@ -481,6 +481,19 @@ def tab4():
             dcc.Graph(id='t4-sc', config={'displayModeBar': False}, style={'height': '360px'})]), style=S))], className='g-2'),
     ], fluid=True, className='py-3')
 
+def tab5():
+    return dbc.Container([
+        dbc.Row([dbc.Col(html.H5("부킹 패턴 (WOS 단계별)", style={'fontWeight': '700'}), width='auto'),
+                 dbc.Col(mdd('t5-m'), width='auto'),
+                 dbc.Col(wdd('t5-w'), width='auto')], className='mb-3 align-items-center g-2'),
+        dbc.Row([dbc.Col(dbc.Card(dbc.CardBody([st("지역별 부킹 접수 시점"),
+            html.Div(id='t5-dest-tbl')]), style=S))], className='mb-3 g-2'),
+        dbc.Row([dbc.Col(dbc.Card(dbc.CardBody([st("부킹 시점 비중"),
+            dcc.Graph(id='t5-wos-bar', config={'displayModeBar': False}, style={'height': '400px'})]), style=S))], className='mb-3 g-2'),
+        dbc.Row([dbc.Col(dbc.Card(dbc.CardBody([st("화주별 부킹 접수 시점"),
+            html.Div(id='t5-cust-tbl')]), style=S))], className='g-2'),
+    ], fluid=True, className='py-3')
+
 
 # ═══════════════════════════════════════════════════════════
 # App layout + Google OAuth
@@ -606,6 +619,7 @@ app.layout = html.Div([
         dbc.Tab(tab2(), label='② 부킹 트렌드', tab_id='t2'),
         dbc.Tab(tab3(), label='③ 전환 퍼널', tab_id='t3'),
         dbc.Tab(tab4(), label='④ 수익성', tab_id='t4'),
+        dbc.Tab(tab5(), label='⑤ 부킹 패턴', tab_id='t5'),
     ], id='tabs', active_tab='t1'),
 ], style={'backgroundColor': C['bg'], 'minHeight': '100vh'})
 
@@ -1024,6 +1038,71 @@ def cb4(team, ori, ori_p, dst, dst_p, view_mode, month, week):
     fs.update_layout(margin=dict(l=50, r=30, t=20, b=40), xaxis=dict(title='소석률 %', gridcolor='#f0f0f0'),
                      yaxis=dict(title='CM1/TEU', gridcolor='#f0f0f0'), plot_bgcolor='#fff', paper_bgcolor='#fff')
     return fc, fh, fs
+
+
+# ═══════════════════════════════════════════════════════════
+# Tab 5: 부킹 패턴 (WOS 단계별)
+# ═══════════════════════════════════════════════════════════
+@app.callback(
+    [Output('t5-dest-tbl', 'children'), Output('t5-wos-bar', 'figure'), Output('t5-cust-tbl', 'children')],
+    GF_INPUTS + [Input('t5-m', 'value'), Input('t5-w', 'value')])
+def cb5(team, ori, ori_p, dst, dst_p, view_mode, month, week):
+    fd = gf(BKG, team, ori, ori_p, dst, dst_p, month, week)
+    vc, vl = get_view(fd, team, view_mode)
+    wos_cols = [('WOS-3','w3'), ('WOS-2','w2'), ('WOS-1','w1'), ('Week of Sailing (WOS)','wos')]
+
+    # 지역별 WOS 분포
+    dest_rows = []
+    for it in sorted(fd[vc].unique()):
+        d = fd[fd[vc] == it]
+        total = d['fst'].sum()
+        if total == 0: continue
+        row = {vl: it, '전체BKG': f"{total:,.0f}"}
+        for lbl, lt in wos_cols:
+            sub = d[d['Lead_time (BKG_Sche)'] == lbl]
+            v = sub['fst'].sum()
+            short = lbl.replace('Week of Sailing (WOS)', 'WOS')
+            row[short] = f"{v:,.0f}"
+            row[f'{short}%'] = f"{v/total*100:.0f}%" if total else '-'
+        dest_rows.append(row)
+    dest_rows.sort(key=lambda r: -float(r['전체BKG'].replace(',','')))
+
+    # 화주별 WOS 분포
+    cust_rows = []
+    if 'Salesman_POR' in fd.columns:
+        sm_map = fd.groupby('BKG_SHPR_CST_ENM')['Salesman_POR'].agg(
+            lambda x: ', '.join(sorted(set(x.dropna().astype(str)) - {'','nan'}))).to_dict()
+    else:
+        sm_map = {}
+    for it in sorted(fd['BKG_SHPR_CST_ENM'].unique()):
+        d = fd[fd['BKG_SHPR_CST_ENM'] == it]
+        total = d['fst'].sum()
+        if total == 0: continue
+        row = {'화주': it, '영업사원': sm_map.get(it, ''), '전체BKG': f"{total:,.0f}"}
+        for lbl, lt in wos_cols:
+            sub = d[d['Lead_time (BKG_Sche)'] == lbl]
+            v = sub['fst'].sum()
+            short = lbl.replace('Week of Sailing (WOS)', 'WOS')
+            row[short] = f"{v:,.0f}"
+            row[f'{short}%'] = f"{v/total*100:.0f}%" if total else '-'
+        cust_rows.append(row)
+    cust_rows.sort(key=lambda r: -float(r['전체BKG'].replace(',','')))
+    cust_rows = cust_rows[:30]
+
+    # Stacked bar chart
+    top10 = dest_rows[:10]
+    fig = go.Figure()
+    colors = ['#1a73e8', '#f9ab00', '#ea4335', '#5f6368']
+    for i, (lbl, _) in enumerate(wos_cols):
+        short = lbl.replace('Week of Sailing (WOS)', 'WOS')
+        fig.add_bar(x=[r[vl] for r in top10],
+                    y=[float(r[short].replace(',','')) for r in top10],
+                    name=short, marker_color=colors[i])
+    fig.update_layout(barmode='stack', margin=dict(l=40, r=20, t=20, b=30),
+                      yaxis=dict(title='TEU', gridcolor='#f0f0f0'),
+                      legend=dict(orientation='h', y=1.1), plot_bgcolor='#fff', paper_bgcolor='#fff')
+
+    return mk_tbl(dest_rows[:15], vl), fig, mk_tbl(cust_rows, '화주')
 
 
 if __name__ == '__main__':
