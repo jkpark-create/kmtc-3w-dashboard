@@ -96,11 +96,18 @@ def ensure_temp_workbook(s, api_ver, site_id):
         s.delete(f'{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/workbooks/{wb_id}', timeout=60)
         time.sleep(3)
 
-    # Download original TWB
+    # Download original TWB (may be .twbx zip format)
     print(f"  Downloading original TWB...")
     resp = s.get(f'{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/workbooks/{BKG_WB_ID}/content',
                  timeout=120)
-    tree = ET.parse(io.BytesIO(resp.content))
+    content = resp.content
+    # Handle .twbx (zip) format
+    if content[:2] == b'PK':
+        import zipfile
+        with zipfile.ZipFile(io.BytesIO(content)) as z:
+            twb_name = [n for n in z.namelist() if n.endswith('.twb')][0]
+            content = z.read(twb_name)
+    tree = ET.parse(io.BytesIO(content))
 
     # Modify Booking_schedule filter min
     for f in tree.getroot().iter('filter'):
@@ -112,8 +119,8 @@ def ensure_temp_workbook(s, api_ver, site_id):
                 min_el.attrib.clear()
 
     twb_bytes = io.BytesIO()
-    tree.write(twb_bytes, encoding='unicode', xml_declaration=True)
-    twb_content = twb_bytes.getvalue().encode('utf-8')
+    tree.write(twb_bytes, encoding='utf-8', xml_declaration=True)
+    twb_content = twb_bytes.getvalue()
 
     # Publish
     print(f"  Publishing temp workbook...")
@@ -143,7 +150,7 @@ def ensure_temp_workbook(s, api_ver, site_id):
 
 
 def download_csv_from_tableau(content_url, view_name, save_path, vf_params=None):
-    """Download CSV from Tableau view using Playwright session cookies."""
+    """Download CSV from Tableau view using Playwright JS navigation."""
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
@@ -154,36 +161,30 @@ def download_csv_from_tableau(content_url, view_name, save_path, vf_params=None)
 
         # Login
         page.goto(f'{TABLEAU_SERVER}/#/signin', wait_until='networkidle', timeout=30000)
-        time.sleep(2)
+        time.sleep(3)
         page.fill('input[name="username"]', TABLEAU_USER)
         page.fill('input[name="password"]', TABLEAU_PASS)
         page.click('button[type="submit"]')
-        time.sleep(5)
+        try:
+            page.wait_for_url('**/#/home**', timeout=15000)
+        except Exception:
+            pass
+        time.sleep(3)
 
-        # Load embed view
+        # Load embed view to establish Tableau session
         page.goto(f'{TABLEAU_SERVER}/views/{content_url}/{view_name}?:embed=y&:showVizHome=n',
                   timeout=120000)
         time.sleep(15)
 
-        # Get cookies for requests
-        cookies = ctx.cookies()
-        s = requests.Session()
-        s.verify = False
-        for c in cookies:
-            s.cookies.set(c['name'], c['value'], domain='tableau.ekmtc.com')
-
-        # Download CSV
+        # Download CSV via JS navigation (avoids redirect issues)
         csv_url = f'{TABLEAU_SERVER}/views/{content_url}/{view_name}.csv'
         if vf_params:
             csv_url += '?' + '&'.join(f'vf_{k}={v}' for k, v in vf_params.items())
 
-        resp = s.get(csv_url, timeout=600, stream=True)
-        if resp.status_code != 200:
-            raise Exception(f"CSV download failed: {resp.status_code}")
-
-        with open(save_path, 'wb') as f:
-            for chunk in resp.iter_content(chunk_size=65536):
-                f.write(chunk)
+        with page.expect_download(timeout=1800000) as dl_info:
+            page.evaluate(f'window.location.href = "{csv_url}"')
+        download = dl_info.value
+        download.save_as(str(save_path))
 
         browser.close()
     return os.path.getsize(save_path)
@@ -242,31 +243,32 @@ def download_bsa():
                                   ignore_https_errors=True, accept_downloads=True)
         page = ctx.new_page()
         page.goto(f'{TABLEAU_SERVER}/#/signin', wait_until='networkidle', timeout=30000)
-        time.sleep(2)
+        time.sleep(3)
         page.fill('input[name="username"]', TABLEAU_USER)
         page.fill('input[name="password"]', TABLEAU_PASS)
         page.click('button[type="submit"]')
-        time.sleep(5)
+        try:
+            page.wait_for_url('**/#/home**', timeout=15000)
+        except Exception:
+            pass
+        time.sleep(3)
 
         page.goto(f'{TABLEAU_SERVER}/views/{BSA_VIEW_URL}?:embed=y&:showVizHome=n',
                   timeout=120000)
         time.sleep(15)
 
-        cookies = ctx.cookies()
-        s = requests.Session()
-        s.verify = False
-        for c in cookies:
-            s.cookies.set(c['name'], c['value'], domain='tableau.ekmtc.com')
-
-        # Download BSA per team (Sales Team filter)
+        # Download BSA per team via Playwright JS navigation
         import pandas as pd
         all_dfs = []
         for team in ['OBT', 'EST', 'IST', 'JBT']:
             csv_url = (f'{TABLEAU_SERVER}/views/{BSA_VIEW_URL}.csv'
                        f'?vf_YYYY={yyyy_filter}&Sales+Team={team}')
             print(f"  Downloading BSA: {team}...", end=' ')
-            resp = s.get(csv_url, timeout=600)
-            df = pd.read_csv(io.StringIO(resp.text), dtype=str)
+            with page.expect_download(timeout=600000) as dl_info:
+                page.evaluate(f'window.location.href = "{csv_url}"')
+            download = dl_info.value
+            tmp_path = download.path()
+            df = pd.read_csv(tmp_path, dtype=str)
             df['team'] = team
             print(f"{len(df)} rows")
             all_dfs.append(df)
@@ -323,6 +325,7 @@ def process_snapshot():
         'B': 'LST_Route', 'C': 'LST_VSL', 'D': 'LST_VOY',
         'G': 'Date_vsl', 'I': 'week_start_date',
         'J': 'Booking_status', 'K': 'CM1_Booking', 'L': 'LST_TEU',
+        'SM': 'Salesman_POR',
     }
 
     def addon_xlookup(bkg_no, col_letter):
@@ -354,7 +357,7 @@ def process_snapshot():
 
     # Bulk lookups
     addon = {}
-    for letter in ('G', 'J', 'K', 'L', 'B', 'C', 'D'):
+    for letter in ('G', 'J', 'K', 'L', 'B', 'C', 'D', 'SM'):
         addon[letter] = pd.Series([addon_xlookup(b, letter) for b in bkg_nos], dtype=object)
 
     output['Actual_Departure_schedule'] = addon['G'].where(addon['G'].notna(), output['Booking_schedule']).values
@@ -364,6 +367,7 @@ def process_snapshot():
     output['LST_route'] = addon['B'].fillna('').values
     output['LST_VSL'] = addon['C'].fillna('').values
     output['LST_VOY'] = addon['D'].fillna('').values
+    output['Salesman_POR'] = addon['SM'].fillna('').values
 
     # week_start_date: Date_vsl(=Actual_Departure_schedule) 기준 일요일로 재계산
     print("  Computing week_start_date (from Date_vsl)...")
@@ -516,7 +520,8 @@ def process_snapshot():
         'Lead_time(Booking)', 'Lead_time(Actual)', 'LST_route',
         'LST_VSL', 'LST_VOY', 'grade', 'CM1/TEU',
         'week_start_date', 'D_group', 'YYYYMM', '\uace0/\uc800',
-        'week_start (BKG_Sche)', 'Lead_time (BKG_Sche)', 'YYYYMM_BKG_Sche'
+        'week_start (BKG_Sche)', 'Lead_time (BKG_Sche)', 'YYYYMM_BKG_Sche',
+        'Salesman_POR'
     ]
     output = output[col_order]
 
@@ -645,7 +650,7 @@ def upload_to_gdrive():
     weekly = bkg.groupby(wk_keys).agg(agg_cols).reset_index()
 
     # Shipper aggregation (화주별)
-    shpr_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','BKG_SHPR_CST_NO','BKG_SHPR_CST_ENM']
+    shpr_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','BKG_SHPR_CST_NO','BKG_SHPR_CST_ENM','Salesman_POR']
     shipper = bkg.groupby(shpr_keys).agg(agg_cols).reset_index()
     # Top shippers only (reduce JSON size)
     shpr_rank = shipper.groupby(['team','YYYYMM','BKG_SHPR_CST_ENM'])['w3_fst'].sum().reset_index()
@@ -718,8 +723,13 @@ def upload_to_gdrive():
     # Upload summary JSON (for static dashboard)
     jf = sorted(out_dir.glob('dashboard_summary_*.json'), key=os.path.getmtime, reverse=True)
     if jf:
-        # Always upload as fixed name so the static dashboard can find it
         _upload_file(headers, jf[0], 'dashboard_summary.json')
+        # Copy to dist/ for GitHub Pages hosting
+        dist_dir = WORK_DIR / 'dist'
+        if dist_dir.exists():
+            import shutil
+            shutil.copy2(jf[0], dist_dir / 'data.json')
+            print(f"  Copied to dist/data.json")
 
     print("[Upload] Done.")
 
