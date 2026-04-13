@@ -173,8 +173,9 @@ def load_data():
     bsa = None
     if sf:
         bsa = pd.read_csv(sf, dtype=str)
-        # Exclude '전체' rows (handles both UTF-8 and mojibake encodings)
-        bsa = bsa[bsa['DLY_Country'].str.len() <= 3]
+        # Exclude '전체' subtotal rows
+        bsa = bsa[~bsa['DLY_Country'].str.contains('전체', na=False)]
+        bsa = bsa[~bsa['POR_Country'].str.contains('전체', na=False)]
         bsa = bsa[bsa['POR_Country'].str.len() <= 3]
         bsa['teu_bsa'] = pd.to_numeric(bsa['TEU_BSA (Actual)'].str.replace(',', ''), errors='coerce').fillna(0)
         bsa['dest'] = bsa['DLY_Country'].map(DEST_GROUP_MAP).fillna(bsa['DLY_Country'])
