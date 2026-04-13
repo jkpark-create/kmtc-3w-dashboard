@@ -39,6 +39,11 @@ BSA_VIEW_URL = 'Q_17363223877520/BSArawBKGpattern'
 
 # Filter settings
 BKG_SCHEDULE_START = '2025-12-28 00:00:00'  # View 1 min date
+# END = 금주 일요일 + 4주 (토요일까지)
+_today = datetime.now()
+_this_sun = _today - timedelta(days=(_today.weekday()+1)%7)
+_end_sat = _this_sun + timedelta(days=4*7+6)  # +4주 토요일
+BKG_SCHEDULE_END = _end_sat.strftime('%Y-%m-%d 00:00:00')
 TEMP_WB_NAME = 'temp_bkg_snapshot_v2'
 TEMP_WB_PROJECT_ID = '3d94d4a3-1b23-4e39-8c9c-4a3b765c140d'  # OBT AI AGENT
 
@@ -79,18 +84,29 @@ def ensure_temp_workbook(s, api_ver, site_id):
     wbs = resp.json().get('workbooks', {}).get('workbook', [])
 
     if wbs:
-        # Verify filter is correct
+        # Verify filter is correct (both min and max)
         wb_id = wbs[0]['id']
         actual_content_url = wbs[0].get('contentUrl', TEMP_WB_NAME)
         resp = s.get(f'{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/workbooks/{wb_id}/content',
                      timeout=120)
-        tree = ET.parse(io.BytesIO(resp.content))
+        content = resp.content
+        if content[:2] == b'PK':
+            import zipfile
+            with zipfile.ZipFile(io.BytesIO(content)) as z:
+                twb_name = [n for n in z.namelist() if n.endswith('.twb')][0]
+                content = z.read(twb_name)
+        tree = ET.parse(io.BytesIO(content))
         for f in tree.getroot().iter('filter'):
             if 'Calculation_0356804709482497' in f.get('column', ''):
                 min_el = f.find('min')
-                if min_el is not None and BKG_SCHEDULE_START in (min_el.text or ''):
-                    print(f"  Temp workbook exists with correct filter")
+                max_el = f.find('max')
+                min_ok = min_el is not None and BKG_SCHEDULE_START in (min_el.text or '')
+                max_ok = max_el is not None and BKG_SCHEDULE_END in (max_el.text or '')
+                if min_ok and max_ok:
+                    print(f"  Temp workbook exists with correct filter ({BKG_SCHEDULE_START} ~ {BKG_SCHEDULE_END})")
                     return actual_content_url
+                else:
+                    print(f"  Filter outdated, re-publishing...")
 
         # Filter wrong, delete and re-create
         print(f"  Temp workbook filter outdated, re-publishing...")
@@ -110,7 +126,7 @@ def ensure_temp_workbook(s, api_ver, site_id):
             content = z.read(twb_name)
     tree = ET.parse(io.BytesIO(content))
 
-    # Modify Booking_schedule filter min
+    # Modify Booking_schedule filter min/max
     for f in tree.getroot().iter('filter'):
         col = f.get('column', '')
         if 'Calculation_0356804709482497' in col and f.get('class') == 'quantitative':
@@ -118,6 +134,15 @@ def ensure_temp_workbook(s, api_ver, site_id):
             if min_el is not None:
                 min_el.text = f'#{BKG_SCHEDULE_START}#'
                 min_el.attrib.clear()
+            max_el = f.find('max')
+            if max_el is not None:
+                max_el.text = f'#{BKG_SCHEDULE_END}#'
+                max_el.attrib.clear()
+            else:
+                # max 엘리먼트가 없으면 생성
+                max_el = ET.SubElement(f, 'max')
+                max_el.text = f'#{BKG_SCHEDULE_END}#'
+            print(f"  Filter: {BKG_SCHEDULE_START} ~ {BKG_SCHEDULE_END}")
 
     twb_bytes = io.BytesIO()
     tree.write(twb_bytes, encoding='utf-8', xml_declaration=True)
