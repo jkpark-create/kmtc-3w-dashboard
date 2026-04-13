@@ -606,6 +606,15 @@ def upload_to_gdrive():
         bkg['lst'] = pd.to_numeric(bkg.get('LST_TEU','0').astype(str).str.replace(',',''), errors='coerce').fillna(0)
         bkg['cm1v'] = pd.to_numeric(bkg.get('CM1','0').astype(str).str.replace(',',''), errors='coerce').fillna(0)
 
+    # YYYYMM = week_start_date의 actual month (로컬 대시보드와 동일)
+    import re as _re
+    def _pkd(s):
+        if pd.isna(s): return None
+        m = _re.match(r'(\d{4})\D+(\d{1,2})\D+(\d{1,2})', str(s))
+        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+    bkg['_wdt'] = bkg['week_start_date'].apply(_pkd)
+    bkg['YYYYMM'] = bkg['_wdt'].apply(lambda d: d.strftime('%Y%m') if d else '')
+
     w3 = bkg['Lead_time (BKG_Sche)'] == 'WOS-3'
     normal = bkg['LST_Status'] == 'Normal'
     cancel = bkg['LST_Status'] == 'Cancel'
@@ -648,13 +657,7 @@ def upload_to_gdrive():
     shipper_top = shipper[shipper['BKG_SHPR_CST_ENM'].isin(top_set)]
     print(f"    shipper: {len(shipper):,} → top: {len(shipper_top):,} rows")
 
-    # WPM
-    import re as _re
-    def _pkd(s):
-        if pd.isna(s): return None
-        m = _re.match(r'(\d{4})\D+(\d{1,2})\D+(\d{1,2})', str(s))
-        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
-    bkg['_wdt'] = bkg['week_start_date'].apply(_pkd)
+    # WPM (already have _wdt from above)
     wpm = bkg[bkg['_wdt'].notna()].groupby('YYYYMM')['week_start_date'].nunique().to_dict()
 
     # BSA
