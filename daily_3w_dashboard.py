@@ -472,6 +472,84 @@ def process_snapshot():
         for s, p, d in zip(output['BKG_SHPR_CST_NO'], output['POR_PLC_CD'], output['DLY_PLC_CD'])]
     hi_cnt = sum(1 for v in output['\uace0/\uc800'] if v == '고수익화주')
     lo_cnt = sum(1 for v in output['\uace0/\uc800'] if v == '저수익화주')
+
+    # 전월 기준 선적지별 고수익화주 태그
+    print("  Computing 고수익태그 (전월 기준)...")
+    # 월별 선적지별 평균 CM1/TEU 및 화주별 CM1/TEU
+    calc_df2 = pd.DataFrame({
+        'shpr': output['BKG_SHPR_CST_NO'], 'por': output['POR_PLC_CD'],
+        'yyyymm': output['YYYYMM'], 'cm1': cm1_num, 'teu': teu_num,
+        'mask': mask  # Normal & cm1!=0 & teu>0
+    })
+    valid2 = calc_df2[calc_df2['mask']]
+    # 월별 선적지 평균
+    por_month_avg = valid2.groupby(['por', 'yyyymm']).agg(
+        p_cm1=('cm1', 'sum'), p_teu=('teu', 'sum')).reset_index()
+    por_month_avg['p_avg'] = por_month_avg['p_cm1'] / por_month_avg['p_teu']
+    # 월별 선적지별 화주 CM1/TEU
+    shpr_por_month = valid2.groupby(['shpr', 'por', 'yyyymm']).agg(
+        s_cm1=('cm1', 'sum'), s_teu=('teu', 'sum')).reset_index()
+    shpr_por_month['s_avg'] = shpr_por_month['s_cm1'] / shpr_por_month['s_teu']
+    shpr_por_month = shpr_por_month.merge(por_month_avg[['por', 'yyyymm', 'p_avg']], on=['por', 'yyyymm'])
+    shpr_por_month['tag'] = shpr_por_month.apply(
+        lambda r: '고수익' if r['s_avg'] >= r['p_avg'] else '저수익', axis=1)
+
+    # 월 목록 정렬
+    all_months = sorted(output['YYYYMM'].dropna().unique())
+    all_months = [m for m in all_months if m]
+
+    # 전월 태그 룩업: 해당 월의 전월 데이터, 없으면 가장 최근월
+    def get_prev_tag(shpr_code, por_code, cur_month):
+        if not cur_month or not shpr_code:
+            return ''
+        # 전월 계산
+        y, m = int(cur_month[:4]), int(cur_month[4:])
+        prev_months = []
+        for i in range(1, 7):  # 최대 6개월 전까지
+            pm = m - i
+            py = y
+            while pm <= 0:
+                pm += 12
+                py -= 1
+            prev_months.append(f'{py}{pm:02d}')
+
+        # 전월부터 순서대로 찾기
+        for pm in prev_months:
+            matches = shpr_por_month[
+                (shpr_por_month['shpr'] == shpr_code) &
+                (shpr_por_month['por'] == por_code) &
+                (shpr_por_month['yyyymm'] == pm)]
+            if len(matches) > 0:
+                return matches.iloc[0]['tag']
+        return ''
+
+    # 성능을 위해 딕셔너리로 변환
+    tag_dict = {}
+    for _, r in shpr_por_month.iterrows():
+        key = (r['shpr'], r['por'], r['yyyymm'])
+        tag_dict[key] = r['tag']
+
+    def get_prev_tag_fast(shpr_code, por_code, cur_month):
+        if not cur_month or not shpr_code:
+            return ''
+        y, m = int(cur_month[:4]), int(cur_month[4:])
+        for i in range(1, 7):
+            pm = m - i
+            py = y
+            while pm <= 0:
+                pm += 12
+                py -= 1
+            t = tag_dict.get((str(shpr_code).strip(), str(por_code).strip(), f'{py}{pm:02d}'), None)
+            if t is not None:
+                return t
+        return ''
+
+    output['고수익태그'] = [
+        get_prev_tag_fast(s, p, m)
+        for s, p, m in zip(output['BKG_SHPR_CST_NO'], output['POR_PLC_CD'], output['YYYYMM'])]
+    hi_tag = sum(1 for v in output['고수익태그'] if v == '고수익')
+    lo_tag = sum(1 for v in output['고수익태그'] if v == '저수익')
+    print(f"  고수익태그: 고수익={hi_tag:,}, 저수익={lo_tag:,}, 미분류={len(output)-hi_tag-lo_tag:,}")
     print(f"  고수익: {hi_cnt:,}, 저수익: {lo_cnt:,}, 미분류: {len(output)-hi_cnt-lo_cnt:,}")
 
     # week_start (BKG_Sche): =INT(O2)-WEEKDAY(O2,1)+1  (Booking_schedule 기준 주 시작 일요일)
@@ -543,7 +621,7 @@ def process_snapshot():
         'LST_VSL', 'LST_VOY', 'grade', 'CM1/TEU',
         'week_start_date', 'D_group', 'YYYYMM', '\uace0/\uc800',
         'week_start (BKG_Sche)', 'Lead_time (BKG_Sche)', 'YYYYMM_BKG_Sche',
-        'Salesman_POR'
+        'Salesman_POR', '고수익태그'
     ]
     output = output[col_order]
 
@@ -633,14 +711,7 @@ def upload_to_gdrive():
         bkg['lst'] = pd.to_numeric(bkg.get('LST_TEU','0').astype(str).str.replace(',',''), errors='coerce').fillna(0)
         bkg['cm1v'] = pd.to_numeric(bkg.get('CM1','0').astype(str).str.replace(',',''), errors='coerce').fillna(0)
 
-    # YYYYMM = week_start_date의 actual month (로컬 대시보드와 동일)
-    import re as _re
-    def _pkd(s):
-        if pd.isna(s): return None
-        m = _re.match(r'(\d{4})\D+(\d{1,2})\D+(\d{1,2})', str(s))
-        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
-    bkg['_wdt'] = bkg['week_start_date'].apply(_pkd)
-    bkg['YYYYMM'] = bkg['_wdt'].apply(lambda d: d.strftime('%Y%m') if d else '')
+    # YYYYMM = 주차 월 기준 (BSA와 동일, 원본 YYYYMM 사용)
 
     lt = bkg['Lead_time (BKG_Sche)']
     normal = bkg['LST_Status'] == 'Normal'
@@ -676,13 +747,21 @@ def upload_to_gdrive():
     weekly = bkg.groupby(wk_keys).agg(agg_cols).reset_index()
 
     # Shipper aggregation (화주별) — BKG > 0인 전체 화주
-    shpr_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','BKG_SHPR_CST_NO','BKG_SHPR_CST_ENM','Salesman_POR']
+    shpr_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','BKG_SHPR_CST_NO','BKG_SHPR_CST_ENM','Salesman_POR','고수익태그']
     shipper = bkg.groupby(shpr_keys).agg(agg_cols).reset_index()
     shipper_all = shipper[shipper['fst'] > 0]
     print(f"    shipper: {len(shipper):,} → active: {len(shipper_all):,} rows")
 
-    # WPM (already have _wdt from above)
+    # WPM (주차 월 기준)
+    import re as _re
+    def _pkd(s):
+        if pd.isna(s): return None
+        m = _re.match(r'(\d{4})\D+(\d{1,2})\D+(\d{1,2})', str(s))
+        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+    bkg['_wdt'] = bkg['week_start_date'].apply(_pkd)
     wpm = bkg[bkg['_wdt'].notna()].groupby('YYYYMM')['week_start_date'].nunique().to_dict()
+    if wpm.get('202601', 0) < 4:
+        wpm['202601'] = 4
 
     # BSA
     bsa_data = []

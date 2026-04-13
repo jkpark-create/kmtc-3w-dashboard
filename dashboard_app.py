@@ -167,9 +167,8 @@ def load_data():
             bkg.to_parquet(cache, index=False)
             print(f"  cached in {time.time()-t0:.0f}s", flush=True)
 
-    # YYYYMM = week_start_date(actual)의 연월로 직접 계산
+    # YYYYMM = 주차 월 기준 (BSA와 동일) + week_dt
     bkg['week_dt'] = bkg['week_start_date'].apply(parse_kd)
-    bkg['YYYYMM'] = bkg['week_dt'].apply(lambda d: d.strftime('%Y%m') if pd.notna(d) else '')
 
     bsa = None
     if sf:
@@ -186,6 +185,9 @@ def load_data():
 
     # Weeks per month (BKG_Sche 기준)
     wpm = bkg[bkg['week_dt'].notna()].groupby('YYYYMM')['week_start_date'].nunique().to_dict()
+    # 주차 월 기준 WPM 보정 (1월=4주: 12/28 포함)
+    if wpm.get('202601', 0) < 4:
+        wpm['202601'] = 4
 
     print(f"Loaded: {len(bkg):,} rows", flush=True)
     return bkg, bsa, dd, wpm
@@ -867,13 +869,19 @@ def cb2(team, ori, ori_p, dst, dst_p, view_mode, month, week, profit, subtab):
     if subtab == 'cust' and 'Salesman_POR' in w3.columns:
         sm_map = w3.groupby('BKG_SHPR_CST_ENM')['Salesman_POR'].agg(lambda x: ', '.join(sorted(set(x.dropna().astype(str)) - {'','nan'}))).to_dict()
         tbl_df['영업사원'] = tbl_df[gc].map(sm_map).fillna('')
-    tbl_df = tbl_df.nlargest(15 if subtab != 'sales' else 30, 'bkg')
+    # 영업사원별일 때 화주수 추가
+    if subtab == 'sales' and 'BKG_SHPR_CST_NO' in w3.columns:
+        cust_cnt = w3.groupby('Salesman_POR')['BKG_SHPR_CST_NO'].nunique().to_dict()
+        tbl_df['화주수'] = tbl_df[gc].map(cust_cnt).fillna(0).astype(int)
+    tbl_df = tbl_df.nlargest(15 if subtab not in ('sales', 'cust') else 50, 'bkg')
 
     rows = []
     for _, r in tbl_df.iterrows():
         row = {gl: r[gc]}
         if subtab == 'cust' and '영업사원' in tbl_df.columns:
             row['영업사원'] = r['영업사원']
+        if subtab == 'sales' and '화주수' in tbl_df.columns:
+            row['화주수'] = str(int(r['화주수']))
         row.update({'BKG': f"{r['bkg']:,.0f}", '실선적': f"{r['ship']:,.0f}",
                '실선적률': f"{r['ship']/r['bkg']*100:.0f}%" if r['bkg'] else '-',
                '고수익BKG': f"{r['hi']:,.0f}",
