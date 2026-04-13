@@ -100,6 +100,20 @@ def _gdrive_download():
     except Exception as e:
         print(f"  GDrive download error: {e}", flush=True)
 
+def _build_445_map():
+    """Build 445 calendar: week_start(YYYY-MM-DD) → YYYYMM"""
+    from datetime import timedelta
+    pattern = [4,4,5,4,4,5,4,4,5,4,4,5]
+    mapping = {}
+    for year, first_sun in [(2025, datetime(2025,1,5)), (2026, datetime(2026,1,4)), (2027, datetime(2027,1,3))]:
+        wk = 0
+        for mi, cnt in enumerate(pattern):
+            ym = f'{year}{mi+1:02d}'
+            for _ in range(cnt):
+                mapping[(first_sun + timedelta(weeks=wk)).strftime('%Y-%m-%d')] = ym
+                wk += 1
+    return mapping
+
 def find_latest(pattern):
     f = sorted(OUTPUT_DIR.glob(pattern), key=os.path.getmtime, reverse=True)
     return f[0] if f else None
@@ -167,15 +181,17 @@ def load_data():
             bkg.to_parquet(cache, index=False)
             print(f"  cached in {time.time()-t0:.0f}s", flush=True)
 
-    # YYYYMM = 주차 월 기준 (BSA와 동일) + week_dt
+    # YYYYMM = 445 calendar (BSA와 동일)
     bkg['week_dt'] = bkg['week_start_date'].apply(parse_kd)
+    _445 = _build_445_map()
+    bkg['YYYYMM'] = bkg['week_dt'].apply(lambda d: _445.get(d.strftime('%Y-%m-%d'), '') if pd.notna(d) else '')
 
     bsa = None
     if sf:
         bsa = pd.read_csv(sf, dtype=str)
-        # Exclude '전체' subtotal rows
-        bsa = bsa[~bsa['DLY_Country'].str.contains('전체', na=False)]
-        bsa = bsa[~bsa['POR_Country'].str.contains('전체', na=False)]
+        # Exclude '전체' subtotal rows (handles UTF-8 and mojibake)
+        bsa = bsa[bsa['DLY_Country'].str.len() <= 3]
+        bsa = bsa[bsa['POR_Country'].str.len() <= 3]
         bsa = bsa[bsa['POR_Country'].str.len() <= 3]
         bsa['teu_bsa'] = pd.to_numeric(bsa['TEU_BSA (Actual)'].str.replace(',', ''), errors='coerce').fillna(0)
         bsa['dest'] = bsa['DLY_Country'].map(DEST_GROUP_MAP).fillna(bsa['DLY_Country'])
@@ -186,9 +202,6 @@ def load_data():
 
     # Weeks per month (BKG_Sche 기준)
     wpm = bkg[bkg['week_dt'].notna()].groupby('YYYYMM')['week_start_date'].nunique().to_dict()
-    # 주차 월 기준 WPM 보정 (1월=4주: 12/28 포함)
-    if wpm.get('202601', 0) < 4:
-        wpm['202601'] = 4
 
     print(f"Loaded: {len(bkg):,} rows", flush=True)
     return bkg, bsa, dd, wpm
@@ -401,9 +414,18 @@ def mk_tbl(rows, fc='lbl'):
         ])
 
 
-def mdd(id_, idx=-2):
+def _default_month():
+    """현재 주 + 3주 후의 월"""
+    from datetime import timedelta
+    today = datetime.now()
+    sun = today - timedelta(days=today.weekday() + 1) if today.weekday() != 6 else today
+    target = sun + timedelta(days=21)
+    m = target.strftime('%Y%m')
+    return m if m in ALL_MONTHS else ALL_MONTHS[-1]
+
+def mdd(id_, idx=None):
     opts = [{'label': ML.get(m, m), 'value': m} for m in ALL_MONTHS]
-    v = ALL_MONTHS[idx] if len(ALL_MONTHS) > abs(idx) else ALL_MONTHS[-1]
+    v = _default_month()
     return dcc.Dropdown(id=id_, options=opts, value=v, clearable=False, style={'width': '90px'})
 
 def wdd(id_):

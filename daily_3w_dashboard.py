@@ -257,6 +257,7 @@ def download_bsa():
     print("[BSA] Downloading BSA raw...")
     year = datetime.now().year
     yyyy_filter = f'{year-1},{year},{year+1}'
+    yyyymm_all = ','.join(f'{y}{m:02d}' for y in [year-1, year, year+1] for m in range(1, 13))
 
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
@@ -284,7 +285,7 @@ def download_bsa():
         all_dfs = []
         for team in ['OBT', 'EST', 'IST', 'JBT']:
             csv_url = (f'{TABLEAU_SERVER}/views/{BSA_VIEW_URL}.csv'
-                       f'?vf_YYYY={yyyy_filter}&Sales+Team={team}')
+                       f'?vf_YYYY={yyyy_filter}&vf_YYYYMM={yyyymm_all}&Sales+Team={team}')
             print(f"  Downloading BSA: {team}...", end=' ')
             with page.expect_download(timeout=600000) as dl_info:
                 page.evaluate(f'window.location.href = "{csv_url}"')
@@ -523,34 +524,76 @@ def process_snapshot():
                 return matches.iloc[0]['tag']
         return ''
 
-    # 성능을 위해 딕셔너리로 변환
-    tag_dict = {}
-    for _, r in shpr_por_month.iterrows():
-        key = (r['shpr'], r['por'], r['yyyymm'])
-        tag_dict[key] = r['tag']
+    # 2순위: 전월 + 전체 선적지 (화주 전체 실적 기준)
+    all_month_avg = valid2.groupby(['yyyymm']).agg(a_cm1=('cm1','sum'), a_teu=('teu','sum')).reset_index()
+    all_month_avg['a_avg'] = all_month_avg['a_cm1'] / all_month_avg['a_teu']
+    shpr_all_month = valid2.groupby(['shpr', 'yyyymm']).agg(s_cm1=('cm1','sum'), s_teu=('teu','sum')).reset_index()
+    shpr_all_month['s_avg'] = shpr_all_month['s_cm1'] / shpr_all_month['s_teu']
+    shpr_all_month = shpr_all_month.merge(all_month_avg[['yyyymm','a_avg']], on='yyyymm')
+    shpr_all_month['tag'] = shpr_all_month.apply(lambda r: '고수익' if r['s_avg'] >= r['a_avg'] else '저수익', axis=1)
 
-    def get_prev_tag_fast(shpr_code, por_code, cur_month):
-        if not cur_month or not shpr_code:
+    # 3순위: 당월 데이터 (선적지별)
+    # → tag_dict_cur: (shpr, por, cur_month) → tag
+    tag_dict_cur = {}
+    for _, r in shpr_por_month.iterrows():
+        tag_dict_cur[(r['shpr'], r['por'], r['yyyymm'])] = r['tag']
+
+    # 딕셔너리로 변환
+    # 1순위: (shpr, por, yyyymm) → tag (전월 선적지별)
+    tag_dict_por = {}
+    for _, r in shpr_por_month.iterrows():
+        tag_dict_por[(r['shpr'], r['por'], r['yyyymm'])] = r['tag']
+    # 2순위: (shpr, yyyymm) → tag (전월 전체 선적지)
+    tag_dict_all = {}
+    for _, r in shpr_all_month.iterrows():
+        tag_dict_all[(r['shpr'], r['yyyymm'])] = r['tag']
+
+    def get_tag(shpr_code, por_code, cur_month, grade_val):
+        s = str(shpr_code).strip() if shpr_code else ''
+        p = str(por_code).strip() if por_code else ''
+        if not cur_month or not s:
             return ''
         y, m = int(cur_month[:4]), int(cur_month[4:])
+
+        # 전월부터 6개월 전까지
         for i in range(1, 7):
-            pm = m - i
-            py = y
-            while pm <= 0:
-                pm += 12
-                py -= 1
-            t = tag_dict.get((str(shpr_code).strip(), str(por_code).strip(), f'{py}{pm:02d}'), None)
-            if t is not None:
-                return t
+            pm = m - i; py = y
+            while pm <= 0: pm += 12; py -= 1
+            ym = f'{py}{pm:02d}'
+            # 1순위: 전월 + 동일 선적지
+            t = tag_dict_por.get((s, p, ym))
+            if t: return t
+            # 2순위: 전월 + 전체 선적지
+            t = tag_dict_all.get((s, ym))
+            if t: return t
+
+        # 3순위: 당월 + 동일 선적지
+        t = tag_dict_cur.get((s, p, cur_month))
+        if t: return t
+
+        # 4순위: grade C+D → 고수익, A+B → 저수익
+        g = str(grade_val).strip() if grade_val else ''
+        if g == 'C+D': return '고수익'
+        if g == 'A+B': return '저수익'
         return ''
 
+    # 선적지+화주별 단일 태그 결정 (최신월 기준, 동일 POR+화주에 하나의 태그)
+    # 데이터에서 가장 최신 월을 기준으로 태그 결정
+    latest_month = max(m for m in output['YYYYMM'].unique() if m)
+    unique_pairs = output[['BKG_SHPR_CST_NO','POR_PLC_CD','grade']].drop_duplicates()
+    pair_tag = {}
+    for _, row in unique_pairs.iterrows():
+        s, p, g = str(row['BKG_SHPR_CST_NO']).strip(), str(row['POR_PLC_CD']).strip(), row['grade']
+        tag = get_tag(s, p, latest_month, g)
+        pair_tag[(s, p)] = tag
+
     output['고수익태그'] = [
-        get_prev_tag_fast(s, p, m)
-        for s, p, m in zip(output['BKG_SHPR_CST_NO'], output['POR_PLC_CD'], output['YYYYMM'])]
+        pair_tag.get((str(s).strip(), str(p).strip()), '')
+        for s, p in zip(output['BKG_SHPR_CST_NO'], output['POR_PLC_CD'])]
     hi_tag = sum(1 for v in output['고수익태그'] if v == '고수익')
     lo_tag = sum(1 for v in output['고수익태그'] if v == '저수익')
-    print(f"  고수익태그: 고수익={hi_tag:,}, 저수익={lo_tag:,}, 미분류={len(output)-hi_tag-lo_tag:,}")
-    print(f"  고수익: {hi_cnt:,}, 저수익: {lo_cnt:,}, 미분류: {len(output)-hi_cnt-lo_cnt:,}")
+    empty_tag = len(output) - hi_tag - lo_tag
+    print(f"  고수익태그: 고수익={hi_tag:,}, 저수익={lo_tag:,}, 미분류={empty_tag:,}")
 
     # week_start (BKG_Sche): =INT(O2)-WEEKDAY(O2,1)+1  (Booking_schedule 기준 주 시작 일요일)
     print("  Computing week_start (BKG_Sche)...")
@@ -711,7 +754,27 @@ def upload_to_gdrive():
         bkg['lst'] = pd.to_numeric(bkg.get('LST_TEU','0').astype(str).str.replace(',',''), errors='coerce').fillna(0)
         bkg['cm1v'] = pd.to_numeric(bkg.get('CM1','0').astype(str).str.replace(',',''), errors='coerce').fillna(0)
 
-    # YYYYMM = 주차 월 기준 (BSA와 동일, 원본 YYYYMM 사용)
+    # YYYYMM = 445 calendar (BSA와 동일)
+    def _build_445():
+        from datetime import timedelta as _td
+        pattern = [4,4,5,4,4,5,4,4,5,4,4,5]
+        m = {}
+        for yr, fs in [(2025, datetime(2025,1,5)), (2026, datetime(2026,1,4)), (2027, datetime(2027,1,3))]:
+            wk = 0
+            for mi, cnt in enumerate(pattern):
+                ym = f'{yr}{mi+1:02d}'
+                for _ in range(cnt):
+                    m[(fs + _td(weeks=wk)).strftime('%Y-%m-%d')] = ym
+                    wk += 1
+        return m
+    _445 = _build_445()
+    import re as _re
+    def _pkd(s):
+        if pd.isna(s): return None
+        m = _re.match(r'(\d{4})\D+(\d{1,2})\D+(\d{1,2})', str(s))
+        return f'{int(m.group(1))}-{int(m.group(2)):02d}-{int(m.group(3)):02d}' if m else None
+    bkg['_ws_key'] = bkg['week_start_date'].apply(_pkd)
+    bkg['YYYYMM'] = bkg['_ws_key'].map(_445).fillna('')
 
     lt = bkg['Lead_time (BKG_Sche)']
     normal = bkg['LST_Status'] == 'Normal'
@@ -752,23 +815,15 @@ def upload_to_gdrive():
     shipper_all = shipper[shipper['fst'] > 0]
     print(f"    shipper: {len(shipper):,} → active: {len(shipper_all):,} rows")
 
-    # WPM (주차 월 기준)
-    import re as _re
-    def _pkd(s):
-        if pd.isna(s): return None
-        m = _re.match(r'(\d{4})\D+(\d{1,2})\D+(\d{1,2})', str(s))
-        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
-    bkg['_wdt'] = bkg['week_start_date'].apply(_pkd)
-    wpm = bkg[bkg['_wdt'].notna()].groupby('YYYYMM')['week_start_date'].nunique().to_dict()
-    if wpm.get('202601', 0) < 4:
-        wpm['202601'] = 4
+    # WPM (445 기준)
+    wpm = bkg[bkg['YYYYMM']!=''].groupby('YYYYMM')['week_start_date'].nunique().to_dict()
 
     # BSA
     bsa_data = []
     if sf:
         bsa = pd.read_csv(sf[0], dtype=str)
-        bsa = bsa[~bsa['DLY_Country'].str.contains('\uc804\uccb4', na=False)]
-        bsa = bsa[~bsa['POR_Country'].str.contains('\uc804\uccb4', na=False)]
+        bsa = bsa[bsa['DLY_Country'].str.len() <= 3]
+        bsa = bsa[bsa['POR_Country'].str.len() <= 3]
         bsa['teu_bsa'] = pd.to_numeric(bsa['TEU_BSA (Actual)'].str.replace(',',''), errors='coerce').fillna(0)
         bsa_agg = bsa.groupby(['team','POR_Country','POR_PORT','DLY_Country','DLY_PORT','YYYYMM'])['teu_bsa'].sum().reset_index()
         bsa_data = bsa_agg.to_dict('records')
