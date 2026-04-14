@@ -901,7 +901,10 @@ def upload_to_gdrive():
     # Upload summary JSON (for static dashboard)
     jf = sorted(out_dir.glob('dashboard_summary_*.json'), key=os.path.getmtime, reverse=True)
     if jf:
+        # 1. 고정 파일 (GitHub Pages용)
         _upload_file(headers, jf[0], 'dashboard_summary.json')
+        # 2. 날짜별 보관 (히스토리 비교용)
+        _upload_file(headers, jf[0], f'dashboard_summary_{TODAY_STR}.json')
         # Copy to dist/ for GitHub Pages hosting
         dist_dir = WORK_DIR / 'dist'
         if dist_dir.exists():
