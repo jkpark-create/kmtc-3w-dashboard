@@ -497,9 +497,11 @@ def tab2():
             dbc.Col(mdd('t2-m'), width='auto'),
             dbc.Col(wdd('t2-w'), width='auto'),
             dbc.Col(dcc.Dropdown(id='t2-pf', options=[{'label': '전체', 'value': 'ALL'},
-                {'label': '고수익화주', 'value': 'hi'}, {'label': '저수익화주', 'value': 'lo'},
-                {'label': 'A+B', 'value': 'ab'}, {'label': 'C+D', 'value': 'cd'}],
+                {'label': '고수익화주', 'value': 'hi'}, {'label': '저수익화주', 'value': 'lo'}],
                 value='ALL', clearable=False, style={'width': '120px'}), width='auto'),
+            dbc.Col(dcc.Dropdown(id='t2-gr', options=[{'label': '전체', 'value': 'ALL'},
+                {'label': 'A+B', 'value': 'ab'}, {'label': 'C+D', 'value': 'cd'}],
+                value='ALL', clearable=False, style={'width': '90px'}), width='auto'),
         ], className='mb-3 align-items-center g-2'),
         dbc.Tabs([dbc.Tab(label='도착지별', tab_id='dest'), dbc.Tab(label='선적지별', tab_id='origin'), dbc.Tab(label='루트별', tab_id='route'),
                   dbc.Tab(label='화주별', tab_id='cust'), dbc.Tab(label='영업사원별', tab_id='sales'),
@@ -958,13 +960,13 @@ def _abcd_insight(tbl_df, gc, gl):
 
 @app.callback(
     [Output('t2-wos', 'children'), Output('t2-wk', 'figure')],
-    GF_INPUTS + [Input('t2-m', 'value'), Input('t2-w', 'value'), Input('t2-pf', 'value'), Input('t2-sub', 'active_tab')])
-def cb2(team, ori, ori_p, dst, dst_p, view_mode, month, week, profit, subtab):
+    GF_INPUTS + [Input('t2-m', 'value'), Input('t2-w', 'value'), Input('t2-pf', 'value'), Input('t2-gr', 'value'), Input('t2-sub', 'active_tab')])
+def cb2(team, ori, ori_p, dst, dst_p, view_mode, month, week, profit, grade, subtab):
     df = gf(BKG, team, ori, ori_p, dst, dst_p, month, week)
     if profit == 'hi': df = df[df['profit_type'] == '고수익화주']
     elif profit == 'lo': df = df[df['profit_type'] == '저수익화주']
-    elif profit == 'ab': df = df[df['grade'] == 'A+B']
-    elif profit == 'cd': df = df[df['grade'] == 'C+D']
+    if grade == 'ab': df = df[df['grade'] == 'A+B']
+    elif grade == 'cd': df = df[df['grade'] == 'C+D']
 
     # --- AB vs CD subtab ---
     if subtab == 'abcd':
