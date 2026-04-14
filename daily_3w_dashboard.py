@@ -821,11 +821,19 @@ def upload_to_gdrive():
     bkg['w3_canc_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_cancel']
     bkg['w3_hi_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi']
     bkg['w3_hi_norm_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi'] * bkg['is_normal']
+    # AB/CD grade columns
+    is_ab = (bkg.get('grade', '') == 'A+B').astype(int)
+    w3_mask = (lt == 'WOS-3').astype(int)
+    bkg['w3_ab_fst'] = bkg['fst'] * w3_mask * is_ab
+    bkg['w3_ab_norm_fst'] = bkg['fst'] * w3_mask * is_ab * bkg['is_normal']
+    bkg['w3_cd_fst'] = bkg['fst'] * w3_mask * (1 - is_ab)
+    bkg['w3_cd_norm_fst'] = bkg['fst'] * w3_mask * (1 - is_ab) * bkg['is_normal']
 
     # Monthly aggregation with ports
     gk = ['team','origin','ori_port','dest','dst_port','YYYYMM']
     agg_cols = {'fst':'sum','norm_fst':'sum',
                 'w3_fst':'sum','w3_norm_fst':'sum','w3_canc_fst':'sum','w3_hi_fst':'sum','w3_hi_norm_fst':'sum',
+                'w3_ab_fst':'sum','w3_ab_norm_fst':'sum','w3_cd_fst':'sum','w3_cd_norm_fst':'sum',
                 'w2_fst':'sum','w2_norm_fst':'sum','w1_fst':'sum','w1_norm_fst':'sum','wos_fst':'sum','wos_norm_fst':'sum',
                 'cm1_norm':'sum','lst_norm':'sum'}
     monthly = bkg.groupby(gk).agg(agg_cols).reset_index()
@@ -835,7 +843,7 @@ def upload_to_gdrive():
     weekly = bkg.groupby(wk_keys).agg(agg_cols).reset_index()
 
     # Shipper aggregation (화주별) — BKG > 0인 전체 화주
-    shpr_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','BKG_SHPR_CST_NO','BKG_SHPR_CST_ENM','Salesman_POR','고수익태그']
+    shpr_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','BKG_SHPR_CST_NO','BKG_SHPR_CST_ENM','Salesman_POR','고수익태그','grade']
     shipper = bkg.groupby(shpr_keys).agg(agg_cols).reset_index()
     shipper_all = shipper[shipper['fst'] > 0]
     print(f"    shipper: {len(shipper):,} → active: {len(shipper_all):,} rows")
