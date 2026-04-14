@@ -438,15 +438,34 @@ def _default_month():
     m = target.strftime('%Y%m')
     return m if m in ALL_MONTHS else ALL_MONTHS[-1]
 
+def _default_week():
+    """현재 주 + 3주 후의 주차 (week_start_date value)"""
+    from datetime import timedelta
+    today = datetime.now()
+    sun = today - timedelta(days=today.weekday() + 1) if today.weekday() != 6 else today
+    target_sun = sun + timedelta(days=21)
+    m = _default_month()
+    weeks = WEEK_OPTS.get(m, [])
+    for w in weeks:
+        ws_dt = parse_kd(w['value'])
+        if pd.notna(ws_dt) and ws_dt.date() == target_sun.date():
+            return w['value']
+    # Fallback: first week of the default month
+    return weeks[0]['value'] if weeks else 'ALL'
+
+DEF_MONTH = _default_month()
+DEF_WEEK = _default_week()
+
 def mdd(id_, idx=None):
     opts = [{'label': ML.get(m, m), 'value': m} for m in ALL_MONTHS]
-    v = _default_month()
+    v = DEF_MONTH
     return dcc.Dropdown(id=id_, options=opts, value=v, clearable=False, style={'width': '90px'})
 
 def wdd(id_):
-    """Week dropdown — options updated by callback based on selected month."""
-    return dcc.Dropdown(id=id_, options=[{'label': '전체', 'value': 'ALL'}],
-                        value='ALL', clearable=False, style={'width': '130px'})
+    """Week dropdown — initialized with default month's weeks and default week."""
+    wk_opts = [{'label': '전체', 'value': 'ALL'}] + WEEK_OPTS.get(DEF_MONTH, [])
+    return dcc.Dropdown(id=id_, options=wk_opts,
+                        value=DEF_WEEK, clearable=False, style={'width': '130px'})
 
 
 # ═══════════════════════════════════════════════════════════
@@ -712,7 +731,8 @@ def update_dst_port(team, ori, dst):
 for _tid in ['t1', 't2', 't3', 't4']:
     @app.callback(
         [Output(f'{_tid}-w', 'options'), Output(f'{_tid}-w', 'value')],
-        Input(f'{_tid}-m', 'value'))
+        Input(f'{_tid}-m', 'value'),
+        prevent_initial_call=True)
     def _update_week_opts(month, _t=_tid):
         wk_opts = [{'label': '전체', 'value': 'ALL'}] + WEEK_OPTS.get(month, [])
         return wk_opts, 'ALL'
