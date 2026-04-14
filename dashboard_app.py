@@ -497,11 +497,13 @@ def tab2():
             dbc.Col(mdd('t2-m'), width='auto'),
             dbc.Col(wdd('t2-w'), width='auto'),
             dbc.Col(dcc.Dropdown(id='t2-pf', options=[{'label': '전체', 'value': 'ALL'},
-                {'label': '고수익화주', 'value': 'hi'}, {'label': '저수익화주', 'value': 'lo'}],
+                {'label': '고수익화주', 'value': 'hi'}, {'label': '저수익화주', 'value': 'lo'},
+                {'label': 'A+B', 'value': 'ab'}, {'label': 'C+D', 'value': 'cd'}],
                 value='ALL', clearable=False, style={'width': '120px'}), width='auto'),
         ], className='mb-3 align-items-center g-2'),
         dbc.Tabs([dbc.Tab(label='도착지별', tab_id='dest'), dbc.Tab(label='선적지별', tab_id='origin'), dbc.Tab(label='루트별', tab_id='route'),
-                  dbc.Tab(label='화주별', tab_id='cust'), dbc.Tab(label='영업사원별', tab_id='sales')], id='t2-sub', active_tab='dest', className='mb-3'),
+                  dbc.Tab(label='화주별', tab_id='cust'), dbc.Tab(label='영업사원별', tab_id='sales'),
+                  dbc.Tab(label='AB vs CD', tab_id='abcd')], id='t2-sub', active_tab='dest', className='mb-3'),
         dbc.Row([dbc.Col(dbc.Card(dbc.CardBody([st("3주전 BKG 현황", "BKG/BSA/소석률/실선적/실선적률"), html.Div(id='t2-wos')]), style=S))], className='mb-3 g-2'),
         dbc.Row([dbc.Col(dbc.Card(dbc.CardBody([st("주차별 3주전 BKG"),
             dcc.Graph(id='t2-wk', config={'displayModeBar': False}, style={'height': '290px'})]), style=S))], className='g-2'),
@@ -908,6 +910,52 @@ def cb1(team, ori, ori_p, dst, dst_p, view_mode, month, week):
 # ═══════════════════════════════════════════════════════════
 # Tab 2
 # ═══════════════════════════════════════════════════════════
+def _abcd_insight(tbl_df, gc, gl):
+    """AB vs CD 분석 가이드 생성"""
+    if tbl_df.empty:
+        return html.Div()
+    tips = []
+    total_ab = tbl_df['ab'].sum(); total_cd = tbl_df['cd'].sum()
+    total = total_ab + total_cd
+    if total == 0:
+        return html.Div()
+    ab_pct = total_ab / total * 100
+
+    # 1) 전체 AB 비중 진단
+    if ab_pct >= 60:
+        tips.append(html.Li([html.Strong("A+B 의존도 높음: "), f"전체 BKG의 {ab_pct:.0f}%가 A+B 등급. 대형화주 집중 리스크 — 특정 화주 이탈 시 영향 큼."]))
+    elif ab_pct <= 30:
+        tips.append(html.Li([html.Strong("C+D 비중 높음: "), f"전체 BKG의 {100-ab_pct:.0f}%가 C+D 등급. 중소화주 기반이 넓어 안정적이나, C+D 실선적률 관리 필요."]))
+
+    # 2) 실선적률 차이 진단
+    ab_ship = tbl_df['ab_ship'].sum(); cd_ship = tbl_df['cd_ship'].sum()
+    ab_lft = (ab_ship / total_ab * 100) if total_ab else 0
+    cd_lft = (cd_ship / total_cd * 100) if total_cd else 0
+    gap = ab_lft - cd_lft
+    if gap > 10:
+        tips.append(html.Li([html.Strong(f"실선적률 격차 주의: "), f"A+B {ab_lft:.0f}% vs C+D {cd_lft:.0f}% (차이 {gap:.0f}%p). C+D 캔슬률이 높음 — 부킹 확정 관리 강화 필요."]))
+    elif gap < -5:
+        tips.append(html.Li([html.Strong(f"A+B 실선적률 하락: "), f"A+B {ab_lft:.0f}% vs C+D {cd_lft:.0f}%. 대형화주 부킹 변동이 크므로 선복 조정 주의."]))
+
+    # 3) 지역별 AB 편중 진단
+    tbl_df = tbl_df[tbl_df['total'] > 0].copy()
+    tbl_df['ab_ratio'] = tbl_df['ab'] / tbl_df['total'] * 100
+    if len(tbl_df) >= 2:
+        top_ab = tbl_df.nlargest(1, 'ab_ratio').iloc[0]
+        low_ab = tbl_df.nsmallest(1, 'ab_ratio').iloc[0]
+        if top_ab['ab_ratio'] - low_ab['ab_ratio'] > 30:
+            tips.append(html.Li([html.Strong("지역별 편차 큼: "),
+                f"{top_ab[gc]}은 A+B {top_ab['ab_ratio']:.0f}%로 대형화주 집중, {low_ab[gc]}은 A+B {low_ab['ab_ratio']:.0f}%로 중소화주 중심. 지역별 차별 전략 필요."]))
+
+    if not tips:
+        tips.append(html.Li("등급별 비중 및 실선적률이 균형 잡힌 상태입니다."))
+
+    return html.Div([
+        html.H6("Analysis Guide", style={'fontWeight': '700', 'color': C['pri'], 'marginTop': '16px', 'marginBottom': '8px'}),
+        html.Ul(tips, style={'fontSize': '13px', 'lineHeight': '1.8', 'color': '#333'})
+    ], style={'background': '#e8f0fe', 'borderLeft': f"4px solid {C['pri']}", 'padding': '12px 16px', 'borderRadius': '0 4px 4px 0', 'marginTop': '12px'})
+
+
 @app.callback(
     [Output('t2-wos', 'children'), Output('t2-wk', 'figure')],
     GF_INPUTS + [Input('t2-m', 'value'), Input('t2-w', 'value'), Input('t2-pf', 'value'), Input('t2-sub', 'active_tab')])
@@ -915,6 +963,67 @@ def cb2(team, ori, ori_p, dst, dst_p, view_mode, month, week, profit, subtab):
     df = gf(BKG, team, ori, ori_p, dst, dst_p, month, week)
     if profit == 'hi': df = df[df['profit_type'] == '고수익화주']
     elif profit == 'lo': df = df[df['profit_type'] == '저수익화주']
+    elif profit == 'ab': df = df[df['grade'] == 'A+B']
+    elif profit == 'cd': df = df[df['grade'] == 'C+D']
+
+    # --- AB vs CD subtab ---
+    if subtab == 'abcd':
+        gc = 'origin' if view_mode == 'origin' else 'dest'
+        gl = '선적지' if gc == 'origin' else '도착지'
+        w3 = df[df['Lead_time (BKG_Sche)'] == 'WOS-3']
+        ab = w3[w3['grade'] == 'A+B']; cd = w3[w3['grade'] == 'C+D']
+        ab_g = ab.groupby(gc)['fst'].sum().reset_index().rename(columns={'fst': 'ab'})
+        cd_g = cd.groupby(gc)['fst'].sum().reset_index().rename(columns={'fst': 'cd'})
+        ab_n = ab[ab['LST_Status'] == 'Normal'].groupby(gc)['fst'].sum().reset_index().rename(columns={'fst': 'ab_ship'})
+        cd_n = cd[cd['LST_Status'] == 'Normal'].groupby(gc)['fst'].sum().reset_index().rename(columns={'fst': 'cd_ship'})
+        tbl = ab_g.merge(cd_g, on=gc, how='outer').merge(ab_n, on=gc, how='left').merge(cd_n, on=gc, how='left').fillna(0)
+        tbl['total'] = tbl['ab'] + tbl['cd']
+        tbl = tbl[tbl['total'] > 0].nlargest(15, 'total')
+
+        rows = []
+        for _, r in tbl.iterrows():
+            tot = r['total']
+            rows.append({
+                gl: r[gc],
+                'A+B BKG': f"{r['ab']:,.0f}", 'C+D BKG': f"{r['cd']:,.0f}",
+                'A+B %': f"{r['ab']/tot*100:.0f}%" if tot else '-',
+                'C+D %': f"{r['cd']/tot*100:.0f}%" if tot else '-',
+                'A+B 실선적률': f"{r['ab_ship']/r['ab']*100:.0f}%" if r['ab'] else '-',
+                'C+D 실선적률': f"{r['cd_ship']/r['cd']*100:.0f}%" if r['cd'] else '-',
+                '전체 BKG': f"{tot:,.0f}",
+            })
+        # 합계
+        if rows:
+            def _s(v):
+                try: return float(v.replace(',', ''))
+                except: return 0
+            tr = {gl: '합계'}
+            for k in rows[0]:
+                if k == gl: continue
+                tr[k] = '' if '%' in str(rows[0].get(k, '')) else f"{sum(_s(r.get(k, '0')) for r in rows):,.0f}"
+            tab_sum = _s(tr.get('A+B BKG', '0')); tcd_sum = _s(tr.get('C+D BKG', '0'))
+            tab_ship = _s(tr.get('A+B 실선적률', '0')); tcd_ship = _s(tr.get('C+D 실선적률', '0'))
+            ttot = tab_sum + tcd_sum
+            tr['A+B %'] = f"{tab_sum/ttot*100:.0f}%" if ttot else '-'
+            tr['C+D %'] = f"{tcd_sum/ttot*100:.0f}%" if ttot else '-'
+            tab_s = tbl['ab_ship'].sum(); tcd_s = tbl['cd_ship'].sum()
+            tr['A+B 실선적률'] = f"{tab_s/tab_sum*100:.0f}%" if tab_sum else '-'
+            tr['C+D 실선적률'] = f"{tcd_s/tcd_sum*100:.0f}%" if tcd_sum else '-'
+            rows.append(tr)
+
+        # Chart: stacked bar A+B vs C+D by region
+        fig = go.Figure()
+        chart_df = tbl.nlargest(10, 'total')
+        fig.add_bar(x=chart_df[gc], y=chart_df['ab'], name='A+B', marker_color='#1a73e8')
+        fig.add_bar(x=chart_df[gc], y=chart_df['cd'], name='C+D', marker_color='#f9ab00')
+        fig.update_layout(barmode='stack', margin=dict(l=40, r=20, t=20, b=30),
+                          yaxis=dict(title='TEU', gridcolor='#f0f0f0'),
+                          legend=dict(orientation='h', y=1.12), plot_bgcolor='#fff', paper_bgcolor='#fff')
+
+        insight = _abcd_insight(tbl, gc, gl)
+        return html.Div([mk_tbl(rows, gl), insight]), fig
+
+    # --- Existing subtabs ---
     gc, gl = ('origin', '선적지') if subtab == 'origin' else ('dest', '도착지') if subtab == 'dest' else ('LST_route', '루트') if subtab == 'route' else ('Salesman_POR', '영업사원') if subtab == 'sales' else ('BKG_SHPR_CST_ENM', '화주')
 
     # WOS-3 only
@@ -923,10 +1032,14 @@ def cb2(team, ori, ori_p, dst, dst_p, view_mode, month, week, profit, subtab):
     w3_n = w3[w3['LST_Status'] == 'Normal'].groupby(gc)['fst'].sum().reset_index().rename(columns={'fst': 'ship'})
     w3_hi = w3[w3['profit_type'] == '고수익화주'].groupby(gc)['fst'].sum().reset_index().rename(columns={'fst': 'hi'})
     tbl_df = w3_all.merge(w3_n, on=gc, how='left').merge(w3_hi, on=gc, how='left').fillna(0)
-    # 화주별일 때 영업사원 컬럼 추가
-    if subtab == 'cust' and 'Salesman_POR' in w3.columns:
-        sm_map = w3.groupby('BKG_SHPR_CST_ENM')['Salesman_POR'].agg(lambda x: ', '.join(sorted(set(x.dropna().astype(str)) - {'','nan'}))).to_dict()
-        tbl_df['영업사원'] = tbl_df[gc].map(sm_map).fillna('')
+    # 화주별일 때 등급 + 영업사원 컬럼 추가
+    if subtab == 'cust':
+        if 'grade' in w3.columns:
+            gr_map = w3.groupby('BKG_SHPR_CST_ENM')['grade'].agg(lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'C+D').to_dict()
+            tbl_df['등급'] = tbl_df[gc].map(gr_map).fillna('C+D')
+        if 'Salesman_POR' in w3.columns:
+            sm_map = w3.groupby('BKG_SHPR_CST_ENM')['Salesman_POR'].agg(lambda x: ', '.join(sorted(set(x.dropna().astype(str)) - {'','nan'}))).to_dict()
+            tbl_df['영업사원'] = tbl_df[gc].map(sm_map).fillna('')
     # 영업사원별일 때 화주수 추가
     if subtab == 'sales' and 'BKG_SHPR_CST_NO' in w3.columns:
         cust_cnt = w3.groupby('Salesman_POR')['BKG_SHPR_CST_NO'].nunique().to_dict()
@@ -936,8 +1049,11 @@ def cb2(team, ori, ori_p, dst, dst_p, view_mode, month, week, profit, subtab):
     rows = []
     for _, r in tbl_df.iterrows():
         row = {gl: r[gc]}
-        if subtab == 'cust' and '영업사원' in tbl_df.columns:
-            row['영업사원'] = r['영업사원']
+        if subtab == 'cust':
+            if '등급' in tbl_df.columns:
+                row['등급'] = r['등급']
+            if '영업사원' in tbl_df.columns:
+                row['영업사원'] = r['영업사원']
         if subtab == 'sales' and '화주수' in tbl_df.columns:
             row['화주수'] = str(int(r['화주수']))
         row.update({'BKG': f"{r['bkg']:,.0f}", '실선적': f"{r['ship']:,.0f}",
