@@ -31,6 +31,18 @@ TABLEAU_SERVER = os.environ.get('TABLEAU_SERVER', 'https://tableau.ekmtc.com')
 TABLEAU_USER = os.environ.get('TABLEAU_USER', 'obt')
 TABLEAU_PASS = os.environ.get('TABLEAU_PASS', '')
 
+TODAY_STR = datetime.now().strftime('%Y%m%d')
+
+def classify_team(origin, dly_raw):
+    """OBT/EST/IST/JBT based on origin & destination country codes."""
+    o, d = str(origin).strip(), str(dly_raw).strip()
+    if o not in ('KR', 'JP') and d != 'KR': return 'OBT'
+    elif o == 'KR' and d != 'JP': return 'EST'
+    elif o != 'JP' and d == 'KR': return 'IST'
+    else: return 'JBT'
+
+DEST_GROUP_MAP = {'MY':'MY/SG','SG':'MY/SG','AE':'AE','SA':'AE','KW':'AE','QA':'AE','OM':'AE','BH':'AE','IQ':'AE','JO':'AE','EG':'AE'}
+
 # Workbook: booking snapshot(전체) - contentUrl
 BKG_WB_CONTENT_URL = 'bookingsnapshot'
 BKG_WB_ID = '81c076dd-4666-488e-96eb-699612d9e109'
@@ -46,8 +58,6 @@ _end_sat = _this_sun + timedelta(days=4*7+6)  # +4주 토요일
 BKG_SCHEDULE_END = _end_sat.strftime('%Y-%m-%d 00:00:00')
 TEMP_WB_NAME = 'temp_bkg_snapshot_v2'
 TEMP_WB_PROJECT_ID = '3d94d4a3-1b23-4e39-8c9c-4a3b765c140d'  # OBT AI AGENT
-
-TODAY_STR = datetime.now().strftime('%Y%m%d')
 
 
 # ═══════════════════════════════════════════════════════════
@@ -820,19 +830,18 @@ def upload_to_gdrive():
         return
 
     # Ensure derived columns
-    if 'profit_type' not in bkg.columns and '\uace0/\uc800' in bkg.columns:
-        bkg = bkg.rename(columns={'\uace0/\uc800': 'profit_type'})
+    _pt_col = [c for c in bkg.columns if '/' in c and len(c) <= 4]
+    if _pt_col and 'profit_type' not in bkg.columns:
+        bkg = bkg.rename(columns={_pt_col[0]: 'profit_type'})
+    elif 'profit_type' not in bkg.columns:
+        bkg['profit_type'] = ''
+    _DEST_MAP = {'MY':'MY/SG','SG':'MY/SG','AE':'AE','SA':'AE','KW':'AE','QA':'AE','OM':'AE','BH':'AE','IQ':'AE','JO':'AE','EG':'AE'}
     if 'dest' not in bkg.columns:
-        bkg['dest'] = bkg['DLY_CTR_CD']
+        bkg['dest'] = bkg['DLY_CTR_CD'].map(_DEST_MAP).fillna(bkg['DLY_CTR_CD'])
         bkg['origin'] = bkg['POR_CTR_CD']
         bkg['ori_port'] = bkg['POR_PLC_CD']
         bkg['dst_port'] = bkg['DLY_PLC_CD']
-        def _ct(o,d):
-            if o not in ('KR','JP') and d != 'KR': return 'OBT'
-            elif o == 'KR' and d != 'JP': return 'EST'
-            elif o != 'JP' and d == 'KR': return 'IST'
-            else: return 'JBT'
-        bkg['team'] = [_ct(o,d) for o,d in zip(bkg['POR_CTR_CD'], bkg['DLY_CTR_CD'])]
+        bkg['team'] = [classify_team(str(o).strip(),str(d).strip()) for o,d in zip(bkg['POR_CTR_CD'], bkg['DLY_CTR_CD'])]
     if 'fst' not in bkg.columns:
         bkg['fst'] = pd.to_numeric(bkg.get('FST_TEU','0').astype(str).str.replace(',',''), errors='coerce').fillna(0)
         bkg['lst'] = pd.to_numeric(bkg.get('LST_TEU','0').astype(str).str.replace(',',''), errors='coerce').fillna(0)
@@ -863,7 +872,7 @@ def upload_to_gdrive():
     lt = bkg['Lead_time (BKG_Sche)']
     normal = bkg['LST_Status'] == 'Normal'
     cancel = bkg['LST_Status'] == 'Cancel'
-    hi = bkg.get('profit_type','') == '고수익화주'
+    hi = bkg['profit_type'].astype(str).str.contains('고수익', na=False)
 
     bkg['is_normal'] = normal.astype(int)
     bkg['is_cancel'] = cancel.astype(int)
@@ -935,6 +944,13 @@ def upload_to_gdrive():
         _json.dump(summary, f, ensure_ascii=False, separators=(',',':'))
     print(f"  Summary JSON: {json_path.name} ({os.path.getsize(json_path):,} bytes)")
     print(f"    monthly: {len(monthly):,} rows, weekly: {len(weekly):,} rows, bsa: {len(bsa_data):,} rows")
+
+    # Copy to dist/data.json for GitHub Pages
+    import shutil
+    dist_data = WORK_DIR / 'dist' / 'data.json'
+    if dist_data.parent.exists():
+        shutil.copy2(json_path, dist_data)
+        print(f"  Copied to {dist_data}")
 
     with open(GDRIVE_CREDS_DIR / 'credentials.json') as f:
         creds = _json.load(f)['installed']
