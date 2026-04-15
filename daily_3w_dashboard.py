@@ -877,7 +877,7 @@ def upload_to_gdrive():
     bkg['is_normal'] = normal.astype(int)
     bkg['is_cancel'] = cancel.astype(int)
     bkg['is_hi'] = hi.astype(int)
-    bkg['norm_fst'] = bkg['fst'] * bkg['is_normal']
+    bkg['norm_fst'] = bkg['lst'] * bkg['is_normal']
     bkg['cm1_norm'] = bkg['cm1v'] * bkg['is_normal'] * (bkg['cm1v'] != 0).astype(int)
     bkg['lst_norm'] = bkg['lst'] * bkg['is_normal'] * (bkg['cm1v'] != 0).astype(int)
 
@@ -885,17 +885,17 @@ def upload_to_gdrive():
     for wos, label in [('WOS-3','w3'),('WOS-2','w2'),('WOS-1','w1'),('Week of Sailing (WOS)','wos')]:
         mask = (lt == wos).astype(int)
         bkg[f'{label}_fst'] = bkg['fst'] * mask
-        bkg[f'{label}_norm_fst'] = bkg['fst'] * mask * bkg['is_normal']
+        bkg[f'{label}_norm_fst'] = bkg['lst'] * mask * bkg['is_normal']
     bkg['w3_canc_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_cancel']
     bkg['w3_hi_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi']
-    bkg['w3_hi_norm_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi'] * bkg['is_normal']
+    bkg['w3_hi_norm_fst'] = bkg['lst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi'] * bkg['is_normal']
     # AB/CD grade columns
     is_ab = (bkg.get('grade', '') == 'A+B').astype(int)
     w3_mask = (lt == 'WOS-3').astype(int)
     bkg['w3_ab_fst'] = bkg['fst'] * w3_mask * is_ab
-    bkg['w3_ab_norm_fst'] = bkg['fst'] * w3_mask * is_ab * bkg['is_normal']
+    bkg['w3_ab_norm_fst'] = bkg['lst'] * w3_mask * is_ab * bkg['is_normal']
     bkg['w3_cd_fst'] = bkg['fst'] * w3_mask * (1 - is_ab)
-    bkg['w3_cd_norm_fst'] = bkg['fst'] * w3_mask * (1 - is_ab) * bkg['is_normal']
+    bkg['w3_cd_norm_fst'] = bkg['lst'] * w3_mask * (1 - is_ab) * bkg['is_normal']
 
     # Monthly aggregation with ports
     gk = ['team','origin','ori_port','dest','dst_port','YYYYMM']
