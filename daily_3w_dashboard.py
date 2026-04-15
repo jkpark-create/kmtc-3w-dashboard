@@ -838,8 +838,8 @@ def upload_to_gdrive():
                 'cm1_norm':'sum','lst_norm':'sum'}
     monthly = bkg.groupby(gk).agg(agg_cols).reset_index()
 
-    # Weekly aggregation (simplified - no port detail)
-    wk_keys = ['team','origin','dest','YYYYMM','week_start_date']
+    # Weekly aggregation (with port detail for port filter support)
+    wk_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','week_start_date']
     weekly = bkg.groupby(wk_keys).agg(agg_cols).reset_index()
 
     # Shipper aggregation (화주별) — BKG > 0인 전체 화주
