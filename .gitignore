@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 *.log
 .env
+.vscode/settings.json
 downloads/
 1.csv
 2.csv
