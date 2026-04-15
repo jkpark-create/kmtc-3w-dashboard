@@ -288,7 +288,7 @@ def download_all():
 
 
 def download_bsa():
-    """Download BSA raw (월간회의3주전) with YYYY filter."""
+    """Download BSA raw (월간회의3주전) per team, deduplicate by classify_team."""
     print("[BSA] Downloading BSA raw...")
     year = datetime.now().year
     yyyy_filter = f'{year-1},{year},{year+1}'
@@ -327,7 +327,11 @@ def download_bsa():
             download = dl_info.value
             tmp_path = download.path()
             df = pd.read_csv(tmp_path, dtype=str)
-            df['team'] = team
+            # Classify team by POR/DLY countries (ignore Tableau's Sales Team parameter)
+            df['team'] = [classify_team(str(o).strip(), str(d).strip())
+                          for o, d in zip(df['POR_Country'], df['DLY_Country'])]
+            # Only keep rows matching the intended team to prevent duplication
+            df = df[df['team'] == team]
             print(f"{len(df)} rows")
             all_dfs.append(df)
         combined = pd.concat(all_dfs, ignore_index=True)
