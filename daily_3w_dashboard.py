@@ -910,9 +910,10 @@ def upload_to_gdrive():
     wk_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','week_start_date']
     weekly = bkg.groupby(wk_keys).agg(agg_cols).reset_index()
 
-    # Shipper aggregation (화주별) — BKG > 0인 전체 화주
-    shpr_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','BKG_SHPR_CST_NO','BKG_SHPR_CST_ENM','Salesman_POR','고수익태그','grade']
-    shipper = bkg.groupby(shpr_keys).agg(agg_cols).reset_index()
+    # Shipper aggregation (화주별, 주차별) — BKG > 0인 전체 화주
+    shpr_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','week_start_date','BKG_SHPR_CST_NO','BKG_SHPR_CST_ENM','Salesman_POR','고수익태그','grade']
+    shpr_agg_cols = {k:v for k,v in agg_cols.items() if k not in ('w3_ab_fst','w3_ab_norm_fst','w3_cd_fst','w3_cd_norm_fst')}
+    shipper = bkg.groupby(shpr_keys).agg(shpr_agg_cols).reset_index()
     shipper_all = shipper[shipper['fst'] > 0]
     print(f"    shipper: {len(shipper):,} → active: {len(shipper_all):,} rows")
 
