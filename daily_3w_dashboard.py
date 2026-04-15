@@ -341,23 +341,45 @@ def process_snapshot():
 
     # --- Load reference sheets ---
     print("[Process] Loading reference sheets...")
-    wb = openpyxl.load_workbook('booking snapshot.xlsx', data_only=True)
-
     grade_lookup = {}
-    for row in wb['grade'].iter_rows(min_row=2, values_only=True):
-        if row[0] is not None:
-            grade_lookup[str(row[0]).strip()] = str(row[2]).strip() if row[2] else 'C+D'
-
     week_month_lookup = {}
-    for row in wb['\uc8fc\ucc28 \uc6d4'].iter_rows(min_row=2, values_only=True):
-        if row[1] is not None:
-            key = row[1]
-            val = str(row[2]) if row[2] else ''
-            key_str = key.strftime('%Y-%m-%d') if isinstance(key, datetime) else str(key).strip()
-            week_month_lookup[key_str] = val
 
-    wb.close()
-    print(f"  grade: {len(grade_lookup)}, 주차월: {len(week_month_lookup)}")
+    template_file = WORK_DIR / 'booking snapshot.xlsx'
+    if template_file.exists():
+        wb = openpyxl.load_workbook(str(template_file), data_only=True)
+        for row in wb['grade'].iter_rows(min_row=2, values_only=True):
+            if row[0] is not None:
+                grade_lookup[str(row[0]).strip()] = str(row[2]).strip() if row[2] else 'C+D'
+        for row in wb['\uc8fc\ucc28 \uc6d4'].iter_rows(min_row=2, values_only=True):
+            if row[1] is not None:
+                key = row[1]
+                val = str(row[2]) if row[2] else ''
+                key_str = key.strftime('%Y-%m-%d') if isinstance(key, datetime) else str(key).strip()
+                week_month_lookup[key_str] = val
+        wb.close()
+    else:
+        # Fallback: grade from existing cache
+        cache_files = sorted((WORK_DIR / 'output').glob('_cache_*.parquet'), key=os.path.getmtime, reverse=True)
+        if cache_files:
+            _cf = pd.read_parquet(cache_files[0], columns=['BKG_SHPR_CST_NO', 'grade'])
+            for _, r in _cf.drop_duplicates('BKG_SHPR_CST_NO').iterrows():
+                if pd.notna(r['BKG_SHPR_CST_NO']):
+                    grade_lookup[str(r['BKG_SHPR_CST_NO']).strip()] = str(r['grade']).strip() if pd.notna(r['grade']) else 'C+D'
+            print(f"  grade loaded from cache: {len(grade_lookup)}")
+
+    # Fallback: 445 calendar map if template not available
+    if not week_month_lookup:
+        pattern_445 = [4,4,5,4,4,5,4,4,5,4,4,5]
+        for year, first_sun in [(2025, datetime(2025,1,5)), (2026, datetime(2026,1,4)), (2027, datetime(2027,1,3))]:
+            wk = 0
+            for mi, cnt in enumerate(pattern_445):
+                ym = f'{year}{mi+1:02d}'
+                for _ in range(cnt):
+                    week_month_lookup[(first_sun + timedelta(weeks=wk)).strftime('%Y-%m-%d')] = ym
+                    wk += 1
+        print(f"  주차월 from 445 map: {len(week_month_lookup)}")
+    else:
+        print(f"  grade: {len(grade_lookup)}, 주차월: {len(week_month_lookup)}")
 
     # --- Read CSV data ---
     print("[Process] Reading CSV files...")
@@ -366,29 +388,11 @@ def process_snapshot():
     df1.columns = [re.sub(r'[^\x00-\x7F]+$', '', c).strip() for c in df1.columns]
     df2.columns = [re.sub(r'[^\x00-\x7F]+$', '', c).strip() for c in df2.columns]
 
-    df2_dedup = df2.drop_duplicates(subset='BKG_NO', keep='first').set_index('BKG_NO')
-    print(f"  1.csv: {len(df1):,}, 2.csv: {len(df2):,}, addon unique: {len(df2_dedup):,}")
-
-    addon_col_map = {
-        'B': 'LST_Route', 'C': 'LST_VSL', 'D': 'LST_VOY',
-        'G': 'Date_vsl', 'I': 'week_start_date',
-        'J': 'Booking_status', 'K': 'CM1_Booking', 'L': 'LST_TEU',
-        'SM': 'Salesman_POR',
-    }
-
-    def addon_xlookup(bkg_no, col_letter):
-        col_name = addon_col_map.get(col_letter, '')
-        if not col_name or bkg_no not in df2_dedup.index:
-            return None
-        try:
-            val = df2_dedup.loc[bkg_no, col_name]
-            return str(val) if pd.notna(val) else None
-        except:
-            return None
-
-    # --- Compute formulas ---
-    print("[Process] Computing formulas...")
-    output = df1.copy()
+    # Base: 2.csv (모든 부킹), Supplement: 1.csv (상세 정보)
+    df2_dedup = df2.drop_duplicates(subset='BKG_NO', keep='first')
+    df1_dedup = df1.drop_duplicates(subset='BKG_NO', keep='first').set_index('BKG_NO')
+    print(f"  1.csv: {len(df1):,}, 2.csv: {len(df2):,}")
+    print(f"  Base (2.csv unique): {len(df2_dedup):,}, Supplement (1.csv unique): {len(df1_dedup):,}")
 
     def parse_korean_date(s):
         if pd.isna(s) or str(s).strip() in ('', 'nan'):
@@ -396,28 +400,83 @@ def process_snapshot():
         m = re.match(r'(\d{4})\D+(\d{1,2})\D+(\d{1,2})', str(s))
         return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else pd.NaT
 
-    date_N = output['Booking_date'].apply(parse_korean_date)
-    date_O = output['Booking_schedule'].apply(parse_korean_date)
+    def df1_lookup(bkg_no, col):
+        if bkg_no not in df1_dedup.index: return None
+        try:
+            val = df1_dedup.loc[bkg_no, col]
+            return str(val) if pd.notna(val) else None
+        except: return None
+
+    # --- Build output from 2.csv base ---
+    print("[Process] Building output (2.csv base)...")
+    output = pd.DataFrame()
+    bkg_nos = df2_dedup['BKG_NO'].values
+
+    # Columns from 2.csv directly
+    output['BKG_NO'] = bkg_nos
+    # POR from 2.csv
+    por_ctr_col = next((c for c in df2_dedup.columns if 'POR_Country' in c), None)
+    por_port_col = next((c for c in df2_dedup.columns if 'POR_PORT' in c), None)
+    output['POR_CTR_CD'] = df2_dedup[por_ctr_col].values if por_ctr_col else ''
+    output['POR_PLC_CD'] = df2_dedup[por_port_col].values if por_port_col else ''
+    # DLY from 2.csv
+    dly_ctr_col = next((c for c in df2_dedup.columns if 'DLY_Country' in c), None)
+    dly_port_col = next((c for c in df2_dedup.columns if 'DLY_PORT' in c), None)
+    output['DLY_CTR_CD'] = df2_dedup[dly_ctr_col].values if dly_ctr_col else ''
+    output['DLY_PLC_CD'] = df2_dedup[dly_port_col].values if dly_port_col else ''
+    # Status, TEU, CM1, route, vessel from 2.csv
+    output['LST_Status'] = df2_dedup['Booking_status'].values
+    output['CM1'] = df2_dedup['CM1_Booking'].values
+    output['LST_TEU'] = df2_dedup['LST_TEU'].values
+    output['LST_route'] = df2_dedup['LST_Route'].values if 'LST_Route' in df2_dedup.columns else ''
+    output['LST_VSL'] = df2_dedup['LST_VSL'].values if 'LST_VSL' in df2_dedup.columns else ''
+    output['LST_VOY'] = df2_dedup['LST_VOY'].values if 'LST_VOY' in df2_dedup.columns else ''
+    output['Salesman_POR'] = df2_dedup['Salesman_POR'].values if 'Salesman_POR' in df2_dedup.columns else ''
+    # Date_vsl from 2.csv
+    date_vsl_col = next((c for c in df2_dedup.columns if 'Date_vsl' in c), None)
+    output['Actual_Departure_schedule'] = df2_dedup[date_vsl_col].values if date_vsl_col else ''
+
+    # Columns from 1.csv via lookup
+    print("  Looking up 1.csv columns...")
+    for col in ['BKG_SHPR_CST_NO', 'BKG_SHPR_CST_ENM', 'POL_CTR_CD', 'POL_PORT_CD',
+                'POD_CTR_CD', 'POD_PORT_CD', 'VSL_CD', 'VOY_NO',
+                'Booking_date', 'Booking_schedule', 'Cancel_date', 'FST_TEU']:
+        output[col] = pd.Series([df1_lookup(b, col) for b in bkg_nos], dtype=object).fillna('')
+
+    # Fallback: POR/DLY from 1.csv if 2.csv is empty
+    for f2col, f1col in [('POR_CTR_CD','POR_CTR_CD'),('POR_PLC_CD','POR_PLC_CD'),
+                         ('DLY_CTR_CD','DLY_CTR_CD'),('DLY_PLC_CD','DLY_PLC_CD')]:
+        mask = output[f2col].astype(str).str.strip().isin(['','nan'])
+        if mask.any():
+            fb = pd.Series([df1_lookup(b, f1col) for b in bkg_nos], dtype=object).fillna('')
+            output.loc[mask, f2col] = fb[mask]
+
+    # Fallback: Booking_schedule/Booking_date from Date_vsl if 1.csv lookup failed
+    for col in ['Booking_schedule', 'Booking_date']:
+        empty = output[col].astype(str).str.strip().isin(['', 'nan', 'None', 'NaN'])
+        if empty.any():
+            output.loc[empty, col] = output.loc[empty, 'Actual_Departure_schedule']
+            print(f"  {col} fallback to Date_vsl: {empty.sum():,}건")
+
+    # FST_TEU fallback: if empty, use LST_TEU
+    fst_empty = output['FST_TEU'].astype(str).str.strip().isin(['', 'nan', 'None'])
+    output.loc[fst_empty, 'FST_TEU'] = output.loc[fst_empty, 'LST_TEU']
+
     total = len(output)
     bkg_nos = output['BKG_NO'].values
     shpr_codes = output['BKG_SHPR_CST_NO'].values
     dly_ctrs = output['DLY_CTR_CD'].values
 
-    # Bulk lookups
-    addon = {}
-    for letter in ('G', 'J', 'K', 'L', 'B', 'C', 'D', 'SM'):
-        addon[letter] = pd.Series([addon_xlookup(b, letter) for b in bkg_nos], dtype=object)
+    only_in_2 = sum(1 for b in bkg_nos if b not in df1_dedup.index)
+    print(f"  Total: {total:,} (1.csv matched: {total-only_in_2:,}, 2.csv only: {only_in_2:,})")
 
-    output['Actual_Departure_schedule'] = addon['G'].where(addon['G'].notna(), output['Booking_schedule']).values
-    output['LST_Status'] = addon['J'].fillna('').values
-    output['CM1'] = addon['K'].fillna('').values
-    output['LST_TEU'] = addon['L'].fillna('').values
-    output['LST_route'] = addon['B'].fillna('').values
-    output['LST_VSL'] = addon['C'].fillna('').values
-    output['LST_VOY'] = addon['D'].fillna('').values
-    output['Salesman_POR'] = addon['SM'].fillna('').values
+    # --- Compute formulas ---
+    print("[Process] Computing formulas...")
 
-    # week_start_date: Date_vsl(=Actual_Departure_schedule) 기준 일요일로 재계산
+    date_N = output['Booking_date'].apply(parse_korean_date)
+    date_O = output['Booking_schedule'].apply(parse_korean_date)
+
+    # week_start_date: Actual_Departure_schedule 기준 일요일
     print("  Computing week_start_date (from Date_vsl)...")
     date_R = output['Actual_Departure_schedule'].apply(parse_korean_date)
     output['week_start_date'] = [
