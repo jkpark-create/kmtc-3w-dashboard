@@ -935,6 +935,7 @@ def upload_to_gdrive():
         bsa['dest'] = bsa['DLY_Country'].map(_DEST_MAP).fillna(bsa['DLY_Country'])
         bsa['origin'] = bsa['POR_Country']
         bsa_agg = bsa.groupby(['team','origin','POR_PORT','dest','DLY_PORT','YYYYMM','WW'])['teu_bsa'].sum().reset_index()
+        bsa_agg = bsa_agg[bsa_agg['teu_bsa'] > 0]  # teu_bsa=0 records contribute nothing; drop to avoid field-missing issue in JSON
         bsa_data = bsa_agg.to_dict('records')
 
     summary = {
