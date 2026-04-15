@@ -832,56 +832,51 @@ def cb1(team, ori, ori_p, dst, dst_p, view_mode, month, week):
     xl = [ML.get(m, m) for m in bar_ms]
 
     fb = go.Figure()
-    fb.add_bar(x=xl, y=ship_m.values, name='실선적', marker_color=C['pri'], opacity=.85)
-    fb.add_bar(x=xl, y=bsa_m2.values, name='BSA', marker_color=C['bdr'], opacity=.5)
-    fb.add_scatter(x=xl, y=occ_m, name='소석률(실선적/BSA)', yaxis='y2', mode='lines+markers',
-                   connectgaps=False,
-                   line=dict(color=C['ng'], width=2.5), marker=dict(size=8))
-    fb.add_scatter(x=xl, y=w3occ_m, name='3주전실선적/BSA', yaxis='y2', mode='lines+markers',
-                   connectgaps=False,
-                   line=dict(color='#6c5ce7', width=2, dash='dash'), marker=dict(size=6, symbol='diamond'))
+    fb.add_bar(x=xl, y=ship_m.values, name='실선적', marker_color=C['pri'], opacity=.85,
+               text=[f"{v:,.0f}" for v in ship_m.values], textposition='outside', textfont=dict(size=10))
+    fb.add_bar(x=xl, y=bsa_m2.values, name='BSA', marker_color=C['bdr'], opacity=.5,
+               text=[f"{v:,.0f}" for v in bsa_m2.values], textposition='outside', textfont=dict(size=10))
 
     all_bar_vals = list(ship_m.values) + list(bsa_m2.values)
     y1_max = max(all_bar_vals) * 1.3 if any(v > 0 for v in all_bar_vals) else 1000
     occ_vals = [v for v in (occ_m + w3occ_m) if v is not None]
     y2_max = max(110, int(max(occ_vals, default=100) * 1.15 / 10 + 1) * 10)
 
-    # --- Non-overlapping label annotations ---
-    _label_series = [
-        (ship_m.values, 'y',  lambda v: f"{v:,.0f}",  C['pri']),
-        (bsa_m2.values, 'y',  lambda v: f"{v:,.0f}",  C['mt']),
-        (occ_m,         'y2', lambda v: f"{v:.0f}%",   C['ng']),
-        (w3occ_m,       'y2', lambda v: f"{v:.0f}%",   '#6c5ce7'),
-    ]
-    _annots = []
-    _min_gap = 0.08  # ~8% of chart height — enough for 9px font on small cards
-    for i, xv in enumerate(xl):
-        pts = []
-        for vals, yax, fmt, col in _label_series:
-            v = vals[i] if i < len(vals) else None
-            if v is None or v != v:
-                continue
-            ym = y1_max if yax == 'y' else y2_max
-            pts.append(dict(yn=v / ym if ym else 0, text=fmt(v), yax=yax, col=col))
-        pts.sort(key=lambda p: p['yn'])
-        # push overlapping labels apart (bottom → top)
-        for j in range(1, len(pts)):
-            if pts[j]['yn'] - pts[j - 1]['yn'] < _min_gap:
-                pts[j]['yn'] = pts[j - 1]['yn'] + _min_gap
-        for p in pts:
-            ym = y1_max if p['yax'] == 'y' else y2_max
-            _annots.append(dict(
-                x=xv, y=p['yn'] * ym, yref=p['yax'], text=p['text'],
-                showarrow=False,
-                font=dict(size=9, color=p['col']),
-                bgcolor='rgba(255,255,255,0.85)', borderpad=2,
-                xanchor='center', yanchor='bottom'))
+    # --- Per-point textposition for scatter labels to avoid overlap ---
+    _G = 0.07
+    _oP, _wP = [], []
+    for i in range(len(xl)):
+        bTops = [v / y1_max + 0.03 for v in [ship_m.values[i], bsa_m2.values[i]] if v > 0]
+        ents = [
+            dict(yn=occ_m[i] / y2_max if occ_m[i] is not None else None, df='top', idx=0),
+            dict(yn=w3occ_m[i] / y2_max if w3occ_m[i] is not None else None, df='bottom', idx=1),
+        ]
+        res = ['top center', 'bottom center']
+        placed = list(bTops)
+        for e in sorted([e for e in ents if e['yn'] is not None], key=lambda e: -e['yn']):
+            ch = e['df']
+            for d in [e['df'], 'bottom' if e['df'] == 'top' else 'top']:
+                ly = e['yn'] + (0.04 if d == 'top' else -0.04)
+                if not any(abs(ly - p) < _G for p in placed):
+                    ch = d; break
+            res[e['idx']] = ch + ' center'
+            placed.append(e['yn'] + (0.04 if ch == 'top' else -0.04))
+        _oP.append(res[0]); _wP.append(res[1])
+
+    fb.add_scatter(x=xl, y=occ_m, name='소석률(실선적/BSA)', yaxis='y2', mode='lines+markers+text',
+                   text=[f'{v:.0f}%' if v is not None else '' for v in occ_m],
+                   textposition=_oP, connectgaps=False,
+                   line=dict(color=C['ng'], width=2.5), marker=dict(size=8))
+    fb.add_scatter(x=xl, y=w3occ_m, name='3주전실선적/BSA', yaxis='y2', mode='lines+markers+text',
+                   text=[f'{v:.0f}%' if v is not None else '' for v in w3occ_m],
+                   textposition=_wP, connectgaps=False,
+                   line=dict(color='#6c5ce7', width=2, dash='dash'), marker=dict(size=6, symbol='diamond'))
 
     fb.update_layout(barmode='group', margin=dict(l=50, r=50, t=30, b=30),
                      yaxis=dict(title='TEU', gridcolor='#f0f0f0', range=[0, y1_max]),
                      yaxis2=dict(title='소석률 %', overlaying='y', side='right', range=[0, y2_max]),
                      legend=dict(orientation='h', y=1.15), plot_bgcolor='#fff', paper_bgcolor='#fff',
-                     annotations=_annots)
+                     uniformtext_minsize=8, uniformtext_mode='hide')
 
     # Occupancy horizontal bar
     # 소석률 바: 실선적/BSA 기준 + (3주전실선적/BSA) 표시
