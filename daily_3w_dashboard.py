@@ -952,6 +952,14 @@ def upload_to_gdrive():
         shutil.copy2(json_path, dist_data)
         print(f"  Copied to {dist_data}")
 
+    # Clean up old output files (keep only latest 2)
+    for pattern in ['booking_snapshot_result_*.xlsx', 'BSA_raw_monthly3W_*.csv',
+                    '_cache_*.parquet', 'dashboard_summary_*.json']:
+        files = sorted(out_dir.glob(pattern), key=os.path.getmtime, reverse=True)
+        for old in files[2:]:
+            old.unlink()
+            print(f"  Cleaned old: {old.name}")
+
     with open(GDRIVE_CREDS_DIR / 'credentials.json') as f:
         creds = _json.load(f)['installed']
     with open(GDRIVE_CREDS_DIR / 'token.json') as f:
@@ -988,12 +996,6 @@ def upload_to_gdrive():
         _upload_file(headers, jf[0], 'dashboard_summary.json')
         # 2. 날짜별 보관 (히스토리 비교용)
         _upload_file(headers, jf[0], f'dashboard_summary_{TODAY_STR}.json')
-        # Copy to dist/ for GitHub Pages hosting
-        dist_dir = WORK_DIR / 'dist'
-        if dist_dir.exists():
-            import shutil
-            shutil.copy2(jf[0], dist_dir / 'data.json')
-            print(f"  Copied to dist/data.json")
 
     print("[Upload] Done.")
 
@@ -1008,7 +1010,8 @@ def _upload_file(headers, local_path, filename):
         headers=headers, params={'q': q, 'fields': 'files(id)'})
     existing = r.json().get('files', [])
 
-    data = open(local_path, 'rb').read()
+    with open(local_path, 'rb') as fh:
+        data = fh.read()
     size = len(data)
 
     if existing:
