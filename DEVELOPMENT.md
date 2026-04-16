@@ -5,7 +5,7 @@
 **목적**: 3주전(WOS-3) 기준 부킹 현황, 소석률, 수익성 분석 대시보드
 **배포**: GitHub Pages 정적 사이트 (https://jkpark-create.github.io/kmtc-3w-dashboard-web/)
 **데이터 소스**: Tableau Server (tableau.ekmtc.com) → Google Drive → GitHub Pages
-**자동화**: Windows Task Scheduler (매일 09:00)
+**자동화**: Windows Task Scheduler (평일 09:03 / 매일 09:00)
 
 ---
 
@@ -22,6 +22,7 @@
     data.json             # 대시보드 데이터 (매일 갱신)
     guide.html            # 사용 가이드
   output/                 # 일일 처리 결과 (최신 2개 유지)
+    grade_latest.csv      # Tableau 분기별 화주 등급 (자동 다운로드/캐시)
   logs/                   # 실행 로그
 ```
 
@@ -49,6 +50,13 @@
 
 ### 3.2 Phase 2: Booking Snapshot 처리
 
+**Grade 데이터 (화주 등급)**:
+- 소스: Tableau `Q_17363223877520/grade` 뷰에서 분기별 자동 다운로드
+- 분기 매핑: Q1=01월, Q2=04월, Q3=07월, Q4=10월 (YYYYMM 파라미터)
+- 캐시: `output/grade_latest.csv` (동일 분기면 재다운로드 안 함)
+- 분류: AB → A+B, CD → C+D, 미매칭 → '' (빈값, 미분류)
+- Fallback: 다운로드 실패 시 기존 parquet 캐시에서 grade 로드
+
 **기본 로직**: 2.csv(Base) + 1.csv(Supplement) 병합
 - 2.csv의 모든 BKG_NO를 base로 사용
 - 1.csv에서 부킹일자, 화주정보, POL/POD 등 보충
@@ -62,11 +70,11 @@
 | Lead_time(Booking) | Booking_schedule - Booking_date → 1W/2W/3W/4W |
 | Lead_time(Actual) | week_start_date(일요일) - Booking_date → WOS/WOS-1/WOS-2/WOS-3 |
 | Lead_time(BKG_Sche) | week_start(BKG_Sche) - Booking_date → WOS/WOS-1/WOS-2/WOS-3 |
-| grade | 화주코드(BKG_SHPR_CST_NO) → grade 시트 참조 → A+B 또는 C+D |
+| grade | 화주코드(BKG_SHPR_CST_NO) → Tableau grade 뷰 참조 → A+B / C+D / '' (미분류) |
 | CM1/TEU | CM1 / LST_TEU (Normal, CM1!=0 건만) |
 | YYYYMM | 445 calendar 기준 (week_start_date → YYYYMM 매핑) |
 | 고/저 | 루트별(POR_PORT+DLY_PORT) 화주 CM1/TEU vs 루트 평균 비교 |
-| 고수익태그 | 전월 기준 선적지별 화주 CM1/TEU vs 선적지 평균 (1~4순위 룩업) |
+| 고수익태그 | 화주+선적지별 최신월 기준 CM1/TEU vs 선적지 평균 (1~4순위 룩업) |
 
 **-3W 필터 (캔슬 제외 조건)**:
 - 조건1: Cancel 상태 + Cancel_date - Booking_date <= 3일 (즉시 캔슬)
@@ -102,7 +110,7 @@
 | 메트릭 | 의미 |
 |--------|------|
 | fst | 전체 BKG (FST_TEU 기준) |
-| norm_fst | 실선적 (Normal 상태, LST_TEU 기준) |
+| norm_fst | 실선적 — 전체 Normal (LST_TEU 기준, 소석률 계산용) |
 | w3_fst | WOS-3 BKG |
 | w3_norm_fst | WOS-3 실선적 |
 | w3_canc_fst | WOS-3 캔슬 |
@@ -112,6 +120,13 @@
 | w2_fst, w1_fst, wos_fst | WOS-2, WOS-1, WOS 각 단계 BKG |
 | cm1_norm | CM1 합계 (Normal + CM1!=0) |
 | lst_norm | LST_TEU 합계 (Normal + CM1!=0, CM1/TEU 계산용) |
+
+**소석률 계산 기준**:
+- 소석률 = norm_fst(전체 Normal 실선적) / BSA
+- norm_fst는 Lead_time 무관하게 **모든 Normal 부킹**의 LST_TEU 합계
+- w3_norm_fst는 WOS-3 마스크 적용된 Normal 실선적 (3주전 실선적률용)
+
+**BSA 집계**: teu_bsa=0인 레코드는 JSON 생성 전 제거 (0값 필드 누락 방지)
 
 **shipper 메트릭**: monthly/weekly와 동일하되 AB/CD 컬럼 제외 (fst, norm_fst도 미포함)
 
@@ -257,21 +272,30 @@ WW = diff + 1
 
 ## 9. 자동화 스케줄
 
-### run_daily.bat (매일 09:00, Windows Task Scheduler)
+### Windows Task Scheduler 등록 작업
+
+| 작업명 | 스케줄 | 실행 대상 | 설명 |
+|--------|--------|-----------|------|
+| **3W_BKG_Dashboard** | 평일(월~금) 09:03 | `cmd /c run_daily.bat` | 주중 대시보드 자동 업데이트 (주력 작업) |
+| **3W_BKG_Dashboard_Daily** | 매일 09:00 | `run_daily.bat` | 일일 백업 작업 |
+| **OBT_Raw_Automation** | 매일 09:00 | `cmd /c obt raw automation\run.bat` | Tableau OBT Raw → Google Sheets 동기화 |
+| **RFQ_GDrive_Sync** | 매일 08:00 | `rfq_tool\gdrive_sync.py` | Google Drive 비딩 파일 동기화 |
+
+### run_daily.bat 실행 흐름
 
 ```
 1. 캐시 정리 (output/_cache_*, dashboard_summary_*)
 2. python daily_3w_dashboard.py
-   Phase 1: Tableau 다운로드 (1.csv, 2.csv, BSA)
+   Phase 1: Tableau 다운로드 (1.csv, 2.csv, BSA, grade)
    Phase 2: Booking Snapshot 처리 → output/booking_snapshot_result_YYYYMMDD.xlsx
    Phase 3: JSON 생성 → dist/data.json, Google Drive 업로드
 3. dist/ git push (data.json 변경 시만)
-4. python send_notification.py (이메일 알림)
+4. python send_notification.py (이메일 알림, 성공/실패 무관 항상 실행)
 ```
 
 ### 파일 정리
 - output/: 각 유형별 최신 2개만 유지 (자동 삭제)
-- Task Scheduler: `3W_BKG_Dashboard_Daily` (매일 09:00)
+- logs/: `run_YYYYMMDD.log` 일별 로그 저장
 
 ---
 
@@ -302,4 +326,17 @@ WW = diff + 1
 1. **BSA 데이터 시점**: Tableau CSV export가 인터랙티브 화면과 다른 시점의 캐시를 반환할 수 있음
 2. **data.json 크기**: 현재 ~71MB (shipper 주차별 데이터 포함). GitHub 100MB 제한 근접
 3. **445 Calendar 하드코딩**: 2025~2027년 시작일이 코드에 고정. 2028년 이후 추가 필요
-4. **booking snapshot.xlsx 부재**: 현재 파일 없음 → cache fallback 사용 (grade 룩업)
+4. **Grade 분기 갱신**: Tableau grade 뷰에서 분기별 자동 다운로드. 뷰 구조 변경 시 컬럼 매칭 로직 수정 필요
+
+---
+
+## 12. 변경 이력 (2026-04-16)
+
+| 변경사항 | 커밋 | 설명 |
+|---------|------|------|
+| Grade 자동 다운로드 | ef411a5 | `booking snapshot.xlsx` 의존 제거 → Tableau 분기별 다운로드 |
+| Grade 기본값 변경 | a083517 | 미분류 화주: 'C+D' → '' (빈값) |
+| 소석률 계산 수정 | 0b194c0 | norm_fst = 전체 Normal (기존: WOS-3 Normal만) |
+| 고수익태그 수정 | a083517 | 전역 최신월 → 화주+선적지별 최신월 기준 |
+| BSA 집계 수정 | ee0ecba | teu_bsa 필드 누락 처리 + 0값 레코드 제거 |
+| 445 Calendar 분리 | ef411a5 | 항상 코드에서 445 맵 생성 (template 의존 제거) |
