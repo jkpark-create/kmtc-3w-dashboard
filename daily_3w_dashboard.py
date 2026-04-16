@@ -935,9 +935,15 @@ def upload_to_gdrive():
     bkg['w3_canc_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_cancel']
     bkg['w3_hi_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi']
     bkg['w3_hi_norm_fst'] = bkg['lst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi'] * bkg['is_normal']
+    # WOS-3 CM1 columns (3주전 BKG 맥락에서 CM1/TEU 계산용)
+    w3_mask = (lt == 'WOS-3').astype(int)
+    cm1_nz = (bkg['cm1v'] != 0).astype(int)
+    bkg['w3_cm1_norm'] = bkg['cm1v'] * w3_mask * bkg['is_normal'] * cm1_nz
+    bkg['w3_lst_norm'] = bkg['lst'] * w3_mask * bkg['is_normal'] * cm1_nz
+    bkg['w3_hi_cm1_norm'] = bkg['cm1v'] * w3_mask * bkg['is_normal'] * bkg['is_hi'] * cm1_nz
+    bkg['w3_hi_lst_norm'] = bkg['lst'] * w3_mask * bkg['is_normal'] * bkg['is_hi'] * cm1_nz
     # AB/CD grade columns
     is_ab = (bkg.get('grade', '') == 'A+B').astype(int)
-    w3_mask = (lt == 'WOS-3').astype(int)
     bkg['w3_ab_fst'] = bkg['fst'] * w3_mask * is_ab
     bkg['w3_ab_norm_fst'] = bkg['lst'] * w3_mask * is_ab * bkg['is_normal']
     bkg['w3_cd_fst'] = bkg['fst'] * w3_mask * (1 - is_ab)
@@ -952,7 +958,8 @@ def upload_to_gdrive():
                 'w3_ab_fst':'sum','w3_ab_norm_fst':'sum','w3_cd_fst':'sum','w3_cd_norm_fst':'sum',
                 'w2_fst':'sum','w2_norm_fst':'sum','w1_fst':'sum','w1_norm_fst':'sum','wos_fst':'sum','wos_norm_fst':'sum',
                 'cm1_norm':'sum','lst_norm':'sum',
-                'hi_cm1_norm':'sum','hi_lst_norm':'sum'}
+                'w3_cm1_norm':'sum','w3_lst_norm':'sum',
+                'w3_hi_cm1_norm':'sum','w3_hi_lst_norm':'sum'}
     monthly = bkg.groupby(gk).agg(agg_cols).reset_index()
 
     # Weekly aggregation (with port detail for port filter support)
@@ -961,7 +968,11 @@ def upload_to_gdrive():
 
     # Shipper aggregation (화주별, 주차별) — BKG > 0인 전체 화주
     shpr_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','week_start_date','BKG_SHPR_CST_NO','BKG_SHPR_CST_ENM','Salesman_POR','고수익태그','grade']
-    shpr_agg_cols = {k:v for k,v in agg_cols.items() if k not in ('w3_ab_fst','w3_ab_norm_fst','w3_cd_fst','w3_cd_norm_fst')}
+    _shpr_excl = ('w3_ab_fst','w3_ab_norm_fst','w3_cd_fst','w3_cd_norm_fst',
+                  'w2_norm_fst','w1_norm_fst','wos_norm_fst',
+                  'cm1_norm','lst_norm','hi_cm1_norm','hi_lst_norm',
+                  'w3_hi_cm1_norm','w3_hi_lst_norm')
+    shpr_agg_cols = {k:v for k,v in agg_cols.items() if k not in _shpr_excl}
     shipper = bkg.groupby(shpr_keys).agg(shpr_agg_cols).reset_index()
     shipper_all = shipper[shipper['fst'] > 0]
     print(f"    shipper: {len(shipper):,} → active: {len(shipper_all):,} rows")
