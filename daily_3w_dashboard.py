@@ -587,14 +587,14 @@ def process_snapshot():
     shpr_agg = valid.groupby(['shpr', 'por', 'dly']).agg(s_cm1=('cm1', 'sum'), s_teu=('teu', 'sum')).reset_index()
     shpr_agg['s_avg'] = shpr_agg['s_cm1'] / shpr_agg['s_teu']
     shpr_agg = shpr_agg.merge(route_agg[['por', 'dly', 'r_avg']], on=['por', 'dly'])
-    shpr_agg['pt'] = shpr_agg.apply(lambda r: '고수익화주' if r['s_avg'] >= r['r_avg'] else '저수익화주', axis=1)
+    shpr_agg['pt'] = shpr_agg.apply(lambda r: '고수익' if r['s_avg'] >= r['r_avg'] else '저수익', axis=1)
     # 룩업 딕셔너리
     pt_lookup = {(r['shpr'], r['por'], r['dly']): r['pt'] for _, r in shpr_agg.iterrows()}
     output['\uace0/\uc800'] = [
         pt_lookup.get((str(s).strip(), str(p).strip(), str(d).strip()), '')
         for s, p, d in zip(output['BKG_SHPR_CST_NO'], output['POR_PLC_CD'], output['DLY_PLC_CD'])]
-    hi_cnt = sum(1 for v in output['\uace0/\uc800'] if v == '고수익화주')
-    lo_cnt = sum(1 for v in output['\uace0/\uc800'] if v == '저수익화주')
+    hi_cnt = sum(1 for v in output['\uace0/\uc800'] if v == '고수익')
+    lo_cnt = sum(1 for v in output['\uace0/\uc800'] if v == '저수익')
 
     # 전월 기준 선적지별 고수익화주 태그
     print("  Computing 고수익태그 (전월 기준)...")
@@ -615,7 +615,7 @@ def process_snapshot():
     shpr_por_month['s_avg'] = shpr_por_month['s_cm1'] / shpr_por_month['s_teu']
     shpr_por_month = shpr_por_month.merge(por_month_avg[['por', 'yyyymm', 'p_avg']], on=['por', 'yyyymm'])
     shpr_por_month['tag'] = shpr_por_month.apply(
-        lambda r: '고수익' if r['s_avg'] >= r['p_avg'] else '저수익', axis=1)
+        lambda r: '고수익화주' if r['s_avg'] >= r['p_avg'] else '저수익화주', axis=1)
 
     # 월 목록 정렬
     all_months = sorted(output['YYYYMM'].dropna().unique())
@@ -652,7 +652,7 @@ def process_snapshot():
     shpr_all_month = valid2.groupby(['shpr', 'yyyymm']).agg(s_cm1=('cm1','sum'), s_teu=('teu','sum')).reset_index()
     shpr_all_month['s_avg'] = shpr_all_month['s_cm1'] / shpr_all_month['s_teu']
     shpr_all_month = shpr_all_month.merge(all_month_avg[['yyyymm','a_avg']], on='yyyymm')
-    shpr_all_month['tag'] = shpr_all_month.apply(lambda r: '고수익' if r['s_avg'] >= r['a_avg'] else '저수익', axis=1)
+    shpr_all_month['tag'] = shpr_all_month.apply(lambda r: '고수익화주' if r['s_avg'] >= r['a_avg'] else '저수익화주', axis=1)
 
     # 3순위: 당월 데이터 (선적지별)
     # → tag_dict_cur: (shpr, por, cur_month) → tag
@@ -695,8 +695,8 @@ def process_snapshot():
 
         # 4순위: grade C+D → 고수익, A+B → 저수익
         g = str(grade_val).strip() if grade_val else ''
-        if g == 'C+D': return '고수익'
-        if g == 'A+B': return '저수익'
+        if g == 'C+D': return '고수익화주'
+        if g == 'A+B': return '저수익화주'
         return ''
 
     # 선적지+화주별 단일 태그 결정 (각 화주+선적지별 최신월 기준)
@@ -724,8 +724,8 @@ def process_snapshot():
     output['고수익태그'] = [
         pair_tag.get((str(s).strip(), str(p).strip()), '')
         for s, p in zip(output['BKG_SHPR_CST_NO'], output['POR_PLC_CD'])]
-    hi_tag = sum(1 for v in output['고수익태그'] if v == '고수익')
-    lo_tag = sum(1 for v in output['고수익태그'] if v == '저수익')
+    hi_tag = sum(1 for v in output['고수익태그'] if v == '고수익화주')
+    lo_tag = sum(1 for v in output['고수익태그'] if v == '저수익화주')
     empty_tag = len(output) - hi_tag - lo_tag
     print(f"  고수익태그: 고수익={hi_tag:,}, 저수익={lo_tag:,}, 미분류={empty_tag:,}")
 
@@ -923,6 +923,9 @@ def upload_to_gdrive():
     bkg['norm_fst'] = bkg['lst'] * bkg['is_normal']
     bkg['cm1_norm'] = bkg['cm1v'] * bkg['is_normal'] * (bkg['cm1v'] != 0).astype(int)
     bkg['lst_norm'] = bkg['lst'] * bkg['is_normal'] * (bkg['cm1v'] != 0).astype(int)
+    # 고수익화주 Normal CM1 / LST_TEU (고수익화주 CM1/TEU 계산용)
+    bkg['hi_cm1_norm'] = bkg['cm1v'] * bkg['is_normal'] * bkg['is_hi'] * (bkg['cm1v'] != 0).astype(int)
+    bkg['hi_lst_norm'] = bkg['lst'] * bkg['is_normal'] * bkg['is_hi'] * (bkg['cm1v'] != 0).astype(int)
 
     # WOS stage columns (Lead_time 마스크 기반, WOS-3 BKG 등)
     for wos, label in [('WOS-3','w3'),('WOS-2','w2'),('WOS-1','w1'),('Week of Sailing (WOS)','wos')]:
@@ -948,7 +951,8 @@ def upload_to_gdrive():
                 'w3_fst':'sum','w3_norm_fst':'sum','w3_canc_fst':'sum','w3_hi_fst':'sum','w3_hi_norm_fst':'sum',
                 'w3_ab_fst':'sum','w3_ab_norm_fst':'sum','w3_cd_fst':'sum','w3_cd_norm_fst':'sum',
                 'w2_fst':'sum','w2_norm_fst':'sum','w1_fst':'sum','w1_norm_fst':'sum','wos_fst':'sum','wos_norm_fst':'sum',
-                'cm1_norm':'sum','lst_norm':'sum'}
+                'cm1_norm':'sum','lst_norm':'sum',
+                'hi_cm1_norm':'sum','hi_lst_norm':'sum'}
     monthly = bkg.groupby(gk).agg(agg_cols).reset_index()
 
     # Weekly aggregation (with port detail for port filter support)
