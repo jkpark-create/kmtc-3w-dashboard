@@ -363,7 +363,7 @@ def process_snapshot():
         wb = openpyxl.load_workbook(str(template_file), data_only=True)
         for row in wb['grade'].iter_rows(min_row=2, values_only=True):
             if row[0] is not None:
-                grade_lookup[str(row[0]).strip()] = str(row[2]).strip() if row[2] else 'C+D'
+                grade_lookup[str(row[0]).strip()] = str(row[2]).strip() if row[2] else ''
         for row in wb['\uc8fc\ucc28 \uc6d4'].iter_rows(min_row=2, values_only=True):
             if row[1] is not None:
                 key = row[1]
@@ -378,7 +378,7 @@ def process_snapshot():
             _cf = pd.read_parquet(cache_files[0], columns=['BKG_SHPR_CST_NO', 'grade'])
             for _, r in _cf.drop_duplicates('BKG_SHPR_CST_NO').iterrows():
                 if pd.notna(r['BKG_SHPR_CST_NO']):
-                    grade_lookup[str(r['BKG_SHPR_CST_NO']).strip()] = str(r['grade']).strip() if pd.notna(r['grade']) else 'C+D'
+                    grade_lookup[str(r['BKG_SHPR_CST_NO']).strip()] = str(r['grade']).strip() if pd.notna(r['grade']) else ''
             print(f"  grade loaded from cache: {len(grade_lookup)}")
 
     # Fallback: 445 calendar map if template not available
@@ -510,7 +510,7 @@ def process_snapshot():
         if pd.notna(d) else '' for d in diff_AC_N]
 
     # grade
-    output['grade'] = [grade_lookup.get(str(s).strip(), 'C+D') if pd.notna(s) else 'C+D' for s in shpr_codes]
+    output['grade'] = [grade_lookup.get(str(s).strip(), '') if pd.notna(s) else '' for s in shpr_codes]
 
     # CM1/TEU
     # CM1, LST_TEU 콤마 제거 (Tableau CSV에서 "1,674" 형식)
@@ -675,15 +675,27 @@ def process_snapshot():
         if g == 'A+B': return '저수익'
         return ''
 
-    # 선적지+화주별 단일 태그 결정 (최신월 기준, 동일 POR+화주에 하나의 태그)
-    # 데이터에서 가장 최신 월을 기준으로 태그 결정
-    latest_month = max(m for m in output['YYYYMM'].unique() if m)
-    unique_pairs = output[['BKG_SHPR_CST_NO','POR_PLC_CD','grade']].drop_duplicates()
+    # 선적지+화주별 단일 태그 결정 (각 화주+선적지별 최신월 기준)
+    unique_pairs = output[['BKG_SHPR_CST_NO','POR_PLC_CD','grade','YYYYMM']].copy()
+    unique_pairs['BKG_SHPR_CST_NO'] = unique_pairs['BKG_SHPR_CST_NO'].astype(str).str.strip()
+    unique_pairs['POR_PLC_CD'] = unique_pairs['POR_PLC_CD'].astype(str).str.strip()
+    unique_pairs['grade'] = unique_pairs['grade'].astype(str).str.strip()
+    unique_pairs['YYYYMM'] = unique_pairs['YYYYMM'].astype(str).str.strip()
+
+    latest_months = unique_pairs[unique_pairs['YYYYMM'] != '']
+    latest_months = latest_months.groupby(['BKG_SHPR_CST_NO','POR_PLC_CD'], dropna=False)['YYYYMM']
+    latest_months = latest_months.max().reset_index().rename(columns={'YYYYMM': 'latest_YYYYMM'})
+
+    unique_pairs = unique_pairs.merge(latest_months, on=['BKG_SHPR_CST_NO','POR_PLC_CD'], how='left')
+    unique_pairs = unique_pairs.drop_duplicates(subset=['BKG_SHPR_CST_NO','POR_PLC_CD'])
+
     pair_tag = {}
     for _, row in unique_pairs.iterrows():
-        s, p, g = str(row['BKG_SHPR_CST_NO']).strip(), str(row['POR_PLC_CD']).strip(), row['grade']
-        tag = get_tag(s, p, latest_month, g)
-        pair_tag[(s, p)] = tag
+        s = row['BKG_SHPR_CST_NO']
+        p = row['POR_PLC_CD']
+        g = row['grade']
+        lm = row['latest_YYYYMM'] if pd.notna(row['latest_YYYYMM']) else ''
+        pair_tag[(s, p)] = get_tag(s, p, lm, g)
 
     output['고수익태그'] = [
         pair_tag.get((str(s).strip(), str(p).strip()), '')
@@ -870,36 +882,43 @@ def upload_to_gdrive():
         if pd.isna(s): return None
         m = _re.match(r'(\d{4})\D+(\d{1,2})\D+(\d{1,2})', str(s))
         return f'{int(m.group(1))}-{int(m.group(2)):02d}-{int(m.group(3)):02d}' if m else None
-    bkg['_ws_key'] = bkg['week_start_date'].apply(_pkd)
-    bkg['YYYYMM'] = bkg['_ws_key'].map(_445).fillna('')
 
-    lt = bkg['Lead_time (BKG_Sche)']
-    normal = bkg['LST_Status'] == 'Normal'
-    cancel = bkg['LST_Status'] == 'Cancel'
-    hi = bkg['profit_type'].astype(str).str.contains('고수익', na=False)
+    # -3W Dashboard: WOS-3 (부킹 3주전) 기준으로만 집계
+    # 실선적도 WOS-3 부킹한 것들의 선적만 포함
+    print("  Filtering to WOS-3 (Lead_time BKG_Sche) for -3W dashboard...")
+    bkg_3w = bkg[bkg['Lead_time (BKG_Sche)'] == 'WOS-3'].copy()
+    print(f"    Total records -> WOS-3 only: {len(bkg):,} -> {len(bkg_3w):,}")
+    
+    bkg_3w['_ws_key'] = bkg_3w['week_start_date'].apply(_pkd)
+    bkg_3w['YYYYMM'] = bkg_3w['_ws_key'].map(_445).fillna('')
 
-    bkg['is_normal'] = normal.astype(int)
-    bkg['is_cancel'] = cancel.astype(int)
-    bkg['is_hi'] = hi.astype(int)
-    bkg['norm_fst'] = bkg['lst'] * bkg['is_normal']
-    bkg['cm1_norm'] = bkg['cm1v'] * bkg['is_normal'] * (bkg['cm1v'] != 0).astype(int)
-    bkg['lst_norm'] = bkg['lst'] * bkg['is_normal'] * (bkg['cm1v'] != 0).astype(int)
+    lt = bkg_3w['Lead_time (BKG_Sche)']  # All should be 'WOS-3'
+    normal = bkg_3w['LST_Status'] == 'Normal'
+    cancel = bkg_3w['LST_Status'] == 'Cancel'
+    hi = bkg_3w['profit_type'].astype(str).str.contains('고수익', na=False)
 
-    # WOS stage columns
+    bkg_3w['is_normal'] = normal.astype(int)
+    bkg_3w['is_cancel'] = cancel.astype(int)
+    bkg_3w['is_hi'] = hi.astype(int)
+    bkg_3w['norm_fst'] = bkg_3w['lst'] * bkg_3w['is_normal']
+    bkg_3w['cm1_norm'] = bkg_3w['cm1v'] * bkg_3w['is_normal'] * (bkg_3w['cm1v'] != 0).astype(int)
+    bkg_3w['lst_norm'] = bkg_3w['lst'] * bkg_3w['is_normal'] * (bkg_3w['cm1v'] != 0).astype(int)
+
+    # WOS stage columns (all WOS-3 for -3W, but keep structure for consistency)
     for wos, label in [('WOS-3','w3'),('WOS-2','w2'),('WOS-1','w1'),('Week of Sailing (WOS)','wos')]:
         mask = (lt == wos).astype(int)
-        bkg[f'{label}_fst'] = bkg['fst'] * mask
-        bkg[f'{label}_norm_fst'] = bkg['lst'] * mask * bkg['is_normal']
-    bkg['w3_canc_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_cancel']
-    bkg['w3_hi_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi']
-    bkg['w3_hi_norm_fst'] = bkg['lst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi'] * bkg['is_normal']
+        bkg_3w[f'{label}_fst'] = bkg_3w['fst'] * mask
+        bkg_3w[f'{label}_norm_fst'] = bkg_3w['lst'] * mask * bkg_3w['is_normal']
+    bkg_3w['w3_canc_fst'] = bkg_3w['fst'] * (lt == 'WOS-3').astype(int) * bkg_3w['is_cancel']
+    bkg_3w['w3_hi_fst'] = bkg_3w['fst'] * (lt == 'WOS-3').astype(int) * bkg_3w['is_hi']
+    bkg_3w['w3_hi_norm_fst'] = bkg_3w['lst'] * (lt == 'WOS-3').astype(int) * bkg_3w['is_hi'] * bkg_3w['is_normal']
     # AB/CD grade columns
-    is_ab = (bkg.get('grade', '') == 'A+B').astype(int)
+    is_ab = (bkg_3w.get('grade', '') == 'A+B').astype(int)
     w3_mask = (lt == 'WOS-3').astype(int)
-    bkg['w3_ab_fst'] = bkg['fst'] * w3_mask * is_ab
-    bkg['w3_ab_norm_fst'] = bkg['lst'] * w3_mask * is_ab * bkg['is_normal']
-    bkg['w3_cd_fst'] = bkg['fst'] * w3_mask * (1 - is_ab)
-    bkg['w3_cd_norm_fst'] = bkg['lst'] * w3_mask * (1 - is_ab) * bkg['is_normal']
+    bkg_3w['w3_ab_fst'] = bkg_3w['fst'] * w3_mask * is_ab
+    bkg_3w['w3_ab_norm_fst'] = bkg_3w['lst'] * w3_mask * is_ab * bkg_3w['is_normal']
+    bkg_3w['w3_cd_fst'] = bkg_3w['fst'] * w3_mask * (1 - is_ab)
+    bkg_3w['w3_cd_norm_fst'] = bkg_3w['lst'] * w3_mask * (1 - is_ab) * bkg_3w['is_normal']
 
     # Monthly aggregation with ports
     gk = ['team','origin','ori_port','dest','dst_port','YYYYMM']
@@ -908,21 +927,21 @@ def upload_to_gdrive():
                 'w3_ab_fst':'sum','w3_ab_norm_fst':'sum','w3_cd_fst':'sum','w3_cd_norm_fst':'sum',
                 'w2_fst':'sum','w2_norm_fst':'sum','w1_fst':'sum','w1_norm_fst':'sum','wos_fst':'sum','wos_norm_fst':'sum',
                 'cm1_norm':'sum','lst_norm':'sum'}
-    monthly = bkg.groupby(gk).agg(agg_cols).reset_index()
+    monthly = bkg_3w.groupby(gk).agg(agg_cols).reset_index()
 
     # Weekly aggregation (with port detail for port filter support)
     wk_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','week_start_date']
-    weekly = bkg.groupby(wk_keys).agg(agg_cols).reset_index()
+    weekly = bkg_3w.groupby(wk_keys).agg(agg_cols).reset_index()
 
     # Shipper aggregation (화주별, 주차별) — BKG > 0인 전체 화주
     shpr_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','week_start_date','BKG_SHPR_CST_NO','BKG_SHPR_CST_ENM','Salesman_POR','고수익태그','grade']
     shpr_agg_cols = {k:v for k,v in agg_cols.items() if k not in ('w3_ab_fst','w3_ab_norm_fst','w3_cd_fst','w3_cd_norm_fst')}
-    shipper = bkg.groupby(shpr_keys).agg(shpr_agg_cols).reset_index()
+    shipper = bkg_3w.groupby(shpr_keys).agg(shpr_agg_cols).reset_index()
     shipper_all = shipper[shipper['fst'] > 0]
     print(f"    shipper: {len(shipper):,} → active: {len(shipper_all):,} rows")
 
     # WPM (445 기준)
-    wpm = bkg[bkg['YYYYMM']!=''].groupby('YYYYMM')['week_start_date'].nunique().to_dict()
+    wpm = bkg_3w[bkg_3w['YYYYMM']!=''].groupby('YYYYMM')['week_start_date'].nunique().to_dict()
 
     # BSA
     bsa_data = []
@@ -941,7 +960,7 @@ def upload_to_gdrive():
     summary = {
         'data_date': TODAY_STR,
         'wpm': wpm,
-        'months': sorted(bkg['YYYYMM'].dropna().unique().tolist()),
+        'months': sorted(bkg_3w['YYYYMM'].dropna().unique().tolist()),
         'monthly': monthly.round(1).to_dict('records'),
         'weekly': weekly.round(1).to_dict('records'),
         'shipper': shipper_all.round(1).to_dict('records'),
