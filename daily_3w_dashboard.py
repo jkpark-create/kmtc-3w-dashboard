@@ -358,19 +358,46 @@ def process_snapshot():
     grade_lookup = {}
     week_month_lookup = {}
 
-    template_file = WORK_DIR / 'booking snapshot.xlsx'
-    if template_file.exists():
-        wb = openpyxl.load_workbook(str(template_file), data_only=True)
-        for row in wb['grade'].iter_rows(min_row=2, values_only=True):
-            if row[0] is not None:
-                grade_lookup[str(row[0]).strip()] = str(row[2]).strip() if row[2] else ''
-        for row in wb['\uc8fc\ucc28 \uc6d4'].iter_rows(min_row=2, values_only=True):
-            if row[1] is not None:
-                key = row[1]
-                val = str(row[2]) if row[2] else ''
-                key_str = key.strftime('%Y-%m-%d') if isinstance(key, datetime) else str(key).strip()
-                week_month_lookup[key_str] = val
-        wb.close()
+    # Grade: Tableau에서 분기별 다운로드 (Q1=01, Q2=04, Q3=07, Q4=10)
+    grade_csv = WORK_DIR / 'output' / 'grade_latest.csv'
+    _quarter_month = {1: '01', 2: '04', 3: '07', 4: '10'}
+    _q = (_today.month - 1) // 3 + 1
+    _grade_yyyymm = f'{_today.year}{_quarter_month[_q]}'
+    _need_download = True
+    if grade_csv.exists():
+        # 기존 파일의 YYYYMM 확인 (첫 줄 주석 또는 파일 내용)
+        _header = grade_csv.read_text(encoding='utf-8').split('\n')[0]
+        if _grade_yyyymm in _header:
+            _need_download = False
+
+    if _need_download:
+        print(f"  Downloading grade from Tableau (YYYYMM={_grade_yyyymm})...")
+        try:
+            _grade_save = WORK_DIR / 'output' / 'grade_download.csv'
+            download_csv_from_tableau('Q_17363223877520', 'grade', _grade_save,
+                                      vf_params={'YYYYMM': _grade_yyyymm})
+            # 첫 줄에 YYYYMM 메타 추가하여 저장
+            _gdata = _grade_save.read_text(encoding='utf-8-sig')
+            grade_csv.write_text(f'# YYYYMM={_grade_yyyymm}\n' + _gdata, encoding='utf-8')
+            _grade_save.unlink(missing_ok=True)
+            print(f"  grade downloaded: {os.path.getsize(grade_csv):,} bytes")
+        except Exception as e:
+            print(f"  grade download failed: {e}")
+
+    if grade_csv.exists():
+        _gdf = pd.read_csv(grade_csv, comment='#', dtype=str)
+        _shpr_col = next((c for c in _gdf.columns if 'Shipper' in c or 'CST' in c), _gdf.columns[0])
+        _grade_col = next((c for c in _gdf.columns if 'grade' in c.lower()), _gdf.columns[-1])
+        for _, r in _gdf.iterrows():
+            code = str(r[_shpr_col]).strip() if pd.notna(r[_shpr_col]) else ''
+            g = str(r[_grade_col]).strip() if pd.notna(r[_grade_col]) else ''
+            if code and code != 'nan':
+                if g == 'AB': grade_lookup[code] = 'A+B'
+                elif g == 'CD': grade_lookup[code] = 'C+D'
+                elif g in ('A+B', 'C+D'): grade_lookup[code] = g
+        _ab = sum(1 for v in grade_lookup.values() if v == 'A+B')
+        _cd = sum(1 for v in grade_lookup.values() if v == 'C+D')
+        print(f"  grade: {len(grade_lookup)} shippers (A+B={_ab}, C+D={_cd})")
     else:
         # Fallback: grade from existing cache
         cache_files = sorted((WORK_DIR / 'output').glob('_cache_*.parquet'), key=os.path.getmtime, reverse=True)
@@ -381,19 +408,16 @@ def process_snapshot():
                     grade_lookup[str(r['BKG_SHPR_CST_NO']).strip()] = str(r['grade']).strip() if pd.notna(r['grade']) else ''
             print(f"  grade loaded from cache: {len(grade_lookup)}")
 
-    # Fallback: 445 calendar map if template not available
-    if not week_month_lookup:
-        pattern_445 = [4,4,5,4,4,5,4,4,5,4,4,5]
-        for year, first_sun in [(2025, datetime(2025,1,5)), (2026, datetime(2026,1,4)), (2027, datetime(2027,1,3))]:
-            wk = 0
-            for mi, cnt in enumerate(pattern_445):
-                ym = f'{year}{mi+1:02d}'
-                for _ in range(cnt):
-                    week_month_lookup[(first_sun + timedelta(weeks=wk)).strftime('%Y-%m-%d')] = ym
-                    wk += 1
-        print(f"  주차월 from 445 map: {len(week_month_lookup)}")
-    else:
-        print(f"  grade: {len(grade_lookup)}, 주차월: {len(week_month_lookup)}")
+    # 445 calendar map
+    pattern_445 = [4,4,5,4,4,5,4,4,5,4,4,5]
+    for year, first_sun in [(2025, datetime(2025,1,5)), (2026, datetime(2026,1,4)), (2027, datetime(2027,1,3))]:
+        wk = 0
+        for mi, cnt in enumerate(pattern_445):
+            ym = f'{year}{mi+1:02d}'
+            for _ in range(cnt):
+                week_month_lookup[(first_sun + timedelta(weeks=wk)).strftime('%Y-%m-%d')] = ym
+                wk += 1
+    print(f"  주차월: {len(week_month_lookup)}")
 
     # --- Read CSV data ---
     print("[Process] Reading CSV files...")
