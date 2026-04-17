@@ -126,7 +126,7 @@
 **소석률 계산 기준**:
 - 소석률 = norm_lst(전체 Normal 실선적) / BSA
 - norm_lst는 Lead_time 무관하게 **모든 Normal 부킹**의 LST_TEU 합계
-- 고수익화주부킹비중 = hi_fst / fst
+- 고수익화주부킹비중 = w3_hi_fst / w3_fst
 
 **BSA 집계**: teu_bsa=0인 레코드는 JSON 생성 전 제거 (0값 필드 누락 방지)
 
