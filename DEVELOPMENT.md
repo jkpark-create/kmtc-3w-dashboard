@@ -111,6 +111,8 @@
 |--------|------|
 | fst | 전체 BKG (FST_TEU 기준) |
 | norm_lst | 실선적 — 전체 Normal (LST_TEU 기준, 소석률 계산용) |
+| hi_fst | 고수익화주 BKG (FST_TEU 기준) |
+| hi_norm_lst | 고수익화주 실선적 (LST_TEU 기준) |
 | w3_fst | WOS-3 BKG |
 | w3_norm_lst | WOS-3 실선적 (LST_TEU 기준) |
 | w3_canc_fst | WOS-3 캔슬 |
@@ -124,7 +126,7 @@
 **소석률 계산 기준**:
 - 소석률 = norm_lst(전체 Normal 실선적) / BSA
 - norm_lst는 Lead_time 무관하게 **모든 Normal 부킹**의 LST_TEU 합계
-- 3주전 실선적률 = w3_norm_lst / w3_fst
+- 고수익화주부킹비중 = hi_fst / fst
 
 **BSA 집계**: teu_bsa=0인 레코드는 JSON 생성 전 제거 (0값 필드 누락 방지)
 

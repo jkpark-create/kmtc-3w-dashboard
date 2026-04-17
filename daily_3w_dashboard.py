@@ -921,6 +921,8 @@ def upload_to_gdrive():
     bkg['is_hi'] = hi.astype(int)
     # 실선적(norm_lst): 전체 Normal (소석률 계산용)
     bkg['norm_lst'] = bkg['lst'] * bkg['is_normal']
+    bkg['hi_fst'] = bkg['fst'] * bkg['is_hi']
+    bkg['hi_norm_lst'] = bkg['lst'] * bkg['is_hi'] * bkg['is_normal']
     bkg['cm1_norm'] = bkg['cm1v'] * bkg['is_normal'] * (bkg['cm1v'] != 0).astype(int)
     bkg['lst_norm'] = bkg['lst'] * bkg['is_normal'] * (bkg['cm1v'] != 0).astype(int)
     # 고수익화주 Normal CM1 / LST_TEU (고수익화주 CM1/TEU 계산용)
@@ -951,7 +953,7 @@ def upload_to_gdrive():
 
     # Monthly aggregation with ports
     gk = ['team','origin','ori_port','dest','dst_port','YYYYMM']
-    agg_cols = {'fst':'sum','norm_lst':'sum',
+    agg_cols = {'fst':'sum','norm_lst':'sum','hi_fst':'sum','hi_norm_lst':'sum',
                 'w3_fst':'sum','w3_norm_lst':'sum','w3_canc_fst':'sum','w3_hi_fst':'sum','w3_hi_norm_lst':'sum',
                 'w3_ab_fst':'sum','w3_ab_norm_lst':'sum','w3_cd_fst':'sum','w3_cd_norm_lst':'sum',
                 'w2_fst':'sum','w2_norm_lst':'sum','w1_fst':'sum','w1_norm_lst':'sum','wos_fst':'sum','wos_norm_lst':'sum',
