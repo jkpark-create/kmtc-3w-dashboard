@@ -13,6 +13,8 @@ output/*.csv
 output/*.json
 output/_cache_*.parquet
 logs/
+archive/
+image/
 *.lock
 [[]OBT]*.xlsx
 booking snapshot.xlsx
