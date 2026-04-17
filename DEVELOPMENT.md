@@ -110,30 +110,30 @@
 | 메트릭 | 의미 |
 |--------|------|
 | fst | 전체 BKG (FST_TEU 기준) |
-| norm_fst | 실선적 — 전체 Normal (LST_TEU 기준, 소석률 계산용) |
+| norm_lst | 실선적 — 전체 Normal (LST_TEU 기준, 소석률 계산용) |
 | w3_fst | WOS-3 BKG |
-| w3_norm_fst | WOS-3 실선적 |
+| w3_norm_lst | WOS-3 실선적 (LST_TEU 기준) |
 | w3_canc_fst | WOS-3 캔슬 |
 | w3_hi_fst | WOS-3 고수익화주 BKG |
-| w3_hi_norm_fst | WOS-3 고수익화주 실선적 |
+| w3_hi_norm_lst | WOS-3 고수익화주 실선적 |
 | w3_ab_fst / w3_cd_fst | WOS-3 A+B / C+D 등급 BKG |
 | w2_fst, w1_fst, wos_fst | WOS-2, WOS-1, WOS 각 단계 BKG |
 | cm1_norm | CM1 합계 (Normal + CM1!=0) |
 | lst_norm | LST_TEU 합계 (Normal + CM1!=0, CM1/TEU 계산용) |
 
 **소석률 계산 기준**:
-- 소석률 = norm_fst(전체 Normal 실선적) / BSA
-- norm_fst는 Lead_time 무관하게 **모든 Normal 부킹**의 LST_TEU 합계
-- w3_norm_fst는 WOS-3 마스크 적용된 Normal 실선적 (3주전 실선적률용)
+- 소석률 = norm_lst(전체 Normal 실선적) / BSA
+- norm_lst는 Lead_time 무관하게 **모든 Normal 부킹**의 LST_TEU 합계
+- 3주전 실선적률 = w3_norm_lst / w3_fst
 
 **BSA 집계**: teu_bsa=0인 레코드는 JSON 생성 전 제거 (0값 필드 누락 방지)
 
-**shipper 메트릭**: monthly/weekly와 동일하되 AB/CD 컬럼 제외 (fst, norm_fst도 미포함)
+**shipper 메트릭**: monthly/weekly와 동일하되 AB/CD 컬럼 제외
 
 **JSON 최적화**:
 - 0값 키 제거 (71MB, 약 190만 개 0 엔트리 삭제)
 - 소수점 → 정수 반올림
-- shipper에서 fst/norm_fst 제외 (w3+w2+w1+wos로 유도 가능)
+- LST_TEU 기준 실선적 컬럼은 `*_lst` 접미사를 사용
 
 ---
 
@@ -336,7 +336,7 @@ WW = diff + 1
 |---------|------|------|
 | Grade 자동 다운로드 | ef411a5 | `booking snapshot.xlsx` 의존 제거 → Tableau 분기별 다운로드 |
 | Grade 기본값 변경 | a083517 | 미분류 화주: 'C+D' → '' (빈값) |
-| 소석률 계산 수정 | 0b194c0 | norm_fst = 전체 Normal (기존: WOS-3 Normal만) |
+| 소석률 계산 수정 | 0b194c0 | norm_lst = 전체 Normal (기존: WOS-3 Normal만) |
 | 고수익태그 수정 | a083517 | 전역 최신월 → 화주+선적지별 최신월 기준 |
 | BSA 집계 수정 | ee0ecba | teu_bsa 필드 누락 처리 + 0값 레코드 제거 |
 | 445 Calendar 분리 | ef411a5 | 항상 코드에서 445 맵 생성 (template 의존 제거) |

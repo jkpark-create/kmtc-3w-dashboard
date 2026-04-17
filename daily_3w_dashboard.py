@@ -919,8 +919,8 @@ def upload_to_gdrive():
     bkg['is_normal'] = normal.astype(int)
     bkg['is_cancel'] = cancel.astype(int)
     bkg['is_hi'] = hi.astype(int)
-    # 실선적(norm_fst): 전체 Normal (소석률 계산용)
-    bkg['norm_fst'] = bkg['lst'] * bkg['is_normal']
+    # 실선적(norm_lst): 전체 Normal (소석률 계산용)
+    bkg['norm_lst'] = bkg['lst'] * bkg['is_normal']
     bkg['cm1_norm'] = bkg['cm1v'] * bkg['is_normal'] * (bkg['cm1v'] != 0).astype(int)
     bkg['lst_norm'] = bkg['lst'] * bkg['is_normal'] * (bkg['cm1v'] != 0).astype(int)
     # 고수익화주 Normal CM1 / LST_TEU (고수익화주 CM1/TEU 계산용)
@@ -931,10 +931,10 @@ def upload_to_gdrive():
     for wos, label in [('WOS-3','w3'),('WOS-2','w2'),('WOS-1','w1'),('Week of Sailing (WOS)','wos')]:
         mask = (lt == wos).astype(int)
         bkg[f'{label}_fst'] = bkg['fst'] * mask
-        bkg[f'{label}_norm_fst'] = bkg['lst'] * mask * bkg['is_normal']
+        bkg[f'{label}_norm_lst'] = bkg['lst'] * mask * bkg['is_normal']
     bkg['w3_canc_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_cancel']
     bkg['w3_hi_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi']
-    bkg['w3_hi_norm_fst'] = bkg['lst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi'] * bkg['is_normal']
+    bkg['w3_hi_norm_lst'] = bkg['lst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi'] * bkg['is_normal']
     # WOS-3 CM1 columns (3주전 BKG 맥락에서 CM1/TEU 계산용)
     w3_mask = (lt == 'WOS-3').astype(int)
     cm1_nz = (bkg['cm1v'] != 0).astype(int)
@@ -943,18 +943,18 @@ def upload_to_gdrive():
     # AB/CD grade columns
     is_ab = (bkg.get('grade', '') == 'A+B').astype(int)
     bkg['w3_ab_fst'] = bkg['fst'] * w3_mask * is_ab
-    bkg['w3_ab_norm_fst'] = bkg['lst'] * w3_mask * is_ab * bkg['is_normal']
+    bkg['w3_ab_norm_lst'] = bkg['lst'] * w3_mask * is_ab * bkg['is_normal']
     bkg['w3_cd_fst'] = bkg['fst'] * w3_mask * (1 - is_ab)
-    bkg['w3_cd_norm_fst'] = bkg['lst'] * w3_mask * (1 - is_ab) * bkg['is_normal']
+    bkg['w3_cd_norm_lst'] = bkg['lst'] * w3_mask * (1 - is_ab) * bkg['is_normal']
 
     print(f"    Total: {len(bkg):,}, WOS-3: {(lt=='WOS-3').sum():,}, Normal: {normal.sum():,}")
 
     # Monthly aggregation with ports
     gk = ['team','origin','ori_port','dest','dst_port','YYYYMM']
-    agg_cols = {'fst':'sum','norm_fst':'sum',
-                'w3_fst':'sum','w3_norm_fst':'sum','w3_canc_fst':'sum','w3_hi_fst':'sum','w3_hi_norm_fst':'sum',
-                'w3_ab_fst':'sum','w3_ab_norm_fst':'sum','w3_cd_fst':'sum','w3_cd_norm_fst':'sum',
-                'w2_fst':'sum','w2_norm_fst':'sum','w1_fst':'sum','w1_norm_fst':'sum','wos_fst':'sum','wos_norm_fst':'sum',
+    agg_cols = {'fst':'sum','norm_lst':'sum',
+                'w3_fst':'sum','w3_norm_lst':'sum','w3_canc_fst':'sum','w3_hi_fst':'sum','w3_hi_norm_lst':'sum',
+                'w3_ab_fst':'sum','w3_ab_norm_lst':'sum','w3_cd_fst':'sum','w3_cd_norm_lst':'sum',
+                'w2_fst':'sum','w2_norm_lst':'sum','w1_fst':'sum','w1_norm_lst':'sum','wos_fst':'sum','wos_norm_lst':'sum',
                 'cm1_norm':'sum','lst_norm':'sum',
                 'w3_cm1_norm':'sum','w3_hi_cm1_norm':'sum'}
     monthly = bkg.groupby(gk).agg(agg_cols).reset_index()
@@ -965,8 +965,8 @@ def upload_to_gdrive():
 
     # Shipper aggregation (화주별, 주차별) — BKG > 0인 전체 화주
     shpr_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','week_start_date','BKG_SHPR_CST_NO','BKG_SHPR_CST_ENM','Salesman_POR','고수익태그','grade']
-    _shpr_excl = ('w3_ab_fst','w3_ab_norm_fst','w3_cd_fst','w3_cd_norm_fst',
-                  'w2_norm_fst','w1_norm_fst','wos_norm_fst',
+    _shpr_excl = ('w3_ab_fst','w3_ab_norm_lst','w3_cd_fst','w3_cd_norm_lst',
+                  'w2_norm_lst','w1_norm_lst','wos_norm_lst',
                   'cm1_norm','lst_norm','hi_cm1_norm','hi_lst_norm',
                   'w3_hi_cm1_norm')
     shpr_agg_cols = {k:v for k,v in agg_cols.items() if k not in _shpr_excl}
