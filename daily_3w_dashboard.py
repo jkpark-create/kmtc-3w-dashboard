@@ -569,8 +569,10 @@ def process_snapshot():
     # View 2 can arrive with only Normal/Confirm rows depending on the Tableau
     # workbook state. 17-Apr logic included Cancel rows in BKG/WOS BKG and kept
     # LST_TEU/CM1 at zero, so recover df1-only cancelled bookings from View 1.
+    recovered_cancel_candidate_count = 0
     recovered_cancel_count = 0
     recovered_prev_actual_count = 0
+    recovered_missing_actual_count = 0
     if 'Cancel_date' in df1_unique.columns:
         df2_bkg_set = set(df2_dedup['BKG_NO'].astype(str).str.strip())
         df1_bkg_key = df1_unique['BKG_NO'].astype(str).str.strip()
@@ -580,6 +582,16 @@ def process_snapshot():
             (cancel_date_key != '') &
             (~cancel_date_key.str.lower().isin(['nan', 'none', 'nat']))
         ].copy()
+
+        recovered_cancel_candidate_count = len(cancel_missing)
+        actual_from_prev = pd.Series(dtype=object)
+        if recovered_cancel_candidate_count:
+            prev_actual = load_previous_actual_schedule()
+            actual_from_prev = cancel_missing['BKG_NO'].astype(str).str.strip().map(prev_actual).fillna('')
+            has_actual = actual_from_prev.astype(str).str.strip().ne('')
+            recovered_missing_actual_count = int((~has_actual).sum())
+            cancel_missing = cancel_missing.loc[has_actual].copy()
+            actual_from_prev = actual_from_prev.loc[has_actual]
 
         recovered_cancel_count = len(cancel_missing)
         if recovered_cancel_count:
@@ -607,23 +619,14 @@ def process_snapshot():
                         'Booking_date', 'Booking_schedule', 'Cancel_date', 'FST_TEU']:
                 recovered[col] = take(col)
 
-            prev_actual = load_previous_actual_schedule()
-            recovered_key = recovered['BKG_NO'].astype(str).str.strip()
-            recovered['Actual_Departure_schedule'] = recovered_key.map(prev_actual).fillna('')
-            recovered_prev_actual_count = recovered['Actual_Departure_schedule'].astype(str).str.strip().ne('').sum()
-
-            actual_schedule = recovered['Actual_Departure_schedule'].astype(str).str.strip()
-            booking_schedule = recovered['Booking_schedule'].astype(str).str.strip()
-            fallback_actual = recovered['Booking_date'].astype(str).str.strip()
-            empty_actual = actual_schedule.isin(['', 'nan', 'None', 'NaN'])
-            recovered.loc[empty_actual, 'Actual_Departure_schedule'] = booking_schedule[empty_actual]
-            actual_schedule = recovered['Actual_Departure_schedule'].astype(str).str.strip()
-            empty_actual = actual_schedule.isin(['', 'nan', 'None', 'NaN'])
-            recovered.loc[empty_actual, 'Actual_Departure_schedule'] = fallback_actual[empty_actual]
+            recovered['Actual_Departure_schedule'] = actual_from_prev.astype(object).values
+            recovered_prev_actual_count = recovered_cancel_count
 
             output = pd.concat([output, recovered[output.columns]], ignore_index=True)
-    print(f"  Recovered Cancel rows from 1.csv only: {recovered_cancel_count:,}")
+    print(f"  Recovered Cancel candidates from 1.csv only: {recovered_cancel_candidate_count:,}")
+    print(f"  Recovered Cancel rows with actual schedule: {recovered_cancel_count:,}")
     print(f"  Recovered Cancel actual schedules from previous snapshot: {recovered_prev_actual_count:,}")
+    print(f"  Skipped recovered Cancel rows without actual schedule: {recovered_missing_actual_count:,}")
 
     total = len(output)
     bkg_nos = output['BKG_NO'].values
