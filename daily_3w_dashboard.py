@@ -1053,11 +1053,16 @@ def upload_to_gdrive():
     lt = bkg['Lead_time (BKG_Sche)']
     normal = bkg['LST_Status'] == 'Normal'
     cancel = bkg['LST_Status'] == 'Cancel'
-    hi = bkg['profit_type'].astype(str).str.contains('고수익', na=False)
+    if '고수익태그' in bkg.columns:
+        hi = bkg['고수익태그'].astype(str).str.strip().eq('고수익화주')
+    else:
+        hi = bkg['profit_type'].astype(str).str.contains('고수익', na=False)
+    route_hi = bkg['profit_type'].astype(str).str.contains('고수익', na=False)
 
     bkg['is_normal'] = normal.astype(int)
     bkg['is_cancel'] = cancel.astype(int)
     bkg['is_hi'] = hi.astype(int)
+    bkg['is_route_hi'] = route_hi.astype(int)
     # 실선적(norm_lst): 전체 Normal (소석률 계산용)
     bkg['norm_lst'] = bkg['lst'] * bkg['is_normal']
     bkg['hi_fst'] = bkg['fst'] * bkg['is_hi']
@@ -1076,6 +1081,7 @@ def upload_to_gdrive():
     bkg['w3_canc_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_cancel']
     bkg['w3_hi_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi']
     bkg['w3_hi_norm_lst'] = bkg['lst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi'] * bkg['is_normal']
+    bkg['w3_route_hi_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_route_hi']
     # WOS-3 CM1 columns (3주전 BKG 맥락에서 CM1/TEU 계산용)
     w3_mask = (lt == 'WOS-3').astype(int)
     cm1_nz = (bkg['cm1v'] != 0).astype(int)
@@ -1094,6 +1100,7 @@ def upload_to_gdrive():
     gk = ['team','origin','ori_port','dest','dst_port','YYYYMM']
     agg_cols = {'fst':'sum','norm_lst':'sum','hi_fst':'sum','hi_norm_lst':'sum',
                 'w3_fst':'sum','w3_norm_lst':'sum','w3_canc_fst':'sum','w3_hi_fst':'sum','w3_hi_norm_lst':'sum',
+                'w3_route_hi_fst':'sum',
                 'w3_ab_fst':'sum','w3_ab_norm_lst':'sum','w3_cd_fst':'sum','w3_cd_norm_lst':'sum',
                 'w2_fst':'sum','w2_norm_lst':'sum','w1_fst':'sum','w1_norm_lst':'sum','wos_fst':'sum','wos_norm_lst':'sum',
                 'cm1_norm':'sum','lst_norm':'sum',
@@ -1176,6 +1183,10 @@ def upload_to_gdrive():
     if dist_data.parent.exists():
         shutil.copy2(json_path, dist_data)
         print(f"  Copied to {dist_data}")
+
+    if os.environ.get('SKIP_GDRIVE_UPLOAD') == '1':
+        print("[Upload] SKIP_GDRIVE_UPLOAD=1; local summary built, remote upload skipped.")
+        return
 
     # Clean up old output files (keep only latest 2)
     for pattern in ['booking_snapshot_result_*.csv', 'booking_snapshot_result_*.xlsx', 'BSA_raw_monthly3W_*.csv',

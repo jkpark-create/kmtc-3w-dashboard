@@ -111,13 +111,14 @@
 |--------|------|
 | fst | 전체 BKG (FST_TEU 기준) |
 | norm_lst | 실선적 — 전체 Normal (LST_TEU 기준, 소석률 계산용) |
-| hi_fst | 고수익화주 BKG (FST_TEU 기준) |
-| hi_norm_lst | 고수익화주 실선적 (LST_TEU 기준) |
+| hi_fst | 고수익화주 BKG (`고수익태그` 기준, FST_TEU) |
+| hi_norm_lst | 고수익화주 실선적 (`고수익태그` 기준, LST_TEU) |
 | w3_fst | WOS-3 BKG |
 | w3_norm_lst | WOS-3 실선적 (LST_TEU 기준) |
 | w3_canc_fst | WOS-3 캔슬 |
-| w3_hi_fst | WOS-3 고수익화주 BKG |
-| w3_hi_norm_lst | WOS-3 고수익화주 실선적 |
+| w3_hi_fst | WOS-3 고수익화주 BKG (`고수익태그` 기준) |
+| w3_hi_norm_lst | WOS-3 고수익화주 실선적 (LST_TEU 기준) |
+| w3_route_hi_fst | WOS-3 구간별 고수익 BKG (`고/저` 기준) |
 | w3_ab_fst / w3_cd_fst | WOS-3 A+B / C+D 등급 BKG |
 | w2_fst, w1_fst, wos_fst | WOS-2, WOS-1, WOS 각 단계 BKG |
 | cm1_norm | CM1 합계 (Normal + CM1!=0) |
@@ -127,13 +128,14 @@
 - 소석률 = norm_lst(전체 Normal 실선적) / BSA
 - norm_lst는 Lead_time 무관하게 **모든 Normal 부킹**의 LST_TEU 합계
 - 고수익화주부킹비중 = w3_hi_fst / w3_fst
+- WOS 단계별 실선적률 = LST_TEU / FST_TEU. 최종 선적 TEU가 최초 부킹 TEU보다 커지면 100%를 넘을 수 있음
 
 **BSA 집계**: teu_bsa=0인 레코드는 JSON 생성 전 제거 (0값 필드 누락 방지)
 
 **shipper 메트릭**: monthly/weekly와 동일하되 AB/CD 컬럼 제외
 
 **JSON 최적화**:
-- 0값 키 제거 (71MB, 약 190만 개 0 엔트리 삭제)
+- 0값 키 제거 (현재 약 81MB, 약 190만 개 0 엔트리 삭제)
 - 소수점 → 정수 반올림
 - LST_TEU 기준 실선적 컬럼은 `*_lst` 접미사를 사용
 
@@ -250,7 +252,7 @@ WW = diff + 1
 - Image-8 요약 테이블 (최근 3개월 × 도착지별)
 
 ### Tab 2: 부킹 트렌드 (Sub-tabs)
-- **지역별**: 3주전 BKG + BSA/소석률 테이블, 주차별 차트, 고수익 비중 추이
+- **지역별**: 3주전 BKG + BSA/소석률 테이블, 주차별 차트, 구간별 고수익 비중 + 고수익화주 비중 추이
 - **화주별**: 화주별 BKG/실선적/CM1/영업사원 테이블
 - **영업사원별**: 영업사원별 BKG/실선적/화주수/CM1
 - **AB vs CD**: A+B/C+D 등급별 BKG/실선적률 비교 + Analysis Guide
@@ -326,13 +328,13 @@ WW = diff + 1
 ## 11. 알려진 제한사항
 
 1. **BSA 데이터 시점**: Tableau CSV export가 인터랙티브 화면과 다른 시점의 캐시를 반환할 수 있음
-2. **data.json 크기**: 현재 ~71MB (shipper 주차별 데이터 포함). GitHub 100MB 제한 근접
+2. **data.json 크기**: 현재 ~81MB (shipper 주차별 데이터 포함). GitHub 100MB 제한 근접
 3. **445 Calendar 하드코딩**: 2025~2027년 시작일이 코드에 고정. 2028년 이후 추가 필요
 4. **Grade 분기 갱신**: Tableau grade 뷰에서 분기별 자동 다운로드. 뷰 구조 변경 시 컬럼 매칭 로직 수정 필요
 
 ---
 
-## 12. 변경 이력 (2026-04-16)
+## 12. 변경 이력 (2026-04-21)
 
 | 변경사항 | 커밋 | 설명 |
 |---------|------|------|
@@ -341,4 +343,5 @@ WW = diff + 1
 | 소석률 계산 수정 | 0b194c0 | norm_lst = 전체 Normal (기존: WOS-3 Normal만) |
 | 고수익태그 수정 | a083517 | 전역 최신월 → 화주+선적지별 최신월 기준 |
 | BSA 집계 수정 | ee0ecba | teu_bsa 필드 누락 처리 + 0값 레코드 제거 |
+| 고수익화주 집계 수정 | local | hi/w3_hi 메트릭을 `고수익태그` 기준으로 계산, 구간별 고수익은 w3_route_hi_fst로 분리 |
 | 445 Calendar 분리 | ef411a5 | 항상 코드에서 445 맵 생성 (template 의존 제거) |
