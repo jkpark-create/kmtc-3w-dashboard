@@ -19,7 +19,7 @@
 - 구간별 고수익 부킹은 별도 필드 `w3_route_hi_fst`로 분리한다.
 - 퍼센트 계산은 실제값을 그대로 표시한다. 100% 초과를 숨기거나 100%로 cap하지 않는다.
 - 웹 가이드에는 `BKG/BSA`와 `LST_TEU/FST_TEU` 지표가 100%를 초과할 수 있는 사유를 명시한다.
-- 화주명 컬럼은 전체명이 셀 안에 들어가도록 줄바꿈 표시하고, 다수 영업사원명은 앞 2명 + `...`로 축약한다.
+- 화주명 컬럼은 줄바꿈 없이 한 줄로 표시하고, 다수 영업사원명은 앞 2명 + `...`로 축약한다.
 
 ## 변경 파일
 
@@ -41,6 +41,7 @@
 - main repo: `eda7ca5 Fix WOS-3 high shipper aggregation`
 - web repo: `201c99d Fix WOS-3 ratio logic and guide`
 - web repo: `9e274a1 Update guide UI documentation`
+- web repo: `82fc604 Show shipper names on one line`
 
 ## 후속 확인사항
 
