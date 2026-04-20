@@ -13,7 +13,8 @@ from pathlib import Path
 
 warnings.filterwarnings('ignore')
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-sys.stdout.reconfigure(encoding='utf-8')
+sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
+sys.stderr.reconfigure(encoding='utf-8', line_buffering=True)
 
 # Load .env if exists
 _env = Path(__file__).parent / '.env'
@@ -209,6 +210,9 @@ def ensure_temp_workbook(s, api_ver, site_id):
 def download_csv_from_tableau(content_url, view_name, save_path, vf_params=None):
     """Download CSV from Tableau view using Playwright JS navigation."""
     from playwright.sync_api import sync_playwright
+    save_path = Path(save_path)
+    tmp_path = save_path.with_name(f'{save_path.name}.download')
+    tmp_path.unlink(missing_ok=True)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -241,10 +245,40 @@ def download_csv_from_tableau(content_url, view_name, save_path, vf_params=None)
         with page.expect_download(timeout=1800000) as dl_info:
             page.evaluate(f'window.location.href = "{csv_url}"')
         download = dl_info.value
-        download.save_as(str(save_path))
+        download.save_as(str(tmp_path))
+        os.replace(tmp_path, save_path)
 
         browser.close()
     return os.path.getsize(save_path)
+
+
+def count_csv_rows(path):
+    """Count downloaded UTF-8 CSV rows without materializing the file."""
+    with open(path, 'r', encoding='utf-8-sig', newline='') as f:
+        return max(sum(1 for _ in csv.reader(f)) - 1, 0)
+
+
+def read_tableau_csv(path):
+    """Read current UTF-8 Tableau CSVs, with fallback for older UTF-16 TSV files."""
+    path = Path(path)
+    with path.open('rb') as f:
+        sample = f.read(4)
+    if sample.startswith(b'\xff\xfe') or b'\x00' in sample:
+        return pd.read_csv(path, encoding='utf-16', sep='\t', dtype=str)
+    return pd.read_csv(path, encoding='utf-8-sig', dtype=str)
+
+
+def drop_tableau_total_rows(df, label):
+    """Drop Tableau grand-total rows that look like regular CSV records."""
+    total_markers = {'전체', 'Total', 'Grand Total'}
+    mask = pd.Series(False, index=df.index)
+    for col in ['BKG_NO', 'Booking_status', 'LST_Status']:
+        if col in df.columns:
+            mask = mask | df[col].astype(str).str.strip().isin(total_markers)
+    if mask.any():
+        print(f"  {label}: dropped Tableau total rows: {mask.sum():,}")
+        return df.loc[~mask].copy()
+    return df
 
 
 def download_all():
@@ -259,32 +293,17 @@ def download_all():
 
     # 2. Download View 1 (1.csv)
     print("[2/3] Downloading View 1 (1.csv)...")
-    size = download_csv_from_tableau(wb_url, '1', WORK_DIR / '1_raw.csv')
-    # Convert to UTF-16 tab-separated
-    rows = []
-    with open(WORK_DIR / '1_raw.csv', 'r', encoding='utf-8-sig') as f:
-        for row in csv.reader(f):
-            rows.append(row)
-    with open(WORK_DIR / '1.csv', 'w', encoding='utf-16', newline='') as f:
-        writer = csv.writer(f, delimiter='\t')
-        for row in rows:
-            writer.writerow(row)
-    os.remove(WORK_DIR / '1_raw.csv')
-    print(f"  1.csv: {os.path.getsize(WORK_DIR / '1.csv'):,} bytes ({len(rows)-1:,} rows)")
+    path1 = WORK_DIR / '1.csv'
+    size = download_csv_from_tableau(wb_url, '1', path1)
+    rows = count_csv_rows(path1)
+    print(f"  1.csv: {size:,} bytes ({rows:,} rows)")
 
     # 3. Download View 2 (2.csv)
     print("[3/3] Downloading View 2 (2.csv)...")
-    size = download_csv_from_tableau(wb_url, '2', WORK_DIR / '2_raw.csv')
-    rows = []
-    with open(WORK_DIR / '2_raw.csv', 'r', encoding='utf-8-sig') as f:
-        for row in csv.reader(f):
-            rows.append(row)
-    with open(WORK_DIR / '2.csv', 'w', encoding='utf-16', newline='') as f:
-        writer = csv.writer(f, delimiter='\t')
-        for row in rows:
-            writer.writerow(row)
-    os.remove(WORK_DIR / '2_raw.csv')
-    print(f"  2.csv: {os.path.getsize(WORK_DIR / '2.csv'):,} bytes ({len(rows)-1:,} rows)")
+    path2 = WORK_DIR / '2.csv'
+    size = download_csv_from_tableau(wb_url, '2', path2)
+    rows = count_csv_rows(path2)
+    print(f"  2.csv: {size:,} bytes ({rows:,} rows)")
 
 
 def download_bsa():
@@ -321,7 +340,7 @@ def download_bsa():
         for team in ['OBT', 'EST', 'IST', 'JBT']:
             csv_url = (f'{TABLEAU_SERVER}/views/{BSA_VIEW_URL}.csv'
                        f'?vf_YYYY={yyyy_filter}&vf_YYYYMM={yyyymm_all}&Sales+Team={team}')
-            print(f"  Downloading BSA: {team}...", end=' ')
+            print(f"  Downloading BSA: {team}...", end=' ', flush=True)
             with page.expect_download(timeout=600000) as dl_info:
                 page.evaluate(f'window.location.href = "{csv_url}"')
             download = dl_info.value
@@ -421,16 +440,23 @@ def process_snapshot():
 
     # --- Read CSV data ---
     print("[Process] Reading CSV files...")
-    df1 = pd.read_csv('1.csv', encoding='utf-16', sep='\t', dtype=str)
-    df2 = pd.read_csv('2.csv', encoding='utf-16', sep='\t', dtype=str)
+    df1 = read_tableau_csv(WORK_DIR / '1.csv')
+    df2 = read_tableau_csv(WORK_DIR / '2.csv')
     df1.columns = [re.sub(r'[^\x00-\x7F]+$', '', c).strip() for c in df1.columns]
     df2.columns = [re.sub(r'[^\x00-\x7F]+$', '', c).strip() for c in df2.columns]
+    df1 = drop_tableau_total_rows(df1, '1.csv')
+    df2 = drop_tableau_total_rows(df2, '2.csv')
 
     # Base: 2.csv (모든 부킹), Supplement: 1.csv (상세 정보)
     df2_dedup = df2.drop_duplicates(subset='BKG_NO', keep='first')
-    df1_dedup = df1.drop_duplicates(subset='BKG_NO', keep='first').set_index('BKG_NO')
+    df1_unique = df1.drop_duplicates(subset='BKG_NO', keep='first')
+    df1_dedup = df1_unique.set_index('BKG_NO')
     print(f"  1.csv: {len(df1):,}, 2.csv: {len(df2):,}")
     print(f"  Base (2.csv unique): {len(df2_dedup):,}, Supplement (1.csv unique): {len(df1_dedup):,}")
+    if 'Booking_status' in df2_dedup.columns:
+        status_mix = df2_dedup['Booking_status'].astype(str).str.strip().value_counts().head(10)
+        status_msg = ', '.join(f'{k}={v:,}' for k, v in status_mix.items())
+        print(f"  2.csv status mix: {status_msg}")
 
     def parse_korean_date(s):
         if pd.isna(s) or str(s).strip() in ('', 'nan'):
@@ -444,6 +470,46 @@ def process_snapshot():
             val = df1_dedup.loc[bkg_no, col]
             return str(val) if pd.notna(val) else None
         except: return None
+
+    def load_previous_actual_schedule():
+        out_dir = WORK_DIR / 'output'
+
+        def snapshot_date(path):
+            m = re.search(r'(\d{8})', path.stem)
+            return m.group(1) if m else ''
+
+        candidates = []
+        for pattern in ['_cache_*.parquet', 'booking_snapshot_result_*.csv',
+                        'booking_snapshot_result_*.xlsx']:
+            for path in out_dir.glob(pattern):
+                dd = snapshot_date(path)
+                if dd and dd < TODAY_STR:
+                    candidates.append((dd, path.stat().st_mtime, path))
+
+        for _, _, path in sorted(candidates, reverse=True):
+            try:
+                cols = ['BKG_NO', 'Actual_Departure_schedule']
+                if path.suffix.lower() == '.parquet':
+                    prev = pd.read_parquet(path, columns=cols)
+                elif path.suffix.lower() == '.csv':
+                    prev = pd.read_csv(path, dtype=str, encoding='utf-8-sig',
+                                       keep_default_na=False, usecols=cols)
+                else:
+                    prev = pd.read_excel(path, dtype=str, keep_default_na=False,
+                                         usecols=cols)
+                prev['BKG_NO'] = prev['BKG_NO'].astype(str).str.strip()
+                prev['Actual_Departure_schedule'] = (
+                    prev['Actual_Departure_schedule'].fillna('').astype(str).str.strip()
+                )
+                prev = prev[prev['BKG_NO'].ne('') & prev['Actual_Departure_schedule'].ne('')]
+                prev = prev.drop_duplicates('BKG_NO', keep='last')
+                lookup = dict(zip(prev['BKG_NO'], prev['Actual_Departure_schedule']))
+                print(f"  Previous actual schedule lookup: {path.name} ({len(lookup):,} rows)")
+                return lookup
+            except Exception as e:
+                print(f"  Previous actual schedule lookup skipped ({path.name}): {e}")
+        print("  Previous actual schedule lookup: none")
+        return {}
 
     # --- Build output from 2.csv base ---
     print("[Process] Building output (2.csv base)...")
@@ -499,6 +565,65 @@ def process_snapshot():
     # FST_TEU fallback: if empty, use LST_TEU
     fst_empty = output['FST_TEU'].astype(str).str.strip().isin(['', 'nan', 'None'])
     output.loc[fst_empty, 'FST_TEU'] = output.loc[fst_empty, 'LST_TEU']
+
+    # View 2 can arrive with only Normal/Confirm rows depending on the Tableau
+    # workbook state. 17-Apr logic included Cancel rows in BKG/WOS BKG and kept
+    # LST_TEU/CM1 at zero, so recover df1-only cancelled bookings from View 1.
+    recovered_cancel_count = 0
+    recovered_prev_actual_count = 0
+    if 'Cancel_date' in df1_unique.columns:
+        df2_bkg_set = set(df2_dedup['BKG_NO'].astype(str).str.strip())
+        df1_bkg_key = df1_unique['BKG_NO'].astype(str).str.strip()
+        missing_from_2 = df1_unique.loc[~df1_bkg_key.isin(df2_bkg_set)].copy()
+        cancel_date_key = missing_from_2['Cancel_date'].fillna('').astype(str).str.strip()
+        cancel_missing = missing_from_2[
+            (cancel_date_key != '') &
+            (~cancel_date_key.str.lower().isin(['nan', 'none', 'nat']))
+        ].copy()
+
+        recovered_cancel_count = len(cancel_missing)
+        if recovered_cancel_count:
+            def take(col, default=''):
+                if col in cancel_missing.columns:
+                    return cancel_missing[col].astype(object).values
+                return [default] * recovered_cancel_count
+
+            recovered = pd.DataFrame(index=cancel_missing.index)
+            recovered['BKG_NO'] = take('BKG_NO')
+            recovered['POR_CTR_CD'] = take('POR_CTR_CD')
+            recovered['POR_PLC_CD'] = take('POR_PLC_CD')
+            recovered['DLY_CTR_CD'] = take('DLY_CTR_CD')
+            recovered['DLY_PLC_CD'] = take('DLY_PLC_CD')
+            recovered['LST_Status'] = 'Cancel'
+            recovered['CM1'] = ''
+            recovered['LST_TEU'] = '0'
+            recovered['LST_route'] = ''
+            recovered['LST_VSL'] = take('VSL_CD')
+            recovered['LST_VOY'] = take('VOY_NO')
+            recovered['Salesman_POR'] = ''
+
+            for col in ['BKG_SHPR_CST_NO', 'BKG_SHPR_CST_ENM', 'POL_CTR_CD', 'POL_PORT_CD',
+                        'POD_CTR_CD', 'POD_PORT_CD', 'VSL_CD', 'VOY_NO',
+                        'Booking_date', 'Booking_schedule', 'Cancel_date', 'FST_TEU']:
+                recovered[col] = take(col)
+
+            prev_actual = load_previous_actual_schedule()
+            recovered_key = recovered['BKG_NO'].astype(str).str.strip()
+            recovered['Actual_Departure_schedule'] = recovered_key.map(prev_actual).fillna('')
+            recovered_prev_actual_count = recovered['Actual_Departure_schedule'].astype(str).str.strip().ne('').sum()
+
+            actual_schedule = recovered['Actual_Departure_schedule'].astype(str).str.strip()
+            booking_schedule = recovered['Booking_schedule'].astype(str).str.strip()
+            fallback_actual = recovered['Booking_date'].astype(str).str.strip()
+            empty_actual = actual_schedule.isin(['', 'nan', 'None', 'NaN'])
+            recovered.loc[empty_actual, 'Actual_Departure_schedule'] = booking_schedule[empty_actual]
+            actual_schedule = recovered['Actual_Departure_schedule'].astype(str).str.strip()
+            empty_actual = actual_schedule.isin(['', 'nan', 'None', 'NaN'])
+            recovered.loc[empty_actual, 'Actual_Departure_schedule'] = fallback_actual[empty_actual]
+
+            output = pd.concat([output, recovered[output.columns]], ignore_index=True)
+    print(f"  Recovered Cancel rows from 1.csv only: {recovered_cancel_count:,}")
+    print(f"  Recovered Cancel actual schedules from previous snapshot: {recovered_prev_actual_count:,}")
 
     total = len(output)
     bkg_nos = output['BKG_NO'].values
@@ -826,16 +951,27 @@ def process_snapshot():
     print(f"  조건2 조기부킹캔슬 (R-N>=21, Cancel, P-N<=7): {cond2.sum():,}")
     print(f"  중복제외: {(cond1 & cond2).sum():,}")
     output = output[~exclude].reset_index(drop=True)
+    min_dashboard_month = f'{_today.year}01'
+    month_key = output['YYYYMM'].astype(str).str.strip()
+    out_of_scope = month_key.ne('') & month_key.lt(min_dashboard_month)
+    if out_of_scope.any():
+        print(f"  Dropped months before {min_dashboard_month}: {out_of_scope.sum():,}")
+        output = output[~out_of_scope].reset_index(drop=True)
+        print(f"  Final dashboard scope: {len(output):,}")
     print(f"  Final (대상 only): {len(output):,}")
 
     # --- Save ---
     out_dir = WORK_DIR / 'output'
     out_dir.mkdir(exist_ok=True)
-    out_path = out_dir / f'booking_snapshot_result_{TODAY_STR}.xlsx'
+    out_path = out_dir / f'booking_snapshot_result_{TODAY_STR}.csv'
+    cache_path = out_dir / f'_cache_{TODAY_STR}.parquet'
+    output = output.fillna('').astype(str)
     print(f"[Process] Saving {out_path.name}...")
-    with pd.ExcelWriter(str(out_path), engine='openpyxl') as writer:
-        output.to_excel(writer, sheet_name='raw', index=False)
+    output.to_csv(out_path, index=False, encoding='utf-8-sig')
     print(f"  {out_path.name}: {os.path.getsize(out_path):,} bytes, {len(output):,} rows")
+    print(f"[Process] Saving {cache_path.name}...")
+    output.to_parquet(cache_path, index=False)
+    print(f"  {cache_path.name}: {os.path.getsize(cache_path):,} bytes")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -851,14 +987,14 @@ def upload_to_gdrive():
 
     # --- Build aggregated JSON for static dashboard ---
     out_dir = WORK_DIR / 'output'
-    bf = sorted(out_dir.glob('booking_snapshot_result_*.xlsx'), key=os.path.getmtime, reverse=True)
+    bf = sorted(out_dir.glob('booking_snapshot_result_*.csv'), key=os.path.getmtime, reverse=True)
     sf = sorted(out_dir.glob('BSA_raw_monthly3W_*.csv'), key=os.path.getmtime, reverse=True)
     cache = sorted(out_dir.glob('_cache_*.parquet'), key=os.path.getmtime, reverse=True)
 
     if cache:
         bkg = pd.read_parquet(cache[0])
     elif bf:
-        bkg = pd.read_excel(bf[0], sheet_name='raw', dtype=str)
+        bkg = pd.read_csv(bf[0], dtype=str, encoding='utf-8-sig')
         bkg = bkg.rename(columns={'\uace0/\uc800': 'profit_type'})
         for c in ['FST_TEU','LST_TEU','CM1']:
             bkg[c] = bkg[c].astype(str).str.replace(',','')
@@ -968,9 +1104,9 @@ def upload_to_gdrive():
     # Shipper aggregation (화주별, 주차별) — BKG > 0인 전체 화주
     shpr_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','week_start_date','BKG_SHPR_CST_NO','BKG_SHPR_CST_ENM','Salesman_POR','고수익태그','grade']
     _shpr_excl = ('w3_ab_fst','w3_ab_norm_lst','w3_cd_fst','w3_cd_norm_lst',
-                  'w2_norm_lst','w1_norm_lst','wos_norm_lst',
+                  'w2_fst','w2_norm_lst','w1_fst','w1_norm_lst','wos_fst','wos_norm_lst',
                   'cm1_norm','lst_norm','hi_cm1_norm','hi_lst_norm',
-                  'w3_hi_cm1_norm')
+                  'hi_fst','hi_norm_lst','w3_hi_cm1_norm')
     shpr_agg_cols = {k:v for k,v in agg_cols.items() if k not in _shpr_excl}
     shipper = bkg.groupby(shpr_keys).agg(shpr_agg_cols).reset_index()
     shipper_all = shipper[shipper['fst'] > 0]
@@ -993,14 +1129,36 @@ def upload_to_gdrive():
         bsa_agg = bsa_agg[bsa_agg['teu_bsa'] > 0]  # teu_bsa=0 records contribute nothing; drop to avoid field-missing issue in JSON
         bsa_data = bsa_agg.to_dict('records')
 
+    metric_keys = set(agg_cols) | {'teu_bsa'}
+
+    def compact_records(records):
+        compacted = []
+        for rec in records:
+            out = {}
+            for key, val in rec.items():
+                if pd.isna(val):
+                    continue
+                if key in metric_keys:
+                    try:
+                        num = round(float(val), 1)
+                    except (TypeError, ValueError):
+                        continue
+                    if num == 0:
+                        continue
+                    out[key] = int(num) if float(num).is_integer() else num
+                elif val != '':
+                    out[key] = val
+            compacted.append(out)
+        return compacted
+
     summary = {
         'data_date': TODAY_STR,
         'wpm': wpm,
         'months': sorted(bkg['YYYYMM'].dropna().unique().tolist()),
-        'monthly': monthly.round(1).to_dict('records'),
-        'weekly': weekly.round(1).to_dict('records'),
-        'shipper': shipper_all.round(1).to_dict('records'),
-        'bsa': bsa_data,
+        'monthly': compact_records(monthly.round(1).to_dict('records')),
+        'weekly': compact_records(weekly.round(1).to_dict('records')),
+        'shipper': compact_records(shipper_all.round(1).to_dict('records')),
+        'bsa': compact_records(bsa_data),
     }
 
     json_path = out_dir / f'dashboard_summary_{TODAY_STR}.json'
@@ -1017,7 +1175,7 @@ def upload_to_gdrive():
         print(f"  Copied to {dist_data}")
 
     # Clean up old output files (keep only latest 2)
-    for pattern in ['booking_snapshot_result_*.xlsx', 'BSA_raw_monthly3W_*.csv',
+    for pattern in ['booking_snapshot_result_*.csv', 'booking_snapshot_result_*.xlsx', 'BSA_raw_monthly3W_*.csv',
                     '_cache_*.parquet', 'dashboard_summary_*.json']:
         files = sorted(out_dir.glob(pattern), key=os.path.getmtime, reverse=True)
         for old in files[2:]:
@@ -1037,16 +1195,10 @@ def upload_to_gdrive():
 
     out_dir = WORK_DIR / 'output'
 
-    # Build parquet cache from latest xlsx
-    bf = sorted(out_dir.glob('booking_snapshot_result_*.xlsx'), key=os.path.getmtime, reverse=True)
-    if bf:
-        dd = bf[0].stem.split('_')[-1]
-        cache = out_dir / f'_cache_{dd}.parquet'
-        if not cache.exists():
-            print(f"  Building parquet cache...")
-            bkg = pd.read_excel(bf[0], sheet_name='raw', dtype=str)
-            bkg.to_parquet(cache, index=False)
-        _upload_file(headers, cache, f'_cache_{dd}.parquet')
+    # Upload parquet cache built during processing.
+    cf = sorted(out_dir.glob('_cache_*.parquet'), key=os.path.getmtime, reverse=True)
+    if cf:
+        _upload_file(headers, cf[0], cf[0].name)
 
     # Upload BSA CSV
     sf = sorted(out_dir.glob('BSA_raw_monthly3W_*.csv'), key=os.path.getmtime, reverse=True)
@@ -1109,8 +1261,11 @@ def main():
     print(f"{'='*60}")
 
     print("\n--- Phase 1: Tableau Download ---")
-    download_all()
-    download_bsa()
+    if os.environ.get('SKIP_DOWNLOAD') == '1':
+        print("[Skip] Using existing 1.csv, 2.csv, and latest BSA raw file.")
+    else:
+        download_all()
+        download_bsa()
 
     print("\n--- Phase 2: Booking Snapshot Processing ---")
     process_snapshot()
