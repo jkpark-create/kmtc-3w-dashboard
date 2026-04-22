@@ -42,6 +42,19 @@ def classify_team(origin, dly_raw):
     elif o != 'JP' and d == 'KR': return 'IST'
     else: return 'JBT'
 
+BSA_TEAMS = ('OBT', 'EST', 'IST', 'JBT')
+
+def normalize_bsa_team(df):
+    """Use Tableau's BSA Sales Team field as the canonical team."""
+    team_col = next((c for c in ('Sales Team', 'Sales_Team', 'team', 'Team') if c in df.columns), None)
+    df = df.copy()
+    if team_col:
+        df['team'] = df[team_col].astype(str).str.strip().str.upper()
+    else:
+        df['team'] = [classify_team(str(o).strip(), str(d).strip())
+                      for o, d in zip(df['POR_Country'], df['DLY_Country'])]
+    return df[df['team'].isin(BSA_TEAMS)].copy()
+
 DEST_GROUP_MAP = {'MY':'MY/SG','SG':'MY/SG','AE':'AE','SA':'AE','KW':'AE','QA':'AE','OM':'AE','BH':'AE','IQ':'AE','JO':'AE','EG':'AE'}
 
 # Workbook: booking snapshot(전체) - contentUrl
@@ -335,21 +348,22 @@ def download_bsa():
         time.sleep(15)
 
         # Download BSA per team via Playwright JS navigation
+        import urllib.parse
         import pandas as pd
         all_dfs = []
-        for team in ['OBT', 'EST', 'IST', 'JBT']:
-            csv_url = (f'{TABLEAU_SERVER}/views/{BSA_VIEW_URL}.csv'
-                       f'?vf_YYYY={yyyy_filter}&vf_YYYYMM={yyyymm_all}&Sales+Team={team}')
+        for team in BSA_TEAMS:
+            params = urllib.parse.urlencode({
+                'vf_YYYY': yyyy_filter,
+                'vf_YYYYMM': yyyymm_all,
+                'Sales Team': team,
+            }, safe=',')
+            csv_url = f'{TABLEAU_SERVER}/views/{BSA_VIEW_URL}.csv?{params}'
             print(f"  Downloading BSA: {team}...", end=' ', flush=True)
             with page.expect_download(timeout=600000) as dl_info:
                 page.evaluate(f'window.location.href = "{csv_url}"')
             download = dl_info.value
             tmp_path = download.path()
-            df = pd.read_csv(tmp_path, dtype=str)
-            # Classify team by POR/DLY countries (ignore Tableau's Sales Team parameter)
-            df['team'] = [classify_team(str(o).strip(), str(d).strip())
-                          for o, d in zip(df['POR_Country'], df['DLY_Country'])]
-            # Only keep rows matching the intended team to prevent duplication
+            df = normalize_bsa_team(read_tableau_csv(tmp_path))
             df = df[df['team'] == team]
             print(f"{len(df)} rows")
             all_dfs.append(df)
@@ -1129,6 +1143,7 @@ def upload_to_gdrive():
     bsa_data = []
     if sf:
         bsa = pd.read_csv(sf[0], dtype=str)
+        bsa = normalize_bsa_team(bsa)
         bsa = bsa[bsa['DLY_Country'].str.len() <= 3]
         bsa = bsa[bsa['POR_Country'].str.len() <= 3]
         bsa['teu_bsa'] = pd.to_numeric(bsa['TEU_BSA (Actual)'].str.replace(',',''), errors='coerce').fillna(0)
