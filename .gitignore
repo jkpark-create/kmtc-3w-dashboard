@@ -7,6 +7,9 @@ __pycache__/
 downloads/
 1.csv
 2.csv
+1_*.csv
+2_*.csv
+generated_docs/
 output/*.xlsx
 output/*.png
 output/*.csv

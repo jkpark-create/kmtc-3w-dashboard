@@ -155,7 +155,7 @@ def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_nam
     start = start or BKG_SCHEDULE_START
     end = end or BKG_SCHEDULE_END
     workbook_name = workbook_name or TEMP_WB_NAME
-    need_view2_date_filter = DATASET_IS_YEARLY or os.environ.get('FILTER_VIEW2_DATE') == '1'
+    need_view2_date_filter = os.environ.get('FILTER_VIEW2_DATE') == '1'
 
     # Check if temp workbook exists (search by name; contentUrl may have suffix)
     resp = s.get(
@@ -245,7 +245,7 @@ def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_nam
             if view2_filter is None:
                 view2_filter = ET.SubElement(view, 'filter', {
                     'class': 'quantitative',
-                    'column': '[sqlproxy.1vgswr41razzwa148ywuc0fpriw3].[none:Calculation_501025459300655110:qk]',
+                    'column': '[sqlproxy.1vgswr41razzwa148ywuc0fpriw3].[tdy:Calculation_501025459300655110:ok]',
                     'included-values': 'in-range',
                 })
             break
@@ -305,7 +305,7 @@ def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_nam
 
     # Fallback: query by name to get actual contentUrl
     if actual_content_url == workbook_name:
-        deadline = time.time() + 1800
+        deadline = time.time() + int(os.environ.get('TABLEAU_PUBLISH_WAIT_SECONDS', '1800'))
         while time.time() < deadline:
             resp = s.get(
                 f'{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/workbooks',
@@ -625,6 +625,14 @@ def process_snapshot():
     df2.columns = [re.sub(r'[^\x00-\x7F]+$', '', c).strip() for c in df2.columns]
     df1 = drop_tableau_total_rows(df1, path1.name)
     df2 = drop_tableau_total_rows(df2, path2.name)
+    if DATASET_IS_YEARLY and 'Date_vsl' in df2.columns:
+        date_text = df2['Date_vsl'].astype(str)
+        has_dataset_year = date_text.str.contains(f'{DATASET_YEAR}년|{DATASET_YEAR}-', regex=True, na=False).any()
+        if not has_dataset_year:
+            raise RuntimeError(
+                f"View 2 has no Date_vsl rows for {DATASET_YEAR}; "
+                "cannot build a yearly dashboard with actual shipment metrics."
+            )
 
     # Base: 2.csv (모든 부킹), Supplement: 1.csv (상세 정보)
     df2_dedup = df2.drop_duplicates(subset='BKG_NO', keep='first')
@@ -1202,6 +1210,8 @@ def upload_to_gdrive():
     else:
         print("  No data to aggregate, skipping JSON build")
         return
+    if DATASET_IS_YEARLY and bkg.empty:
+        raise RuntimeError(f"No rows available for yearly dataset {DATASET_ID}; summary JSON was not created.")
 
     # Ensure derived columns
     _pt_col = [c for c in bkg.columns if '/' in c and len(c) <= 4]
