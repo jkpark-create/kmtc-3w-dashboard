@@ -32,7 +32,51 @@ TABLEAU_SERVER = os.environ.get('TABLEAU_SERVER', 'https://tableau.ekmtc.com')
 TABLEAU_USER = os.environ.get('TABLEAU_USER', 'obt')
 TABLEAU_PASS = os.environ.get('TABLEAU_PASS', '')
 
-TODAY_STR = datetime.now().strftime('%Y%m%d')
+_now = datetime.now()
+TODAY_STR = _now.strftime('%Y%m%d')
+DATASET_ID = os.environ.get('DASHBOARD_DATASET_ID', TODAY_STR)
+DATASET_YEAR = int(os.environ.get(
+    'DASHBOARD_YEAR',
+    DATASET_ID if re.fullmatch(r'\d{4}', DATASET_ID) else str(_now.year)
+))
+DATASET_IS_YEARLY = os.environ.get(
+    'DASHBOARD_YEARLY',
+    '1' if re.fullmatch(r'\d{4}', DATASET_ID) else '0'
+) == '1'
+DATASET_INPUT_SUFFIX = os.environ.get(
+    'DASHBOARD_INPUT_SUFFIX',
+    '' if DATASET_ID == TODAY_STR else f'_{DATASET_ID}'
+)
+PUBLISH_LATEST = os.environ.get(
+    'PUBLISH_LATEST',
+    '1' if DATASET_ID == TODAY_STR else '0'
+) == '1'
+
+# 445 fiscal calendar. 2025 is handled as a 53-week year.
+FISCAL_445 = {
+    2025: (datetime(2024, 12, 29), [4,4,5,4,4,5,4,4,5,4,4,6]),
+    2026: (datetime(2026, 1, 4),  [4,4,5,4,4,5,4,4,5,4,4,5]),
+    2027: (datetime(2027, 1, 3),  [4,4,5,4,4,5,4,4,5,4,4,5]),
+}
+
+def fiscal_year_bounds(year):
+    first_sun, pattern = FISCAL_445[year]
+    last_sat = first_sun + timedelta(weeks=sum(pattern), days=-1)
+    return first_sun, last_sat
+
+def build_445_map():
+    week_month_lookup = {}
+    for year, (first_sun, pattern) in FISCAL_445.items():
+        wk = 0
+        for mi, cnt in enumerate(pattern):
+            ym = f'{year}{mi+1:02d}'
+            for _ in range(cnt):
+                week_month_lookup[(first_sun + timedelta(weeks=wk)).strftime('%Y-%m-%d')] = ym
+                wk += 1
+    return week_month_lookup
+
+def dataset_csv_path(stem):
+    return WORK_DIR / f'{stem}{DATASET_INPUT_SUFFIX}.csv'
 
 def classify_team(origin, dly_raw):
     """OBT/EST/IST/JBT based on origin & destination country codes."""
@@ -64,13 +108,24 @@ BKG_WB_ID = '81c076dd-4666-488e-96eb-699612d9e109'
 BSA_VIEW_URL = 'Q_17363223877520/BSArawBKGpattern'
 
 # Filter settings
-BKG_SCHEDULE_START = '2025-12-28 00:00:00'  # View 1 min date
+_today = _now
+# Historical/yearly datasets use the requested fiscal-year bounds.
+_fy_start, _fy_end = fiscal_year_bounds(DATASET_YEAR)
+BKG_SCHEDULE_START = os.environ.get(
+    'BKG_SCHEDULE_START',
+    f'{_fy_start:%Y-%m-%d} 00:00:00' if DATASET_IS_YEARLY else '2025-12-28 00:00:00'
+)
 # END = 금주 일요일 + 4주 (토요일까지)
-_today = datetime.now()
 _this_sun = _today - timedelta(days=(_today.weekday()+1)%7)
 _end_sat = _this_sun + timedelta(days=4*7+6)  # +4주 토요일
-BKG_SCHEDULE_END = _end_sat.strftime('%Y-%m-%d 00:00:00')
-TEMP_WB_NAME = 'temp_bkg_snapshot_v2'
+BKG_SCHEDULE_END = os.environ.get(
+    'BKG_SCHEDULE_END',
+    f'{_fy_end:%Y-%m-%d} 00:00:00' if DATASET_IS_YEARLY else _end_sat.strftime('%Y-%m-%d 00:00:00')
+)
+TEMP_WB_NAME = os.environ.get(
+    'TEMP_WB_NAME',
+    'temp_bkg_snapshot_v2' if PUBLISH_LATEST else f'temp_bkg_snapshot_v2_{DATASET_ID}'
+)
 TEMP_WB_PROJECT_ID = '3d94d4a3-1b23-4e39-8c9c-4a3b765c140d'  # OBT AI AGENT
 
 
@@ -96,21 +151,25 @@ def tableau_rest_api():
     return s, api_ver, site_id
 
 
-def ensure_temp_workbook(s, api_ver, site_id):
+def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_name=None):
     """Download original TWB, modify filter, publish as temp workbook."""
     import xml.etree.ElementTree as ET
+    start = start or BKG_SCHEDULE_START
+    end = end or BKG_SCHEDULE_END
+    workbook_name = workbook_name or TEMP_WB_NAME
+    need_view2_date_filter = DATASET_IS_YEARLY or os.environ.get('FILTER_VIEW2_DATE') == '1'
 
-    # Check if temp workbook exists (search by name — contentUrl may have suffix)
+    # Check if temp workbook exists (search by name; contentUrl may have suffix)
     resp = s.get(
         f'{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/workbooks',
-        params={'filter': f'name:eq:{TEMP_WB_NAME}'},
+        params={'filter': f'name:eq:{workbook_name}'},
         headers={'Accept': 'application/json'}, timeout=30)
     wbs = resp.json().get('workbooks', {}).get('workbook', [])
 
     if wbs:
         # Verify filter is correct (both min and max)
         wb_id = wbs[0]['id']
-        actual_content_url = wbs[0].get('contentUrl', TEMP_WB_NAME)
+        actual_content_url = wbs[0].get('contentUrl', workbook_name)
         resp = s.get(f'{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/workbooks/{wb_id}/content',
                      timeout=120)
         content = resp.content
@@ -120,17 +179,22 @@ def ensure_temp_workbook(s, api_ver, site_id):
                 twb_name = [n for n in z.namelist() if n.endswith('.twb')][0]
                 content = z.read(twb_name)
         tree = ET.parse(io.BytesIO(content))
+        schedule_ok = False
+        view2_date_ok = not need_view2_date_filter
         for f in tree.getroot().iter('filter'):
-            if 'Calculation_0356804709482497' in f.get('column', ''):
+            col = f.get('column', '')
+            if 'Calculation_0356804709482497' in col:
                 min_el = f.find('min')
                 max_el = f.find('max')
-                min_ok = min_el is not None and BKG_SCHEDULE_START in (min_el.text or '')
-                max_ok = max_el is not None and BKG_SCHEDULE_END in (max_el.text or '')
-                if min_ok and max_ok:
-                    print(f"  Temp workbook exists with correct filter ({BKG_SCHEDULE_START} ~ {BKG_SCHEDULE_END})")
-                    return actual_content_url
-                else:
-                    print(f"  Filter outdated, re-publishing...")
+                schedule_ok = min_el is not None and start in (min_el.text or '') and max_el is not None and end in (max_el.text or '')
+            if need_view2_date_filter and 'Calculation_501025459300655110' in col:
+                min_el = f.find('min')
+                max_el = f.find('max')
+                view2_date_ok = min_el is not None and start in (min_el.text or '') and max_el is not None and end in (max_el.text or '')
+
+        if schedule_ok and view2_date_ok:
+            print(f"  Temp workbook exists with correct filter ({start} ~ {end})")
+            return actual_content_url
 
         # Filter wrong, delete and re-create
         print(f"  Temp workbook filter outdated, re-publishing...")
@@ -156,17 +220,51 @@ def ensure_temp_workbook(s, api_ver, site_id):
         if 'Calculation_0356804709482497' in col and f.get('class') == 'quantitative':
             min_el = f.find('min')
             if min_el is not None:
-                min_el.text = f'#{BKG_SCHEDULE_START}#'
+                min_el.text = f'#{start}#'
                 min_el.attrib.clear()
             max_el = f.find('max')
             if max_el is not None:
-                max_el.text = f'#{BKG_SCHEDULE_END}#'
+                max_el.text = f'#{end}#'
                 max_el.attrib.clear()
             else:
                 # max 엘리먼트가 없으면 생성
                 max_el = ET.SubElement(f, 'max')
-                max_el.text = f'#{BKG_SCHEDULE_END}#'
-            print(f"  Filter: {BKG_SCHEDULE_START} ~ {BKG_SCHEDULE_END}")
+                max_el.text = f'#{end}#'
+            print(f"  Filter: {start} ~ {end}")
+
+    if need_view2_date_filter:
+        view2_filter = None
+        for ws in tree.getroot().findall('.//worksheet'):
+            if ws.get('name') != '2':
+                continue
+            view = ws.find('./table/view')
+            if view is None:
+                continue
+            for f in view.findall('filter'):
+                if 'Calculation_501025459300655110' in f.get('column', ''):
+                    view2_filter = f
+                    break
+            if view2_filter is None:
+                view2_filter = ET.SubElement(view, 'filter', {
+                    'class': 'quantitative',
+                    'column': '[sqlproxy.1vgswr41razzwa148ywuc0fpriw3].[none:Calculation_501025459300655110:qk]',
+                    'included-values': 'in-range',
+                })
+            break
+        if view2_filter is not None:
+            min_el = view2_filter.find('min')
+            if min_el is None:
+                min_el = ET.SubElement(view2_filter, 'min')
+            min_el.text = f'#{start}#'
+            min_el.attrib.clear()
+            max_el = view2_filter.find('max')
+            if max_el is None:
+                max_el = ET.SubElement(view2_filter, 'max')
+            max_el.text = f'#{end}#'
+            max_el.attrib.clear()
+            print(f"  View 2 Date_vsl filter: {start} ~ {end}")
+        else:
+            print("  WARNING: worksheet 2 view not found; Date_vsl filter not added")
 
     twb_bytes = io.BytesIO()
     tree.write(twb_bytes, encoding='utf-8', xml_declaration=True)
@@ -178,13 +276,13 @@ def ensure_temp_workbook(s, api_ver, site_id):
     payload = (
         f'--{boundary}\r\nContent-Disposition: name="request_payload"\r\n'
         f'Content-Type: text/xml\r\n\r\n'
-        f'<tsRequest><workbook name="{TEMP_WB_NAME}" showTabs="true">'
+        f'<tsRequest><workbook name="{workbook_name}" showTabs="true">'
         f'<project id="{TEMP_WB_PROJECT_ID}"/></workbook></tsRequest>\r\n'
         f'--{boundary}\r\nContent-Disposition: name="tableau_workbook"; '
-        f'filename="{TEMP_WB_NAME}.twb"\r\nContent-Type: application/xml\r\n\r\n'
+        f'filename="{workbook_name}.twb"\r\nContent-Type: application/xml\r\n\r\n'
     ).encode('utf-8') + twb_content + f'\r\n--{boundary}--\r\n'.encode('utf-8')
 
-    actual_content_url = TEMP_WB_NAME
+    actual_content_url = workbook_name
     try:
         resp = s.post(
             f'{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/workbooks',
@@ -200,7 +298,7 @@ def ensure_temp_workbook(s, api_ver, site_id):
                 ns = {'t': 'http://tableau.com/api'}
                 wb_el = pub_tree.find('.//t:workbook', ns) or pub_tree.find('.//workbook')
                 if wb_el is not None:
-                    actual_content_url = wb_el.get('contentUrl', TEMP_WB_NAME)
+                    actual_content_url = wb_el.get('contentUrl', workbook_name)
             except Exception:
                 pass
     except requests.exceptions.ReadTimeout:
@@ -208,14 +306,20 @@ def ensure_temp_workbook(s, api_ver, site_id):
         time.sleep(5)
 
     # Fallback: query by name to get actual contentUrl
-    if actual_content_url == TEMP_WB_NAME:
-        resp = s.get(
-            f'{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/workbooks',
-            params={'filter': f'name:eq:{TEMP_WB_NAME}'},
-            headers={'Accept': 'application/json'}, timeout=30)
-        found = resp.json().get('workbooks', {}).get('workbook', [])
-        if found:
-            actual_content_url = found[0].get('contentUrl', TEMP_WB_NAME)
+    if actual_content_url == workbook_name:
+        deadline = time.time() + 1800
+        while time.time() < deadline:
+            resp = s.get(
+                f'{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/workbooks',
+                params={'filter': f'name:eq:{workbook_name}'},
+                headers={'Accept': 'application/json'}, timeout=30)
+            found = resp.json().get('workbooks', {}).get('workbook', [])
+            if found:
+                actual_content_url = found[0].get('contentUrl', workbook_name)
+                print(f"  Published workbook available: {actual_content_url}")
+                break
+            print("  Waiting for published workbook to become available...")
+            time.sleep(30)
 
     return actual_content_url
 
@@ -294,8 +398,64 @@ def drop_tableau_total_rows(df, label):
     return df
 
 
+def fiscal_quarter_chunks(year):
+    """Return 445 fiscal-quarter date ranges for a yearly one-off download."""
+    first_sun, pattern = FISCAL_445[year]
+    week_offset = 0
+    for idx in range(4):
+        weeks = sum(pattern[idx*3:(idx+1)*3])
+        start = first_sun + timedelta(weeks=week_offset)
+        end = start + timedelta(weeks=weeks, days=-1)
+        week_offset += weeks
+        yield idx + 1, f'{start:%Y-%m-%d} 00:00:00', f'{end:%Y-%m-%d} 00:00:00'
+
+
+def download_all_chunked():
+    """Download yearly booking views in fiscal-quarter chunks, then merge to 1_YYYY/2_YYYY."""
+    print("[1/3] Downloading booking views by fiscal quarter...")
+    requested_views = set(os.environ.get('DASHBOARD_DOWNLOAD_VIEWS', '1,2').split(','))
+    view_specs = [(name, label) for name, label in [('1', 'View 1'), ('2', 'View 2')] if name in requested_views]
+    parts = {name: [] for name, _ in view_specs}
+    s, api_ver, site_id = tableau_rest_api()
+    try:
+        for chunk_no, start, end in fiscal_quarter_chunks(DATASET_YEAR):
+            print(f"  Chunk Q{chunk_no}: {start} ~ {end}")
+            wb_name = f'{TEMP_WB_NAME}_q{chunk_no}'
+            wb_url = ensure_temp_workbook(s, api_ver, site_id, start=start, end=end, workbook_name=wb_name)
+
+            for view_name, label in view_specs:
+                part_path = WORK_DIR / f'{view_name}_{DATASET_ID}_q{chunk_no}.csv'
+                print(f"    Downloading {label} ({part_path.name})...")
+                size = download_csv_from_tableau(wb_url, view_name, part_path)
+                rows = count_csv_rows(part_path)
+                print(f"      {part_path.name}: {size:,} bytes ({rows:,} rows)")
+                parts[view_name].append(part_path)
+    finally:
+        try:
+            s.post(f'{TABLEAU_SERVER}/api/{api_ver}/auth/signout', timeout=10)
+        except Exception:
+            pass
+
+    print("[2/3] Merging chunked booking CSVs...")
+    for view_name in parts:
+        frames = [read_tableau_csv(path) for path in parts[view_name]]
+        combined = pd.concat(frames, ignore_index=True)
+        before = len(combined)
+        combined = combined.drop_duplicates()
+        out_path = dataset_csv_path(view_name)
+        combined.to_csv(out_path, index=False, encoding='utf-8-sig')
+        print(f"  {out_path.name}: {os.path.getsize(out_path):,} bytes ({len(combined):,} rows, dropped {before-len(combined):,} duplicate rows)")
+        for path in parts[view_name]:
+            path.unlink(missing_ok=True)
+    print("[3/3] Chunked booking download complete")
+
+
 def download_all():
     """Phase 1: Download all data from Tableau."""
+    if DATASET_IS_YEARLY and os.environ.get('DASHBOARD_CHUNKED_DOWNLOAD', '1') == '1':
+        download_all_chunked()
+        return
+
     os.chdir(WORK_DIR)
     s, api_ver, site_id = tableau_rest_api()
 
@@ -305,26 +465,30 @@ def download_all():
     s.post(f'{TABLEAU_SERVER}/api/{api_ver}/auth/signout', timeout=10)
 
     # 2. Download View 1 (1.csv)
-    print("[2/3] Downloading View 1 (1.csv)...")
-    path1 = WORK_DIR / '1.csv'
+    path1 = dataset_csv_path('1')
+    print(f"[2/3] Downloading View 1 ({path1.name})...")
     size = download_csv_from_tableau(wb_url, '1', path1)
     rows = count_csv_rows(path1)
-    print(f"  1.csv: {size:,} bytes ({rows:,} rows)")
+    print(f"  {path1.name}: {size:,} bytes ({rows:,} rows)")
 
     # 3. Download View 2 (2.csv)
-    print("[3/3] Downloading View 2 (2.csv)...")
-    path2 = WORK_DIR / '2.csv'
-    size = download_csv_from_tableau(wb_url, '2', path2)
+    # View 2 is controlled by its own YYYYMM/status filters. Download it from
+    # the original workbook so Tableau-side status/filter edits are not hidden
+    # by a previously published temp workbook.
+    path2 = dataset_csv_path('2')
+    print(f"[3/3] Downloading View 2 ({path2.name})...")
+    size = download_csv_from_tableau(BKG_WB_CONTENT_URL, '2', path2)
     rows = count_csv_rows(path2)
-    print(f"  2.csv: {size:,} bytes ({rows:,} rows)")
+    print(f"  {path2.name}: {size:,} bytes ({rows:,} rows)")
 
 
 def download_bsa():
-    """Download BSA raw (월간회의3주전) per team, deduplicate by classify_team."""
+    """Download BSA raw (월간회의3주전) per Sales Team."""
     print("[BSA] Downloading BSA raw...")
-    year = datetime.now().year
-    yyyy_filter = f'{year-1},{year},{year+1}'
-    yyyymm_all = ','.join(f'{y}{m:02d}' for y in [year-1, year, year+1] for m in range(1, 13))
+    year = DATASET_YEAR
+    years = [year] if DATASET_IS_YEARLY else [year-1, year, year+1]
+    yyyy_filter = ','.join(str(y) for y in years)
+    yyyymm_all = ','.join(f'{y}{m:02d}' for y in years for m in range(1, 13))
 
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
@@ -368,10 +532,18 @@ def download_bsa():
             print(f"{len(df)} rows")
             all_dfs.append(df)
         combined = pd.concat(all_dfs, ignore_index=True)
+        if DATASET_IS_YEARLY and 'YYYYMM' in combined.columns:
+            before = len(combined)
+            combined = combined[combined['YYYYMM'].astype(str).str.startswith(str(DATASET_YEAR))].copy()
+            dropped = before - len(combined)
+            if dropped:
+                print(f"  Dropped BSA rows outside {DATASET_YEAR}: {dropped:,}")
+            if combined.empty:
+                print(f"  WARNING: no BSA rows found for {DATASET_YEAR} in Tableau CSV export")
 
         out_dir = WORK_DIR / 'output'
         out_dir.mkdir(exist_ok=True)
-        out_path = out_dir / f'BSA_raw_monthly3W_{TODAY_STR}.csv'
+        out_path = out_dir / f'BSA_raw_monthly3W_{DATASET_ID}.csv'
         combined.to_csv(out_path, index=False)
 
         browser.close()
@@ -392,10 +564,10 @@ def process_snapshot():
     week_month_lookup = {}
 
     # Grade: Tableau에서 분기별 다운로드 (Q1=01, Q2=04, Q3=07, Q4=10)
-    grade_csv = WORK_DIR / 'output' / 'grade_latest.csv'
+    grade_csv = WORK_DIR / 'output' / ('grade_latest.csv' if PUBLISH_LATEST else f'grade_{DATASET_ID}.csv')
     _quarter_month = {1: '01', 2: '04', 3: '07', 4: '10'}
     _q = (_today.month - 1) // 3 + 1
-    _grade_yyyymm = f'{_today.year}{_quarter_month[_q]}'
+    _grade_yyyymm = f'{DATASET_YEAR}{_quarter_month[_q]}'
     _need_download = True
     if grade_csv.exists():
         # 기존 파일의 YYYYMM 확인 (첫 줄 주석 또는 파일 내용)
@@ -406,7 +578,7 @@ def process_snapshot():
     if _need_download:
         print(f"  Downloading grade from Tableau (YYYYMM={_grade_yyyymm})...")
         try:
-            _grade_save = WORK_DIR / 'output' / 'grade_download.csv'
+            _grade_save = WORK_DIR / 'output' / f'grade_download_{DATASET_ID}.csv'
             download_csv_from_tableau('Q_17363223877520', 'grade', _grade_save,
                                       vf_params={'YYYYMM': _grade_yyyymm})
             # 첫 줄에 YYYYMM 메타 추가하여 저장
@@ -442,24 +614,19 @@ def process_snapshot():
             print(f"  grade loaded from cache: {len(grade_lookup)}")
 
     # 445 calendar map
-    pattern_445 = [4,4,5,4,4,5,4,4,5,4,4,5]
-    for year, first_sun in [(2025, datetime(2025,1,5)), (2026, datetime(2026,1,4)), (2027, datetime(2027,1,3))]:
-        wk = 0
-        for mi, cnt in enumerate(pattern_445):
-            ym = f'{year}{mi+1:02d}'
-            for _ in range(cnt):
-                week_month_lookup[(first_sun + timedelta(weeks=wk)).strftime('%Y-%m-%d')] = ym
-                wk += 1
+    week_month_lookup = build_445_map()
     print(f"  주차월: {len(week_month_lookup)}")
 
     # --- Read CSV data ---
     print("[Process] Reading CSV files...")
-    df1 = read_tableau_csv(WORK_DIR / '1.csv')
-    df2 = read_tableau_csv(WORK_DIR / '2.csv')
+    path1 = dataset_csv_path('1')
+    path2 = dataset_csv_path('2')
+    df1 = read_tableau_csv(path1)
+    df2 = read_tableau_csv(path2)
     df1.columns = [re.sub(r'[^\x00-\x7F]+$', '', c).strip() for c in df1.columns]
     df2.columns = [re.sub(r'[^\x00-\x7F]+$', '', c).strip() for c in df2.columns]
-    df1 = drop_tableau_total_rows(df1, '1.csv')
-    df2 = drop_tableau_total_rows(df2, '2.csv')
+    df1 = drop_tableau_total_rows(df1, path1.name)
+    df2 = drop_tableau_total_rows(df2, path2.name)
 
     # Base: 2.csv (모든 부킹), Supplement: 1.csv (상세 정보)
     df2_dedup = df2.drop_duplicates(subset='BKG_NO', keep='first')
@@ -471,6 +638,9 @@ def process_snapshot():
         status_mix = df2_dedup['Booking_status'].astype(str).str.strip().value_counts().head(10)
         status_msg = ', '.join(f'{k}={v:,}' for k, v in status_mix.items())
         print(f"  2.csv status mix: {status_msg}")
+
+    def df2_col(*names):
+        return next((c for c in names if c in df2_dedup.columns), None)
 
     def parse_korean_date(s):
         if pd.isna(s) or str(s).strip() in ('', 'nan'):
@@ -545,7 +715,10 @@ def process_snapshot():
     # Status, TEU, CM1, route, vessel from 2.csv
     output['LST_Status'] = df2_dedup['Booking_status'].values
     output['CM1'] = df2_dedup['CM1_Booking'].values
-    output['LST_TEU'] = df2_dedup['LST_TEU'].values
+    lst_teu_col = df2_col('LST_TEU', 'TEU_Booking')
+    if not lst_teu_col:
+        raise KeyError('2.csv requires LST_TEU or TEU_Booking column')
+    output['LST_TEU'] = df2_dedup[lst_teu_col].values
     output['LST_route'] = df2_dedup['LST_Route'].values if 'LST_Route' in df2_dedup.columns else ''
     output['LST_VSL'] = df2_dedup['LST_VSL'].values if 'LST_VSL' in df2_dedup.columns else ''
     output['LST_VOY'] = df2_dedup['LST_VOY'].values if 'LST_VOY' in df2_dedup.columns else ''
@@ -968,11 +1141,16 @@ def process_snapshot():
     print(f"  조건2 조기부킹캔슬 (R-N>=21, Cancel, P-N<=7): {cond2.sum():,}")
     print(f"  중복제외: {(cond1 & cond2).sum():,}")
     output = output[~exclude].reset_index(drop=True)
-    min_dashboard_month = f'{_today.year}01'
+    min_dashboard_month = f'{DATASET_YEAR}01'
     month_key = output['YYYYMM'].astype(str).str.strip()
-    out_of_scope = month_key.ne('') & month_key.lt(min_dashboard_month)
+    if DATASET_IS_YEARLY:
+        out_of_scope = month_key.ne('') & ~month_key.str.startswith(str(DATASET_YEAR))
+        scope_label = str(DATASET_YEAR)
+    else:
+        out_of_scope = month_key.ne('') & month_key.lt(min_dashboard_month)
+        scope_label = f'{min_dashboard_month}+'
     if out_of_scope.any():
-        print(f"  Dropped months before {min_dashboard_month}: {out_of_scope.sum():,}")
+        print(f"  Dropped out-of-scope months ({scope_label}): {out_of_scope.sum():,}")
         output = output[~out_of_scope].reset_index(drop=True)
         print(f"  Final dashboard scope: {len(output):,}")
     print(f"  Final (대상 only): {len(output):,}")
@@ -980,8 +1158,8 @@ def process_snapshot():
     # --- Save ---
     out_dir = WORK_DIR / 'output'
     out_dir.mkdir(exist_ok=True)
-    out_path = out_dir / f'booking_snapshot_result_{TODAY_STR}.csv'
-    cache_path = out_dir / f'_cache_{TODAY_STR}.parquet'
+    out_path = out_dir / f'booking_snapshot_result_{DATASET_ID}.csv'
+    cache_path = out_dir / f'_cache_{DATASET_ID}.parquet'
     output = output.fillna('').astype(str)
     print(f"[Process] Saving {out_path.name}...")
     output.to_csv(out_path, index=False, encoding='utf-8-sig')
@@ -1004,9 +1182,15 @@ def upload_to_gdrive():
 
     # --- Build aggregated JSON for static dashboard ---
     out_dir = WORK_DIR / 'output'
-    bf = sorted(out_dir.glob('booking_snapshot_result_*.csv'), key=os.path.getmtime, reverse=True)
-    sf = sorted(out_dir.glob('BSA_raw_monthly3W_*.csv'), key=os.path.getmtime, reverse=True)
-    cache = sorted(out_dir.glob('_cache_*.parquet'), key=os.path.getmtime, reverse=True)
+    bf = sorted(out_dir.glob(f'booking_snapshot_result_{DATASET_ID}.csv'), key=os.path.getmtime, reverse=True)
+    sf = sorted(out_dir.glob(f'BSA_raw_monthly3W_{DATASET_ID}.csv'), key=os.path.getmtime, reverse=True)
+    cache = sorted(out_dir.glob(f'_cache_{DATASET_ID}.parquet'), key=os.path.getmtime, reverse=True)
+    if not bf:
+        bf = sorted(out_dir.glob('booking_snapshot_result_*.csv'), key=os.path.getmtime, reverse=True)
+    if not sf:
+        sf = sorted(out_dir.glob('BSA_raw_monthly3W_*.csv'), key=os.path.getmtime, reverse=True)
+    if not cache:
+        cache = sorted(out_dir.glob('_cache_*.parquet'), key=os.path.getmtime, reverse=True)
 
     if cache:
         bkg = pd.read_parquet(cache[0])
@@ -1042,17 +1226,7 @@ def upload_to_gdrive():
 
     # YYYYMM = 445 calendar (BSA와 동일)
     def _build_445():
-        from datetime import timedelta as _td
-        pattern = [4,4,5,4,4,5,4,4,5,4,4,5]
-        m = {}
-        for yr, fs in [(2025, datetime(2025,1,5)), (2026, datetime(2026,1,4)), (2027, datetime(2027,1,3))]:
-            wk = 0
-            for mi, cnt in enumerate(pattern):
-                ym = f'{yr}{mi+1:02d}'
-                for _ in range(cnt):
-                    m[(fs + _td(weeks=wk)).strftime('%Y-%m-%d')] = ym
-                    wk += 1
-        return m
+        return build_445_map()
     _445 = _build_445()
     import re as _re
     def _pkd(s):
@@ -1144,6 +1318,8 @@ def upload_to_gdrive():
     if sf:
         bsa = pd.read_csv(sf[0], dtype=str)
         bsa = normalize_bsa_team(bsa)
+        if DATASET_IS_YEARLY:
+            bsa = bsa[bsa['YYYYMM'].astype(str).str.startswith(str(DATASET_YEAR))]
         bsa = bsa[bsa['DLY_Country'].str.len() <= 3]
         bsa = bsa[bsa['POR_Country'].str.len() <= 3]
         bsa['teu_bsa'] = pd.to_numeric(bsa['TEU_BSA (Actual)'].str.replace(',',''), errors='coerce').fillna(0)
@@ -1177,7 +1353,7 @@ def upload_to_gdrive():
         return compacted
 
     summary = {
-        'data_date': TODAY_STR,
+        'data_date': DATASET_ID,
         'wpm': wpm,
         'months': sorted(bkg['YYYYMM'].dropna().unique().tolist()),
         'monthly': compact_records(monthly.round(1).to_dict('records')),
@@ -1186,30 +1362,36 @@ def upload_to_gdrive():
         'bsa': compact_records(bsa_data),
     }
 
-    json_path = out_dir / f'dashboard_summary_{TODAY_STR}.json'
+    json_path = out_dir / f'dashboard_summary_{DATASET_ID}.json'
     with open(json_path, 'w', encoding='utf-8') as f:
         _json.dump(summary, f, ensure_ascii=False, separators=(',',':'))
     print(f"  Summary JSON: {json_path.name} ({os.path.getsize(json_path):,} bytes)")
     print(f"    monthly: {len(monthly):,} rows, weekly: {len(weekly):,} rows, bsa: {len(bsa_data):,} rows")
 
-    # Copy to dist/data.json for GitHub Pages
-    import shutil
-    dist_data = WORK_DIR / 'dist' / 'data.json'
-    if dist_data.parent.exists():
-        shutil.copy2(json_path, dist_data)
-        print(f"  Copied to {dist_data}")
+    # Copy to dist/data.json only for the current/latest dataset.
+    if PUBLISH_LATEST:
+        import shutil
+        dist_data = WORK_DIR / 'dist' / 'data.json'
+        if dist_data.parent.exists():
+            shutil.copy2(json_path, dist_data)
+            print(f"  Copied to {dist_data}")
+    else:
+        print("  Historical dataset: dist/data.json unchanged")
 
     if os.environ.get('SKIP_GDRIVE_UPLOAD') == '1':
         print("[Upload] SKIP_GDRIVE_UPLOAD=1; local summary built, remote upload skipped.")
         return
 
-    # Clean up old output files (keep only latest 2)
-    for pattern in ['booking_snapshot_result_*.csv', 'booking_snapshot_result_*.xlsx', 'BSA_raw_monthly3W_*.csv',
-                    '_cache_*.parquet', 'dashboard_summary_*.json']:
-        files = sorted(out_dir.glob(pattern), key=os.path.getmtime, reverse=True)
-        for old in files[2:]:
-            old.unlink()
-            print(f"  Cleaned old: {old.name}")
+    # Clean up old output files (keep only latest 2) only for routine latest runs.
+    if PUBLISH_LATEST:
+        for pattern in ['booking_snapshot_result_*.csv', 'booking_snapshot_result_*.xlsx', 'BSA_raw_monthly3W_*.csv',
+                        '_cache_*.parquet', 'dashboard_summary_*.json']:
+            files = sorted(out_dir.glob(pattern), key=os.path.getmtime, reverse=True)
+            for old in files[2:]:
+                old.unlink()
+                print(f"  Cleaned old: {old.name}")
+    else:
+        print("  Historical dataset: output cleanup skipped")
 
     with open(GDRIVE_CREDS_DIR / 'credentials.json') as f:
         creds = _json.load(f)['installed']
@@ -1225,22 +1407,32 @@ def upload_to_gdrive():
     out_dir = WORK_DIR / 'output'
 
     # Upload parquet cache built during processing.
-    cf = sorted(out_dir.glob('_cache_*.parquet'), key=os.path.getmtime, reverse=True)
+    cf = sorted(out_dir.glob(f'_cache_{DATASET_ID}.parquet'), key=os.path.getmtime, reverse=True)
+    if not cf:
+        cf = sorted(out_dir.glob('_cache_*.parquet'), key=os.path.getmtime, reverse=True)
     if cf:
         _upload_file(headers, cf[0], cf[0].name)
 
     # Upload BSA CSV
-    sf = sorted(out_dir.glob('BSA_raw_monthly3W_*.csv'), key=os.path.getmtime, reverse=True)
+    sf = sorted(out_dir.glob(f'BSA_raw_monthly3W_{DATASET_ID}.csv'), key=os.path.getmtime, reverse=True)
+    if not sf:
+        sf = sorted(out_dir.glob('BSA_raw_monthly3W_*.csv'), key=os.path.getmtime, reverse=True)
     if sf:
         _upload_file(headers, sf[0], sf[0].name)
 
     # Upload summary JSON (for static dashboard)
-    jf = sorted(out_dir.glob('dashboard_summary_*.json'), key=os.path.getmtime, reverse=True)
+    jf = sorted(out_dir.glob(f'dashboard_summary_{DATASET_ID}.json'), key=os.path.getmtime, reverse=True)
+    if not jf:
+        jf = sorted(out_dir.glob('dashboard_summary_*.json'), key=os.path.getmtime, reverse=True)
     if jf:
-        # 1. 고정 파일 (GitHub Pages용)
-        _upload_file(headers, jf[0], 'dashboard_summary.json')
-        # 2. 날짜별 보관 (히스토리 비교용)
-        _upload_file(headers, jf[0], f'dashboard_summary_{TODAY_STR}.json')
+        if PUBLISH_LATEST:
+            # 1. 고정 파일 (GitHub Pages용)
+            _upload_file(headers, jf[0], 'dashboard_summary.json')
+            # 2. 날짜별 보관 (히스토리 비교용)
+            _upload_file(headers, jf[0], f'dashboard_summary_{DATASET_ID}.json')
+        else:
+            # One-off/yearly backfills are loaded from the historical selector.
+            _upload_file(headers, jf[0], f'dashboard_summary_{DATASET_ID}.json')
 
     print("[Upload] Done.")
 
@@ -1294,7 +1486,10 @@ def main():
         print("[Skip] Using existing 1.csv, 2.csv, and latest BSA raw file.")
     else:
         download_all()
-        download_bsa()
+        if os.environ.get('SKIP_BSA_DOWNLOAD') == '1':
+            print("[Skip] Using existing BSA raw file.")
+        else:
+            download_bsa()
 
     print("\n--- Phase 2: Booking Snapshot Processing ---")
     process_snapshot()
