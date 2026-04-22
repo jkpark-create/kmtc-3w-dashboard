@@ -36,8 +36,10 @@
 
 ## 배포/커밋
 
-- GitHub Pages 배포 예정
+- GitHub Pages 배포 완료: `kmtc-3w-dashboard-web` `32b1dd6`
+- Main repo 반영 완료: `kmtc-3w-dashboard` `f9612d8`
+- 공개 URL 검증 완료: `index.html` 멀티셀렉트 코드, `guide.html` 필터 설명, `data.json` 국가 단위 도착지 확인
 
 ## 후속 확인사항
 
-- 배포 후 GitHub Pages URL에서 최신 `data_date`와 도착지 필터 국가 단위 표시를 확인한다.
+- 운영자가 브라우저에서 캐시 새로고침 후 도착지 필터의 국가 단위 표시를 한 번 더 확인한다.
