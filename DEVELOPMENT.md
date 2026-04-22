@@ -81,6 +81,12 @@
 - 조건1: Cancel 상태 + Cancel_date - Booking_date <= 3일 (즉시 캔슬)
 - 조건2: Cancel 상태 + Actual_Departure - Booking_date >= 21일 + Cancel_date - Booking_date <= 7일
 
+**집계 전 데이터 범위 정리**:
+- `LST_Status`가 빈 값인 행은 제외한다.
+- 위 -3W 필터에서 제외로 판정된 Cancel 행은 모든 집계에서 제외한다.
+- 대시보드 표시 범위는 현재 연도 1월 이후 `YYYYMM`만 남긴다. 예: 2026년 실행 시 `YYYYMM < 202601`은 제외한다.
+- 2.csv가 Normal/Confirm 위주로 내려오는 경우를 대비해, 1.csv에는 있으나 2.csv에는 없는 Cancel 건을 복원한다. 이때 이전 snapshot에서 Actual_Departure_schedule을 찾은 Cancel 건만 복원하며, LST_TEU와 CM1은 0/빈값으로 둔다.
+
 ### 3.3 Phase 3: JSON 생성 및 업로드
 
 **data.json 구조**:
@@ -136,6 +142,48 @@
 | w2_fst, w1_fst, wos_fst | WOS-2, WOS-1, WOS 각 단계 BKG |
 | cm1_norm | CM1 합계 (Normal + CM1!=0) |
 | lst_norm | LST_TEU 합계 (Normal + CM1!=0, CM1/TEU 계산용) |
+
+**KPI 생성 로직 상세**:
+
+대시보드의 KPI 카드와 대부분의 표/차트는 `daily_3w_dashboard.py`에서 만든 집계 필드를 그대로 합산한다.
+
+| 화면 KPI | JSON 필드 | 생성 공식 | 원천/조건 |
+|----------|-----------|-----------|-----------|
+| 전체 BKG | `fst` | `FST_TEU` | 1.csv Booking_schedule 뷰의 FST_TEU. 비어 있으면 LST_TEU로 fallback |
+| 실선적(Normal) | `norm_lst` | `LST_TEU * is_normal` | 2.csv Date_vsl 뷰의 LST_TEU 중 `LST_Status == "Normal"` |
+| 3주전 BKG | `w3_fst` | `FST_TEU * (Lead_time (BKG_Sche) == "WOS-3")` | Booking_schedule 기준 WOS-3 판정 |
+| 3주전 실선적(Normal) | `w3_norm_lst` | `LST_TEU * (Lead_time (BKG_Sche) == "WOS-3") * is_normal` | WOS-3이면서 Normal인 실제 선적 TEU |
+
+`is_normal`은 `LST_Status == "Normal"`이면 1, 아니면 0이다. 따라서 전체 BKG와 3주전 BKG는 상태별로 남아 있는 대상 건의 `FST_TEU`를 합산하고, 실선적 계열은 Normal 건의 `LST_TEU`만 합산한다.
+
+**WOS-3 판정 기준**:
+
+`Lead_time (BKG_Sche)`는 Booking_schedule이 속한 주의 시작일(일요일)과 Booking_date의 차이로 계산한다.
+
+```text
+week_start (BKG_Sche) = Booking_schedule 날짜가 속한 주의 일요일
+diff = week_start (BKG_Sche) - Booking_date
+
+diff < 1   → Week of Sailing (WOS)
+diff <= 7  → WOS-1
+diff <= 14 → WOS-2
+diff > 14  → WOS-3
+```
+
+주의: `YYYYMM`과 `week_start_date`는 Actual_Departure_schedule(Date_vsl) 기준 445 Calendar로 정해진다. 반면 WOS 단계는 Booking_schedule 기준으로 계산한다. 따라서 “2026년 5월 3주전 BKG”는 Actual 출항 주차가 2026년 5월에 속하면서, Booking_schedule 기준으로 WOS-3인 부킹의 `FST_TEU` 합계다.
+
+**프론트엔드 KPI 합산**:
+
+Tab 1 KPI는 `dist/index.html`에서 다음 필드를 합산한다.
+
+```javascript
+totalBkg = profitSum(fd, 'fst')
+shipped  = profitSum(fd, 'norm_lst')
+w3Bkg    = profitSum(fd, 'w3_fst')
+w3Ship   = profitSum(fd, 'w3_norm_lst')
+```
+
+`fd`는 월 전체 선택 시 `filterMonthly(month)`, 주차 선택 시 `filterWeekly(month)` 결과다. 팀/선적지/선적포트/도착지/도착포트/월/주차 필터가 적용된다. `화주구분` 필터는 `profitSum()`에서 고수익/저수익 필드로 수치를 조정한다. 단, Tab 1의 monthly/weekly 집계에는 화주/영업사원 차원이 없으므로 `등급`과 `영업사원` 필터는 shipper 기반 화면에서 주로 반영된다.
 
 **소석률 계산 기준**:
 - 소석률 = norm_lst(전체 Normal 실선적) / BSA
@@ -334,19 +382,56 @@ WW = diff + 1
 - URL: https://tableau.ekmtc.com
 - 계정: obt / .env TABLEAU_PASS
 - Playwright(headless Chrome)로 로그인 후 CSV 다운로드
+- 인증 방식: 브라우저 세션 로그인 후 CSV URL로 이동하여 다운로드 이벤트를 받는다. 서버 인증 토큰을 직접 저장하지 않고, 실행 시마다 Playwright 세션에서 로그인한다.
+- Booking Snapshot:
+  - 원본 워크북 `bookingsnapshot`을 Tableau REST API로 내려받아 Booking_schedule 날짜 필터를 수정한다.
+  - 수정된 임시 워크북 `temp_bkg_snapshot_v2`를 Tableau 프로젝트에 publish한다.
+  - View `1`, `2`를 각각 CSV로 다운로드한다.
+- BSA:
+  - 소스 뷰는 `Q_17363223877520/BSArawBKGpattern`.
+  - `Sales Team` 파라미터로 OBT/EST/IST/JBT를 각각 다운로드한다.
+  - CSV에 포함된 `Sales Team` 컬럼을 대시보드의 canonical `team`으로 사용한다.
+- Grade:
+  - 소스 뷰는 `Q_17363223877520/grade`.
+  - 현재 분기 시작월(Q1=01, Q2=04, Q3=07, Q4=10)을 `YYYYMM` 파라미터로 다운로드한다.
+  - 같은 분기의 `output/grade_latest.csv`가 있으면 재다운로드하지 않는다.
+- 주의: Tableau 화면과 CSV export 사이에 서버 캐시/시점 차이가 생길 수 있다. BSA 값 검산 시에는 같은 CSV export 방식으로 재다운로드한 파일과 비교한다.
 
 ### Google Drive
 - 폴더 ID: 1JIxg6Y-_gRfI1HueXZ1Q9j4-Z5bxvNgv
 - 인증: .gdrive-mcp/credentials.json + token.json (OAuth2 refresh)
 - 업로드 파일: _cache_*.parquet, BSA_*.csv, dashboard_summary.json
+- 인증 흐름:
+  - `.gdrive-mcp/credentials.json`에서 OAuth client 정보를 읽는다.
+  - `.gdrive-mcp/token.json`의 refresh token으로 실행 시 access token을 갱신한다.
+  - Drive REST API로 파일 존재 여부를 조회한 뒤 있으면 update, 없으면 create한다.
+- 업로드 대상:
+  - `_cache_YYYYMMDD.parquet`: 처리된 booking snapshot 캐시. 같은 날 재집계/재업로드 시 최신 파일로 덮어쓴다.
+  - `BSA_raw_monthly3W_YYYYMMDD.csv`: Tableau에서 받은 최신 BSA raw.
+  - `dashboard_summary.json`: 웹 대시보드가 과거 날짜 선택/Drive 조회 시 사용하는 고정 이름 최신 요약.
+  - `dashboard_summary_YYYYMMDD.json`: 날짜별 히스토리 조회용 요약 파일.
+- `upload_to_gdrive()`는 원격 업로드 전에 `dist/data.json`도 같은 summary JSON으로 복사한다. 따라서 Google Drive와 GitHub Pages가 같은 집계 결과를 바라보게 된다.
+- output 폴더는 유형별 최신 2개 파일만 유지하도록 오래된 파일을 정리한다.
 
 ### Gmail 알림
 - 인증: .gmail-mcp/credentials.json + gcp-oauth.keys.json
 - 발송: 일일 실행 결과 HTML 이메일 (jkpark@ekmtc.com)
+- `run_daily.bat`는 성공/실패와 관계없이 마지막에 `send_notification.py`를 호출한다.
+- 알림 메일은 `logs/run_YYYYMMDD.log`를 읽어 성공 여부, 소요 시간, 단계별 상태, 에러 메시지, 주요 처리 결과를 HTML로 요약한다.
+- 발송 계정과 수신 계정은 기본적으로 `jkpark@ekmtc.com`이다.
 
 ### GitHub Pages
 - dist/ repo: kmtc-3w-dashboard-web (master branch)
 - main repo: kmtc-3w-dashboard (master branch)
+- `dist/`는 별도 Git 저장소이며 GitHub Pages 정적 사이트의 실제 배포 대상이다.
+- `daily_3w_dashboard.py`는 summary JSON을 `dist/data.json`으로 복사한다.
+- `run_daily.bat`는 `dist/data.json` 변경이 있을 때만 `dist` 저장소에서 commit/push한다.
+- main repo는 자동화 코드, 운영 문서, 변경 기록, `dist` 서브모듈/포인터 상태를 관리한다.
+- 배포 확인 순서:
+  1. `dist/data.json`의 `data_date`와 핵심 KPI 값 확인
+  2. `git -C dist status`가 clean인지 확인
+  3. `dist` push 후 GitHub Pages URL에서 새 데이터 반영 확인
+  4. main repo에서 코드/문서/`dist` 포인터 변경을 commit/push
 
 ---
 
