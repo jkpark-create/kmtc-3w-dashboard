@@ -45,9 +45,9 @@
 
 **BSA raw (월간회의3주전)**: BSA(Booking Space Allocation) 데이터
 - 소스: `Q_17363223877520/BSArawBKGpattern` 뷰
-- 다운로드 방식: Sales+Team 파라미터별 4회 다운로드 (OBT/EST/IST/JBT)
-- 팀 분류: POR_Country/DLY_Country 기반 classify_team으로 재분류 (중복 방지)
-- 포함: POR_Country, POR_PORT, DLY_Country, DLY_PORT, YYYYMM, WW, TEU_BSA
+- 다운로드 방식: `Sales Team` 파라미터별 4회 다운로드 (OBT/EST/IST/JBT)
+- 팀 필드: Tableau CSV의 `Sales Team`을 canonical `team`으로 사용. `Sales Team`이 없는 과거 파일만 `classify_team`으로 fallback
+- 포함: Sales Team, POR_Country, POR_PORT, DLY_Country, DLY_PORT, YYYYMM, WW, TEU_BSA
 
 ### 3.2 Phase 2: Booking Snapshot 처리
 
@@ -174,9 +174,9 @@ week_start_date → YYYYMM 매핑 함수 (`_build_445_map`):
 
 ---
 
-## 5. 팀 분류 (classify_team)
+## 5. 팀 분류 및 BSA 팀 필드
 
-POR_Country(선적지)와 DLY_Country(도착지) 기반:
+Booking Snapshot의 `team`은 POR_Country(선적지)와 DLY_Country(도착지) 기반 `classify_team`으로 계산한다:
 
 | 조건 | 팀 |
 |------|-----|
@@ -184,6 +184,8 @@ POR_Country(선적지)와 DLY_Country(도착지) 기반:
 | 선적지 == KR AND 도착지 != JP | EST (한국수출) |
 | 선적지 != JP AND 도착지 == KR | IST (한국수입) |
 | 그 외 (JP 관련) | JBT (일본) |
+
+BSA는 Tableau 원천 뷰에 추가된 `Sales Team` 필드를 기준으로 `team`을 연결한다. 국가 기반 재분류는 `Sales Team` 컬럼이 없는 과거 BSA 파일을 읽을 때만 fallback으로 사용한다.
 
 ---
 
@@ -398,10 +400,11 @@ WW = diff + 1
 
 ---
 
-## 13. 변경 이력 (2026-04-21)
+## 13. 변경 이력
 
 | 변경사항 | 커밋 | 설명 |
 |---------|------|------|
+| BSA 팀 필드 연결 | c9a72f8 / fbc3721 | BSA raw의 `Sales Team`을 canonical `team`으로 사용, BSA 재다운로드 및 data.json 배포 |
 | Grade 자동 다운로드 | ef411a5 | `booking snapshot.xlsx` 의존 제거 → Tableau 분기별 다운로드 |
 | Grade 기본값 변경 | a083517 | 미분류 화주: 'C+D' → '' (빈값) |
 | 소석률 계산 수정 | 0b194c0 | norm_lst = 전체 Normal (기존: WOS-3 Normal만) |
