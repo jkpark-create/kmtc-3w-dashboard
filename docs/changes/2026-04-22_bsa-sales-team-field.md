@@ -16,6 +16,7 @@
 
 - `daily_3w_dashboard.py`
 - `DEVELOPMENT.md`
+- `dist/guide.html`
 - `dist/data.json`
 
 ## 검증 결과
