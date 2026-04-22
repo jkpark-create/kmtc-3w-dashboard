@@ -99,8 +99,6 @@ def normalize_bsa_team(df):
                       for o, d in zip(df['POR_Country'], df['DLY_Country'])]
     return df[df['team'].isin(BSA_TEAMS)].copy()
 
-DEST_GROUP_MAP = {'MY':'MY/SG','SG':'MY/SG','AE':'AE','SA':'AE','KW':'AE','QA':'AE','OM':'AE','BH':'AE','IQ':'AE','JO':'AE','EG':'AE'}
-
 # Workbook: booking snapshot(전체) - contentUrl
 BKG_WB_CONTENT_URL = 'bookingsnapshot'
 BKG_WB_ID = '81c076dd-4666-488e-96eb-699612d9e109'
@@ -865,10 +863,9 @@ def process_snapshot():
             return ''
     output['CM1/TEU'] = [safe_div(c, t) for c, t in zip(output['CM1'], output['LST_TEU'])]
 
-    # D_group
-    ae_countries = {'AE', 'SA', 'KW', 'QA', 'OM', 'BH', 'IQ', 'JO', 'EG'}
-    output['D_group'] = ['MY/SG' if j in ('MY', 'SG') else 'AE' if j in ae_countries else j
-                          for j in (str(x).strip() for x in dly_ctrs)]
+    # D_group is retained for downstream compatibility, but now stores the
+    # destination country code without regional grouping.
+    output['D_group'] = [str(x).strip() for x in dly_ctrs]
 
     # YYYYMM
     def lookup_yyyymm(ws_date):
@@ -1212,9 +1209,8 @@ def upload_to_gdrive():
         bkg = bkg.rename(columns={_pt_col[0]: 'profit_type'})
     elif 'profit_type' not in bkg.columns:
         bkg['profit_type'] = ''
-    _DEST_MAP = {'MY':'MY/SG','SG':'MY/SG','AE':'AE','SA':'AE','KW':'AE','QA':'AE','OM':'AE','BH':'AE','IQ':'AE','JO':'AE','EG':'AE'}
     if 'dest' not in bkg.columns:
-        bkg['dest'] = bkg['DLY_CTR_CD'].map(_DEST_MAP).fillna(bkg['DLY_CTR_CD'])
+        bkg['dest'] = bkg['DLY_CTR_CD'].astype(str).str.strip()
         bkg['origin'] = bkg['POR_CTR_CD']
         bkg['ori_port'] = bkg['POR_PLC_CD']
         bkg['dst_port'] = bkg['DLY_PLC_CD']
@@ -1323,8 +1319,8 @@ def upload_to_gdrive():
         bsa = bsa[bsa['DLY_Country'].str.len() <= 3]
         bsa = bsa[bsa['POR_Country'].str.len() <= 3]
         bsa['teu_bsa'] = pd.to_numeric(bsa['TEU_BSA (Actual)'].str.replace(',',''), errors='coerce').fillna(0)
-        # Apply same dest grouping as BKG (MY/SG, AE group)
-        bsa['dest'] = bsa['DLY_Country'].map(_DEST_MAP).fillna(bsa['DLY_Country'])
+        # Keep destination at country-code level to match BKG.
+        bsa['dest'] = bsa['DLY_Country'].astype(str).str.strip()
         bsa['origin'] = bsa['POR_Country']
         bsa_agg = bsa.groupby(['team','origin','POR_PORT','dest','DLY_PORT','YYYYMM','WW'])['teu_bsa'].sum().reset_index()
         bsa_agg = bsa_agg[bsa_agg['teu_bsa'] > 0]  # teu_bsa=0 records contribute nothing; drop to avoid field-missing issue in JSON

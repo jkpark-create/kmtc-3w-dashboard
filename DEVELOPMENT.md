@@ -237,15 +237,11 @@ BSA는 Tableau 원천 뷰에 추가된 `Sales Team` 필드를 기준으로 `team
 
 ---
 
-## 6. 도착지 그룹 매핑 (DEST_GROUP_MAP)
+## 6. 도착지 국가 기준
 
-BKG와 BSA 모두 동일 매핑 적용:
+BKG와 BSA 모두 도착지를 국가 코드 단위로 유지한다. 과거에는 `MY/SG`, `AE`처럼 일부 도착지를 그룹으로 묶었지만, 현재 대시보드의 `dest`는 원본 도착 국가 코드(`DLY_CTR_CD`/`DLY_Country`)를 그대로 사용한다.
 
-| 원본 국가 | 그룹 |
-|-----------|------|
-| MY, SG | MY/SG |
-| AE, SA, KW, QA, OM, BH, IQ, JO, EG | AE |
-| 기타 | 원본 코드 유지 |
+`D_group` 컬럼은 기존 산출물 호환을 위해 유지하지만, 값은 그룹명이 아니라 도착 국가 코드다.
 
 ---
 
@@ -266,6 +262,8 @@ BKG와 BSA 모두 동일 매핑 적용:
 | 화주구분 | fProfit | 고수익태그 | N/A |
 | 등급 | fGrade | grade | N/A |
 | 영업사원 | fSales | Salesman_POR | N/A |
+
+`fOri`, `fOriP`, `fDst`, `fDstP`는 체크박스형 멀티셀렉트이며, 선택값이 없으면 전체로 처리한다.
 
 ### 7.2 Cascading 필터 순서
 
