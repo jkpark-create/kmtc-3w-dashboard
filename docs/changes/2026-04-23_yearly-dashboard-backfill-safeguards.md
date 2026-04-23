@@ -13,10 +13,11 @@
 
 ## 결정/계산 로직
 
-- View 2 `Date_vsl`에 대상 `DATASET_YEAR`가 없으면 연간 대시보드 생성을 중단한다.
+- View 2가 빈 파일이면 연간 대시보드 생성을 중단한다.
 - 연간 데이터셋에서 집계 대상 booking row가 없으면 summary JSON 생성을 중단한다.
 - Tableau publish 대기 시간은 `TABLEAU_PUBLISH_WAIT_SECONDS` 환경변수로 조정 가능하게 했다.
 - View 2 날짜 필터 컬럼 식별자를 현재 Tableau workbook 기준으로 갱신했다.
+- 연간 다운로드에서 View 2는 원본 workbook의 오른쪽 `YYYYMM` categorical filter를 `YYYY01~YYYY12` 멤버로 직접 바꾼 임시 workbook에서 다운로드한다.
 - `1_*.csv`, `2_*.csv`, `generated_docs/`를 `.gitignore`에 추가했다.
 
 ## 변경 파일
@@ -28,10 +29,15 @@
 ## 검증 결과
 
 - `python -m py_compile daily_3w_dashboard.py` 통과
+- `DASHBOARD_DOWNLOAD_VIEWS=2`, `DASHBOARD_DATASET_ID=2025`로 View 2 `YYYYMM=202501~202512` 다운로드 확인
+- `2_2025.csv`: 1,163,391 rows, `1_2025.csv`와 98.21% BKG_NO 매칭
+- `dashboard_summary_2025.json`: 165,709,584 bytes, Google Drive 업로드 완료
+- BSA는 Tableau CSV export 기준 2025 rows가 없어 `bsa: 0`으로 생성됨
 
 ## 배포/커밋
 
-- Main repo 반영 예정
+- Google Drive 업로드 완료: `dashboard_summary_2025.json`
+- Main repo 반영: 이 변경 기록과 함께 커밋
 
 ## 후속 확인사항
 

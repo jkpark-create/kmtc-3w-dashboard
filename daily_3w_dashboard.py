@@ -149,13 +149,56 @@ def tableau_rest_api():
     return s, api_ver, site_id
 
 
-def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_name=None):
+VIEW2_YYYYMM_CALC = 'Calculation_5632314318418350528'
+VIEW2_YYYYMM_COLUMN = f'[sqlproxy.1vgswr41razzwa148ywuc0fpriw3].[none:{VIEW2_YYYYMM_CALC}:nk]'
+VIEW2_YYYYMM_LEVEL = f'[none:{VIEW2_YYYYMM_CALC}:nk]'
+
+
+def normalize_yyyymm_values(values):
+    """Normalize YYYYMM filter values from a string or iterable."""
+    if not values:
+        return []
+    if isinstance(values, str):
+        values = re.split(r'[\s,;]+', values.strip())
+    return [str(v).strip() for v in values if str(v).strip()]
+
+
+def yyyymm_members_from_filter(filter_el):
+    """Extract selected YYYYMM members from a Tableau categorical filter."""
+    out = []
+    if filter_el is None:
+        return out
+    for member_el in filter_el.findall('.//groupfilter'):
+        member = member_el.get('member')
+        if member:
+            out.append(member.replace('"', '').strip())
+    return out
+
+
+def set_yyyymm_filter_members(filter_el, yyyymm_values):
+    """Replace a Tableau categorical YYYYMM filter with explicit members."""
+    import xml.etree.ElementTree as ET
+    filter_el.clear()
+    filter_el.set('class', 'categorical')
+    filter_el.set('column', VIEW2_YYYYMM_COLUMN)
+    group = ET.SubElement(filter_el, 'groupfilter', {'function': 'union'})
+    for yyyymm in yyyymm_values:
+        ET.SubElement(group, 'groupfilter', {
+            'function': 'member',
+            'level': VIEW2_YYYYMM_LEVEL,
+            'member': f'"{yyyymm}"',
+        })
+
+
+def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_name=None, view2_yyyymm=None):
     """Download original TWB, modify filter, publish as temp workbook."""
     import xml.etree.ElementTree as ET
     start = start or BKG_SCHEDULE_START
     end = end or BKG_SCHEDULE_END
     workbook_name = workbook_name or TEMP_WB_NAME
+    view2_yyyymm = normalize_yyyymm_values(view2_yyyymm or os.environ.get('FILTER_VIEW2_YYYYMM'))
     need_view2_date_filter = os.environ.get('FILTER_VIEW2_DATE') == '1'
+    need_view2_yyyymm_filter = bool(view2_yyyymm)
 
     # Check if temp workbook exists (search by name; contentUrl may have suffix)
     resp = s.get(
@@ -179,6 +222,7 @@ def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_nam
         tree = ET.parse(io.BytesIO(content))
         schedule_ok = False
         view2_date_ok = not need_view2_date_filter
+        view2_yyyymm_ok = not need_view2_yyyymm_filter
         for f in tree.getroot().iter('filter'):
             col = f.get('column', '')
             if 'Calculation_0356804709482497' in col:
@@ -189,8 +233,10 @@ def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_nam
                 min_el = f.find('min')
                 max_el = f.find('max')
                 view2_date_ok = min_el is not None and start in (min_el.text or '') and max_el is not None and end in (max_el.text or '')
+            if need_view2_yyyymm_filter and VIEW2_YYYYMM_CALC in col:
+                view2_yyyymm_ok = yyyymm_members_from_filter(f) == view2_yyyymm
 
-        if schedule_ok and view2_date_ok:
+        if schedule_ok and view2_date_ok and view2_yyyymm_ok:
             print(f"  Temp workbook exists with correct filter ({start} ~ {end})")
             return actual_content_url
 
@@ -263,6 +309,27 @@ def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_nam
             print(f"  View 2 Date_vsl filter: {start} ~ {end}")
         else:
             print("  WARNING: worksheet 2 view not found; Date_vsl filter not added")
+
+    if need_view2_yyyymm_filter:
+        view2_filter = None
+        for ws in tree.getroot().findall('.//worksheet'):
+            if ws.get('name') != '2':
+                continue
+            view = ws.find('./table/view')
+            if view is None:
+                continue
+            for f in view.findall('filter'):
+                if VIEW2_YYYYMM_CALC in f.get('column', ''):
+                    view2_filter = f
+                    break
+            if view2_filter is None:
+                view2_filter = ET.SubElement(view, 'filter')
+            break
+        if view2_filter is not None:
+            set_yyyymm_filter_members(view2_filter, view2_yyyymm)
+            print(f"  View 2 YYYYMM filter: {','.join(view2_yyyymm)}")
+        else:
+            print("  WARNING: worksheet 2 view not found; YYYYMM filter not added")
 
     twb_bytes = io.BytesIO()
     tree.write(twb_bytes, encoding='utf-8', xml_declaration=True)
@@ -408,31 +475,54 @@ def fiscal_quarter_chunks(year):
         yield idx + 1, f'{start:%Y-%m-%d} 00:00:00', f'{end:%Y-%m-%d} 00:00:00'
 
 
-def download_all_chunked():
-    """Download yearly booking views in fiscal-quarter chunks, then merge to 1_YYYY/2_YYYY."""
-    print("[1/3] Downloading booking views by fiscal quarter...")
-    requested_views = set(os.environ.get('DASHBOARD_DOWNLOAD_VIEWS', '1,2').split(','))
-    view_specs = [(name, label) for name, label in [('1', 'View 1'), ('2', 'View 2')] if name in requested_views]
-    parts = {name: [] for name, _ in view_specs}
-    s, api_ver, site_id = tableau_rest_api()
-    try:
-        for chunk_no, start, end in fiscal_quarter_chunks(DATASET_YEAR):
-            print(f"  Chunk Q{chunk_no}: {start} ~ {end}")
-            wb_name = f'{TEMP_WB_NAME}_q{chunk_no}'
-            wb_url = ensure_temp_workbook(s, api_ver, site_id, start=start, end=end, workbook_name=wb_name)
+def yearly_yyyymm_filter(year):
+    """Return comma-separated YYYYMM values for Tableau multi-select filters."""
+    return ','.join(f'{year}{month:02d}' for month in range(1, 13))
 
-            for view_name, label in view_specs:
-                part_path = WORK_DIR / f'{view_name}_{DATASET_ID}_q{chunk_no}.csv'
-                print(f"    Downloading {label} ({part_path.name})...")
-                size = download_csv_from_tableau(wb_url, view_name, part_path)
+
+def download_all_chunked():
+    """Download yearly booking views and merge chunked View 1 output."""
+    print("[1/3] Downloading yearly booking views...")
+    requested_views = set(os.environ.get('DASHBOARD_DOWNLOAD_VIEWS', '1,2').split(','))
+    parts = {'1': []} if '1' in requested_views else {}
+
+    if '1' in requested_views:
+        s, api_ver, site_id = tableau_rest_api()
+        try:
+            for chunk_no, start, end in fiscal_quarter_chunks(DATASET_YEAR):
+                print(f"  View 1 chunk Q{chunk_no}: {start} ~ {end}")
+                wb_name = f'{TEMP_WB_NAME}_q{chunk_no}'
+                wb_url = ensure_temp_workbook(s, api_ver, site_id, start=start, end=end, workbook_name=wb_name)
+                part_path = WORK_DIR / f'1_{DATASET_ID}_q{chunk_no}.csv'
+                print(f"    Downloading View 1 ({part_path.name})...")
+                size = download_csv_from_tableau(wb_url, '1', part_path)
                 rows = count_csv_rows(part_path)
                 print(f"      {part_path.name}: {size:,} bytes ({rows:,} rows)")
-                parts[view_name].append(part_path)
-    finally:
+                parts['1'].append(part_path)
+        finally:
+            try:
+                s.post(f'{TABLEAU_SERVER}/api/{api_ver}/auth/signout', timeout=10)
+            except Exception:
+                pass
+
+    if '2' in requested_views:
+        out_path = dataset_csv_path('2')
+        yyyymm = yearly_yyyymm_filter(DATASET_YEAR)
+        yyyymm_values = normalize_yyyymm_values(yyyymm)
+        print(f"  Preparing View 2 workbook with YYYYMM={yyyymm}...")
+        s, api_ver, site_id = tableau_rest_api()
         try:
-            s.post(f'{TABLEAU_SERVER}/api/{api_ver}/auth/signout', timeout=10)
-        except Exception:
-            pass
+            wb_name = f'{TEMP_WB_NAME}_view2_yyyymm'
+            wb_url = ensure_temp_workbook(s, api_ver, site_id, workbook_name=wb_name, view2_yyyymm=yyyymm_values)
+        finally:
+            try:
+                s.post(f'{TABLEAU_SERVER}/api/{api_ver}/auth/signout', timeout=10)
+            except Exception:
+                pass
+        print(f"  Downloading View 2 ({out_path.name})...")
+        size = download_csv_from_tableau(wb_url, '2', out_path)
+        rows = count_csv_rows(out_path)
+        print(f"    {out_path.name}: {size:,} bytes ({rows:,} rows)")
 
     print("[2/3] Merging chunked booking CSVs...")
     for view_name in parts:
@@ -625,14 +715,8 @@ def process_snapshot():
     df2.columns = [re.sub(r'[^\x00-\x7F]+$', '', c).strip() for c in df2.columns]
     df1 = drop_tableau_total_rows(df1, path1.name)
     df2 = drop_tableau_total_rows(df2, path2.name)
-    if DATASET_IS_YEARLY and 'Date_vsl' in df2.columns:
-        date_text = df2['Date_vsl'].astype(str)
-        has_dataset_year = date_text.str.contains(f'{DATASET_YEAR}년|{DATASET_YEAR}-', regex=True, na=False).any()
-        if not has_dataset_year:
-            raise RuntimeError(
-                f"View 2 has no Date_vsl rows for {DATASET_YEAR}; "
-                "cannot build a yearly dashboard with actual shipment metrics."
-            )
+    if DATASET_IS_YEARLY and df2.empty:
+        raise RuntimeError(f"View 2 has no rows for yearly dataset {DATASET_ID}.")
 
     # Base: 2.csv (모든 부킹), Supplement: 1.csv (상세 정보)
     df2_dedup = df2.drop_duplicates(subset='BKG_NO', keep='first')
