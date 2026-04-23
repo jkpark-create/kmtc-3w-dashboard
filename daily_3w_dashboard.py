@@ -88,6 +88,26 @@ def classify_team(origin, dly_raw):
 
 BSA_TEAMS = ('OBT', 'EST', 'IST', 'JBT')
 
+DEST_GROUP_MAP = {
+    'MY': 'MY/SG',
+    'SG': 'MY/SG',
+    'AE': 'AE',
+    'SA': 'AE',
+    'KW': 'AE',
+    'QA': 'AE',
+    'OM': 'AE',
+    'BH': 'AE',
+    'IQ': 'AE',
+    'JO': 'AE',
+    'EG': 'AE',
+}
+
+def destination_group(country_code):
+    code = str(country_code).strip()
+    if code.lower() == 'nan':
+        return ''
+    return DEST_GROUP_MAP.get(code, code)
+
 def normalize_bsa_team(df):
     """Use Tableau's BSA Sales Team field as the canonical team."""
     team_col = next((c for c in ('Sales Team', 'Sales_Team', 'team', 'Team') if c in df.columns), None)
@@ -958,9 +978,8 @@ def process_snapshot():
             return ''
     output['CM1/TEU'] = [safe_div(c, t) for c, t in zip(output['CM1'], output['LST_TEU'])]
 
-    # D_group is retained for downstream compatibility, but now stores the
-    # destination country code without regional grouping.
-    output['D_group'] = [str(x).strip() for x in dly_ctrs]
+    # D_group is retained as the legacy destination grouping column.
+    output['D_group'] = [destination_group(x) for x in dly_ctrs]
 
     # YYYYMM
     def lookup_yyyymm(ws_date):
@@ -1306,12 +1325,24 @@ def upload_to_gdrive():
         bkg = bkg.rename(columns={_pt_col[0]: 'profit_type'})
     elif 'profit_type' not in bkg.columns:
         bkg['profit_type'] = ''
-    if 'dest' not in bkg.columns:
-        bkg['dest'] = bkg['DLY_CTR_CD'].astype(str).str.strip()
-        bkg['origin'] = bkg['POR_CTR_CD']
-        bkg['ori_port'] = bkg['POR_PLC_CD']
-        bkg['dst_port'] = bkg['DLY_PLC_CD']
-        bkg['team'] = [classify_team(str(o).strip(),str(d).strip()) for o,d in zip(bkg['POR_CTR_CD'], bkg['DLY_CTR_CD'])]
+    def _clean_bkg_col(col, fallback=''):
+        if col in bkg.columns:
+            return bkg[col].astype(str).str.strip()
+        return pd.Series([fallback] * len(bkg), index=bkg.index)
+
+    # Dashboard route fields should read the source country/port columns.
+    # In particular, dest is J열(DLY_CTR_CD), not AD열(D_group).
+    bkg['dest'] = _clean_bkg_col('DLY_CTR_CD') if 'DLY_CTR_CD' in bkg.columns else _clean_bkg_col('dest')
+    bkg['origin'] = _clean_bkg_col('POR_CTR_CD') if 'POR_CTR_CD' in bkg.columns else _clean_bkg_col('origin')
+    bkg['ori_port'] = _clean_bkg_col('POR_PLC_CD') if 'POR_PLC_CD' in bkg.columns else _clean_bkg_col('ori_port')
+    bkg['dst_port'] = _clean_bkg_col('DLY_PLC_CD') if 'DLY_PLC_CD' in bkg.columns else _clean_bkg_col('dst_port')
+    if 'POR_CTR_CD' in bkg.columns and 'DLY_CTR_CD' in bkg.columns:
+        bkg['team'] = [
+            classify_team(str(o).strip(), str(d).strip())
+            for o, d in zip(bkg['POR_CTR_CD'], bkg['DLY_CTR_CD'])
+        ]
+    elif 'team' not in bkg.columns:
+        bkg['team'] = ''
     if 'fst' not in bkg.columns:
         bkg['fst'] = pd.to_numeric(bkg.get('FST_TEU','0').astype(str).str.replace(',',''), errors='coerce').fillna(0)
         bkg['lst'] = pd.to_numeric(bkg.get('LST_TEU','0').astype(str).str.replace(',',''), errors='coerce').fillna(0)
