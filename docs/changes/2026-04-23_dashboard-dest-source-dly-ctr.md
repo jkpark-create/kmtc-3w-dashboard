@@ -29,11 +29,14 @@
 - `D_group` 검증 결과 불일치 0건
 - `SKIP_GDRIVE_UPLOAD=1`로 `dashboard_summary_20260423.json` 및 `dist/data.json` 재생성
 - `dist/data.json`에서 `dest:"MY/SG"` 0건, `dest:"MY"`/`dest:"SG"` 등 원본 국가 코드 유지 확인
+- 운영 배포 모드로 `dashboard_summary.json`, `dashboard_summary_20260423.json`, `_cache_20260423.parquet`, `BSA_raw_monthly3W_20260423.csv` Google Drive 업데이트 완료
 
 ## 배포/커밋
 
-- 미배포
+- Google Drive 업로드 완료
+- GitHub Pages 배포 repo(`dist`)는 `data.json` 변경 없음
+- Main repo 반영 완료: `kmtc-3w-dashboard` `3209f70`
 
 ## 후속 확인사항
 
-- 운영 환경 업로드가 필요하면 `SKIP_GDRIVE_UPLOAD` 없이 정기 실행 또는 업로드 단계를 실행한다.
+- 공개 GitHub Pages URL에서 브라우저 캐시 새로고침 후 도착지 필터가 국가 코드 기준으로 표시되는지 확인한다.
