@@ -393,6 +393,7 @@ WW = diff + 1
   - View `1`, `2`를 각각 CSV로 다운로드한다.
 - BSA:
   - 소스 뷰는 `Q_17363223877520/BSArawBKGpattern`.
+  - CSV URL 필터는 Tableau URL filter 접두사(`vf_`)가 아니라 화면 필터 캡션 그대로 `YYYY`, `YYYYMM`, `Sales Team`을 사용한다. `vf_YYYYMM`을 사용하면 Tableau 기본 YYYYMM 선택이 유지되어 연간 백필에서 현재연도 BSA가 내려올 수 있다.
   - `Sales Team` 파라미터로 OBT/EST/IST/JBT를 각각 다운로드한다.
   - CSV에 포함된 `Sales Team` 컬럼을 대시보드의 canonical `team`으로 사용한다.
 - Grade:
@@ -499,6 +500,7 @@ WW = diff + 1
 | 소석률 계산 수정 | 0b194c0 | norm_lst = 전체 Normal (기존: WOS-3 Normal만) |
 | 고수익태그 수정 | a083517 | 전역 최신월 → 화주+선적지별 최신월 기준 |
 | BSA 집계 수정 | ee0ecba | teu_bsa 필드 누락 처리 + 0값 레코드 제거 |
+| 2025 BSA 백필 | 이번 변경 | BSA CSV export 필터를 `YYYY`/`YYYYMM` 캡션 파라미터로 수정, 2025 summary에 BSA 62,752 rows 반영 |
 | 고수익화주 집계 수정 | eda7ca5 / 201c99d | hi/w3_hi 메트릭을 `고수익태그` 기준으로 계산, 구간별 고수익은 w3_route_hi_fst로 분리 |
 | 문서 운영 구조 추가 | docs | 사용자 가이드/개발 문서/개발건별 변경 기록의 역할 분리 |
 | 445 Calendar 분리 | ef411a5 | 항상 코드에서 445 맵 생성 (template 의존 제거) |

@@ -605,8 +605,11 @@ def download_bsa():
         all_dfs = []
         for team in BSA_TEAMS:
             params = urllib.parse.urlencode({
-                'vf_YYYY': yyyy_filter,
-                'vf_YYYYMM': yyyymm_all,
+                # BSArawBKGpattern CSV export honors the visible filter captions
+                # directly. Using vf_YYYY/vf_YYYYMM keeps Tableau's default
+                # YYYYMM selection and returns the current-year rows.
+                'YYYY': yyyy_filter,
+                'YYYYMM': yyyymm_all,
                 'Sales Team': team,
             }, safe=',')
             csv_url = f'{TABLEAU_SERVER}/views/{BSA_VIEW_URL}.csv?{params}'
@@ -1483,9 +1486,9 @@ def upload_to_gdrive():
     else:
         print("  Historical dataset: output cleanup skipped")
 
-    with open(GDRIVE_CREDS_DIR / 'credentials.json') as f:
+    with open(GDRIVE_CREDS_DIR / 'credentials.json', encoding='utf-8-sig') as f:
         creds = _json.load(f)['installed']
-    with open(GDRIVE_CREDS_DIR / 'token.json') as f:
+    with open(GDRIVE_CREDS_DIR / 'token.json', encoding='utf-8-sig') as f:
         token = _json.load(f)
 
     resp = requests.post('https://oauth2.googleapis.com/token', data={
