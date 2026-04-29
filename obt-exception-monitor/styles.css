@@ -437,7 +437,7 @@ table {
 }
 
 .route-table th:nth-child(1) {
-  width: 25%;
+  width: 20%;
 }
 
 .route-table th:nth-child(2) {
@@ -457,7 +457,7 @@ table {
 }
 
 .route-table th:nth-child(6) {
-  width: 12%;
+  width: 17%;
 }
 
 .route-table th:nth-child(7) {

@@ -1942,12 +1942,13 @@ function buildShipperExceptions(currentMap, baselineMap, routeContext) {
 
     const impactTeu = Math.max(0, baseTeu - currentTeu, baseW3Teu - currentW3Teu);
     const context = routeContext.get(template.routeKey) || {};
-    const bsaShortfall = Math.max(0, (context.bsaTeu || 0) - currentTeu);
+    const bsaShortfall = Math.max(0, (context.bsaTeu || 0) - (context.currentTeu || 0));
     const focus = classifyShipperFocus(issue, context, impactTeu);
     rows.push({
       ...template,
       bsaTeu: context.bsaTeu || 0,
       bsaShortfall,
+      routeCurrentTeu: context.currentTeu || 0,
       isImportant: Boolean(context.isImportant),
       priority: focus.priority,
       focusReason: focus.reason,
@@ -2974,7 +2975,7 @@ function renderShippers(analysis) {
       <td>${row.sales}</td>
       <td>
         ${row.origin} ${row.pol} → ${row.dest} ${row.dst}
-        <div class="subline">${row.bsaTeu ? `BSA ${fmt(row.bsaTeu)} · Gap ${fmt(row.bsaShortfall)}` : t("labels.bsaNone")}</div>
+        <div class="subline" title="${escapeAttr(state.lang === "en" ? "Route-level BSA and route-level gap. This is not a customer-specific BSA allocation." : "구간 전체 BSA와 구간 전체 현재 TEU 기준 Gap입니다. 화주별 BSA 배정값이 아닙니다.")}">${row.bsaTeu ? (state.lang === "en" ? `Route BSA ${fmt(row.bsaTeu)} · Route Gap ${fmt(row.bsaShortfall)}` : `구간BSA ${fmt(row.bsaTeu)} · 구간Gap ${fmt(row.bsaShortfall)}`) : t("labels.bsaNone")}</div>
       </td>
       <td class="num">${fmt(row.currentTeu)}</td>
       <td class="num">${fmt(row.baseTeu)}</td>

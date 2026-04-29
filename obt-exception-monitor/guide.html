@@ -728,6 +728,7 @@
           <ol>
             <li>P1 화주부터 확인합니다.</li>
             <li>구간의 판단이 BSA 목표 Gap인지, 리드타임 부족인지 먼저 봅니다.</li>
+            <li>구간 열의 <strong>구간BSA</strong>는 화주별 배정이 아니라 해당 Route 전체의 BSA이며, <strong>구간Gap</strong>은 Route 전체 현재 TEU를 뺀 부족분입니다.</li>
             <li>현재 TEU가 0이면 재확보 접근, 일부 남아 있으면 회복 접근을 합니다.</li>
             <li>3W TEU 감소는 차주 이후 선적 계획과 조기 부킹 가능성을 확인합니다.</li>
             <li>Late 의존 또는 3W 취소위험은 부킹 품질과 취소 사유를 확인합니다.</li>
@@ -738,6 +739,7 @@
           <ol>
             <li>Start with P1 customers.</li>
             <li>Check whether the route judgment is BSA target gap or lead-time shortage.</li>
+            <li><strong>Route BSA</strong> is the route-level BSA, not a customer-specific allocation. <strong>Route Gap</strong> is BSA minus the route's current TEU.</li>
             <li>If current TEU is zero, use a win-back approach; if some TEU remains, use recovery.</li>
             <li>For 3W TEU decline, confirm future shipment plan and early-booking feasibility.</li>
             <li>For Late dependency or 3W cancellation risk, check booking quality and cancellation reasons.</li>
