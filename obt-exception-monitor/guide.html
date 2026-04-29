@@ -70,6 +70,76 @@
       gap: 10px;
     }
 
+    .app-root {
+      display: none;
+    }
+
+    .login-wrap {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+      background: #eef2ef;
+    }
+
+    .login-box {
+      width: min(420px, calc(100vw - 40px));
+      padding: 36px 34px;
+      text-align: center;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 12px 36px rgba(15, 31, 25, .14);
+    }
+
+    .login-box h2 {
+      margin: 0 0 8px;
+      color: var(--header);
+      font-size: 22px;
+    }
+
+    .login-box p {
+      margin: 0 0 22px;
+      color: var(--muted);
+    }
+
+    .google-login {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      height: 38px;
+      padding: 0 18px;
+      color: #fff;
+      font-weight: 800;
+      background: #1a73e8;
+      border: 0;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .error {
+      display: none;
+      margin: 14px 0 0;
+      color: var(--danger);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .user-chip {
+      max-width: 210px;
+      height: 30px;
+      padding: 0 10px;
+      overflow: hidden;
+      color: rgba(255, 255, 255, .82);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      background: rgba(255, 255, 255, .08);
+      border: 1px solid rgba(255, 255, 255, .24);
+      border-radius: 5px;
+      cursor: pointer;
+    }
+
     .back-link {
       height: 30px;
       padding: 5px 12px;
@@ -384,6 +454,9 @@
   </style>
 </head>
 <body data-lang="ko">
+  <div class="login-wrap" id="login"></div>
+
+  <div class="app-root" id="app">
   <header class="guide-header">
     <div>
       <h1 class="ko">OBT Exception Monitor 사용 가이드</h1>
@@ -399,6 +472,7 @@
       </button>
       <a href="index.html" class="back-link ko">대시보드</a>
       <a href="index.html" class="back-link en">Dashboard</a>
+      <button class="user-chip" id="userInfo" type="button" onclick="OBTAuth.logout()"></button>
     </div>
   </header>
 
@@ -751,7 +825,9 @@
       </nav>
     </aside>
   </div>
+  </div>
 
+  <script src="auth.js"></script>
   <script>
     const langToggle = document.getElementById("langToggle");
     const anchors = Array.from(document.querySelectorAll(".side-toc a"));
@@ -770,6 +846,7 @@
     langToggle.addEventListener("click", () => {
       lang = lang === "ko" ? "en" : "ko";
       applyLanguage();
+      if (window.OBTAuth) OBTAuth.refreshUser();
     });
 
     document.querySelectorAll('a[href^="#"]').forEach((link) => {
@@ -794,6 +871,7 @@
     window.addEventListener("scroll", updateActiveAnchor, { passive: true });
     applyLanguage();
     updateActiveAnchor();
+    OBTAuth.requireAuth();
   </script>
 </body>
 </html>

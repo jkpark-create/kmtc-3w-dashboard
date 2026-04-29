@@ -1,29 +1,27 @@
 # OBT Exception Monitor Deployment Notes
 
-## Current decision
+## Current access model
 
-The monitor is ready as a static page, but the existing GitHub Pages target is public:
+The monitor follows the same client-side Google OAuth gate used by the existing `-3W Booking Dashboard`:
 
-- source repo: `jkpark-create/kmtc-3w-dashboard`
+- OAuth client: `409330651463-giie223egsskdq10etn642gjtron1hq5.apps.googleusercontent.com`
+- allowed domain: `ekmtc.com`
+- shared session keys: `gtoken`, `guser`
 - Pages repo: `jkpark-create/kmtc-3w-dashboard-web`
 
-Because the requested access rule is "company Google account only", the monitor should not be deployed directly to the public Pages site with data artifacts. The generated daily speed file `history.json` is intentionally ignored in this repo.
+If a user has already signed in to the existing dashboard, `/obt-exception-monitor/` opens with the same session. If a user opens the monitor directly, it redirects through the existing Pages root OAuth callback and returns to `/obt-exception-monitor/` after sign-in.
 
-## Safe deployment patterns
+`history.json` is generated data and is intentionally ignored in the source repo. It is copied only into the Pages deployment repo.
 
-1. GitHub as source + Cloudflare Access
-   - Deploy the static site from GitHub.
-   - Put Cloudflare Access in front of the site.
-   - Allow only the company Google Workspace domain.
+## Stronger protection options
 
-2. GitHub as source + Google Cloud IAP
-   - Deploy the static files to a Google-hosted frontend.
-   - Protect the service with Identity-Aware Proxy.
-   - Allow only company Google Workspace users/groups.
+The current approach matches the existing dashboard and protects the UI flow. For server-side file protection, use one of these stronger patterns:
 
-3. GitHub Enterprise private/internal Pages
-   - Move the Pages site to an Enterprise organization that supports private or internal Pages.
-   - This gates access by GitHub identity. If company Google login is required, connect the organization identity provider to Google Workspace/SAML.
+1. Cloudflare Access in front of the static site, restricted to the company Google Workspace domain.
+
+2. Google Cloud IAP in front of a Google-hosted static frontend.
+
+3. GitHub Enterprise private/internal Pages with organization SSO tied to the company identity provider.
 
 ## Static deployment files
 
@@ -33,6 +31,7 @@ Minimum files for the dashboard:
 - `styles.css`
 - `app.js`
 - `guide.html`
+- `auth.js`
 
 Generated runtime data:
 

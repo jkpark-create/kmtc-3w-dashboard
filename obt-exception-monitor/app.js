@@ -439,7 +439,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.documentElement.lang = state.lang;
   }
   applyLanguage();
-  loadData();
+  OBTAuth.requireAuth({ onReady: () => loadData() });
 });
 
 function cacheElements() {
@@ -502,6 +502,7 @@ function toggleLanguage() {
   document.documentElement.lang = state.lang;
   localStorage.setItem("obtExceptionLang", state.lang);
   applyLanguage();
+  if (window.OBTAuth) OBTAuth.refreshUser();
   populateBaseFilters();
   refreshDependentFilters();
   render();
