@@ -699,7 +699,7 @@
             <tr><td>상태</td><td>즉시 대응, 우선 확인, 화주 회복, 관찰</td><td>당일 미팅이나 담당자 배정 우선순위입니다.</td></tr>
             <tr><td>영향 TEU</td><td>담당 화주의 감소/이탈 영향 TEU 합계</td><td>실제 물량 영향이 큰 담당자를 우선 봅니다.</td></tr>
             <tr><td>관리 Gap</td><td>BSA Gap, 예상 Gap, 트렌드 Gap, 영향 TEU 중 큰 값</td><td>담당자가 관리해야 할 최대 리스크 크기입니다.</td></tr>
-            <tr><td>트렌드</td><td>리드타임 기준보다 느린 담당 구간 수</td><td>구간 전체 흐름이 늦은지 확인합니다.</td></tr>
+            <tr><td>지연구간</td><td>리드타임 트렌드 또는 최근 부킹속도 기준보다 느린 담당 구간 수</td><td>0이면 해당 담당자는 구간 지연보다 화주 감소/이탈, 3W 약화, BSA 목표 Gap 때문에 표시된 것입니다.</td></tr>
             <tr><td>화주상태</td><td>회복 후보 / 재확보 후보</td><td>감소 화주와 완전 이탈 화주 접근을 다르게 합니다.</td></tr>
             <tr><td>대표 구간</td><td>영향 TEU가 가장 큰 구간</td><td>담당자와 대화할 때 첫 확인 구간입니다.</td></tr>
           </table>
@@ -712,7 +712,7 @@
             <tr><td>Status</td><td>Immediate, Priority Check, Customer Recovery, Watch</td><td>Priority for same-day discussion or owner assignment.</td></tr>
             <tr><td>Impact TEU</td><td>Sum of decline/churn impact TEU for the owner</td><td>Prioritize owners with larger actual volume impact.</td></tr>
             <tr><td>Action Gap</td><td>Largest of BSA gap, projected gap, trend gap, and impact TEU</td><td>Largest risk size the owner should manage.</td></tr>
-            <tr><td>Trend</td><td>Count of owner routes behind lead-time benchmark</td><td>Checks whether the overall route flow is delayed.</td></tr>
+            <tr><td>Delay Routes</td><td>Owner routes behind either lead-time trend or recent booking pace</td><td>If zero, the owner is flagged mainly by customer decline/churn, weak 3W signal, or BSA target gap rather than route delay.</td></tr>
             <tr><td>Customer State</td><td>Recovery candidates / win-back candidates</td><td>Declining customers and fully lost customers require different approaches.</td></tr>
             <tr><td>Top Route</td><td>Route with largest impact TEU</td><td>First route to discuss with the owner.</td></tr>
           </table>

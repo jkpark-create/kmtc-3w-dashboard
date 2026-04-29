@@ -643,6 +643,14 @@ tr:hover td {
   line-height: 1.2;
 }
 
+.metric-note {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.2;
+}
+
 .sales-focus {
   margin-bottom: 5px;
   font-weight: 900;

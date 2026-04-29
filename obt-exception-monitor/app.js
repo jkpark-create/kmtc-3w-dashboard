@@ -329,7 +329,7 @@ const I18N = {
       routes: "routes",
       p1: "P1",
       p2: "P2",
-      trend: "트렌드",
+      trend: "지연구간",
       customerState: "화주상태",
       impactTeu: "영향",
       actionGap: "관리 Gap"
@@ -396,7 +396,7 @@ const I18N = {
       routes: "routes",
       p1: "P1",
       p2: "P2",
-      trend: "Trend",
+      trend: "Delay Routes",
       customerState: "Customer State",
       impactTeu: "Impact",
       actionGap: "Action Gap"
@@ -2361,6 +2361,7 @@ function buildSalesActions(shipperExceptions, routeExceptions, currentRows, base
       protect: 0,
       trendRoutes: 0,
       speedRoutes: 0,
+      delayRoutes: 0,
       bsaRoutes: 0,
       groups: new Map(),
       issues: new Map(),
@@ -2388,8 +2389,11 @@ function buildSalesActions(shipperExceptions, routeExceptions, currentRows, base
       found.bsaGap += route.bsaShortfall || 0;
       found.projectedGap += route.projectedGap || 0;
       found.trendGap += route.leadTrendGap || 0;
-      found.trendRoutes += ["trend-short", "trend-slow"].includes(route.leadTrendStatus) ? 1 : 0;
-      found.speedRoutes += ["stalled", "slow", "short"].includes(route.paceStatus) ? 1 : 0;
+      const trendBad = ["trend-short", "trend-slow"].includes(route.leadTrendStatus);
+      const speedBad = ["stalled", "slow", "short"].includes(route.paceStatus);
+      found.trendRoutes += trendBad ? 1 : 0;
+      found.speedRoutes += speedBad ? 1 : 0;
+      found.delayRoutes += trendBad || speedBad ? 1 : 0;
       found.bsaRoutes += route.bsaTeu > 0 ? 1 : 0;
     }
     found.score += row.score;
@@ -2435,8 +2439,9 @@ function salesTopRoute(row) {
 }
 
 function salesStatusCode(row) {
-  if (row.p1 >= 8 || row.trendRoutes >= 5 || row.bsaGap >= 500) return "즉시 대응";
-  if (row.p1 > 0 || row.bsaGap >= 150 || row.trendRoutes > 0) return "우선 확인";
+  const delayRoutes = row.delayRoutes || row.trendRoutes || row.speedRoutes || 0;
+  if (row.p1 >= 8 || delayRoutes >= 5 || row.bsaGap >= 500) return "즉시 대응";
+  if (row.p1 > 0 || row.bsaGap >= 150 || delayRoutes > 0) return "우선 확인";
   if (row.winBack || row.recovery) return "화주 회복";
   return "관찰";
 }
@@ -2462,8 +2467,9 @@ function salesStatusTone(row) {
 
 function salesFocusAction(row) {
   const code = salesStatusCode(row);
+  const delayRoutes = row.delayRoutes || row.trendRoutes || row.speedRoutes || 0;
   if (state.lang === "en") {
-    if (row.trendRoutes && row.bsaGap > 0) return "Start with delayed trend routes and separate recovery from substitute volume.";
+    if (delayRoutes && row.bsaGap > 0) return "Start with delayed trend/pace routes and separate recovery from substitute volume.";
     if (row.bsaGap >= 150) return "Split the BSA gap into recoverable customer volume and substitute volume.";
     if (code === "우선 확인" && row.winBack > row.recovery) return "Prioritize win-back feasibility and confirm competitor-switch reasons.";
     if (code === "우선 확인" && row.recovery > 0) return "Check recoverable residual plans for declining customers first.";
@@ -2472,7 +2478,7 @@ function salesFocusAction(row) {
     if (row.advance > 0) return "Convert missing 3W advance-booking customers earlier.";
     return "Review the top route and customer state before outreach.";
   }
-  if (row.trendRoutes && row.bsaGap > 0) return "트렌드 지연 구간의 회복/대체 후보를 먼저 확인";
+  if (delayRoutes && row.bsaGap > 0) return "트렌드/속도 지연 구간의 회복/대체 후보를 먼저 확인";
   if (row.bsaGap >= 150) return "관련 BSA Gap을 회복 후보와 대체 물량으로 분리";
   if (code === "우선 확인" && row.winBack > row.recovery) return "이탈 화주 재확보 가능성과 경쟁사 전환 사유를 우선 확인";
   if (code === "우선 확인" && row.recovery > 0) return "감소 화주의 회복 가능 잔여 물량을 먼저 확인";
@@ -2929,8 +2935,9 @@ function renderSales(analysis) {
           <strong>${fmt(row.actionGap)}</strong>
         </div>
         <div>
-          <span class="metric-label" title="${escapeAttr(state.lang === "en" ? "Number of routes behind lead-time trend benchmarks." : "리드타임 트렌드 기준보다 느린 구간 수입니다.")}">${t("labels.trend")}</span>
-          <strong>${fmt(row.trendRoutes)}${state.lang === "en" ? "" : "구간"}</strong>
+          <span class="metric-label" title="${escapeAttr(state.lang === "en" ? "Routes behind either lead-time trend benchmarks or recent booking pace. If this is zero, the owner is flagged mainly by customer decline, churn, 3W booking weakness, or BSA target gap." : "리드타임 트렌드 또는 최근 부킹속도 기준보다 느린 구간 수입니다. 0이면 담당자는 주로 화주 감소/이탈, 3W 선행부킹 약화, BSA 목표 Gap 때문에 조치 대상입니다.")}">${t("labels.trend")}</span>
+          <strong>${fmt(row.delayRoutes || 0)}${state.lang === "en" ? "" : "구간"}</strong>
+          <span class="metric-note">${state.lang === "en" ? `trend ${fmt(row.trendRoutes)} · pace ${fmt(row.speedRoutes)}` : `트렌드 ${fmt(row.trendRoutes)} · 속도 ${fmt(row.speedRoutes)}`}</span>
         </div>
         <div>
           <span class="metric-label" title="${escapeAttr(state.lang === "en" ? "Recovery candidates have reduced volume; win-back candidates had baseline volume but no current volume." : "회복은 일부 물량이 남은 감소 화주, 재확보는 현재 0인 이탈 화주입니다.")}">${t("labels.customerState")}</span>
