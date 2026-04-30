@@ -515,7 +515,7 @@
           <p>대상은 <strong>OBT 데이터만</strong>입니다. 화면은 기존 -3W Dashboard의 원천 산출물인 <code>dist/data.json</code>(배포 환경에서는 <code>../data.json</code>)과 일별 누적 스냅샷인 <code>history.json</code>을 읽어 계산합니다.</p>
           <table>
             <tr><th>구분</th><th>사용 데이터</th><th>목적</th></tr>
-            <tr><td>현재 TEU</td><td><code>norm_lst</code>, 값이 없으면 <code>fst</code></td><td>선택 대응 시점의 현재 적재/부킹 규모</td></tr>
+            <tr><td>현재 BKG</td><td><code>fst</code></td><td>기존 -3W Dashboard의 전체BKG와 같은 선택 대응 시점의 전체 부킹 규모</td></tr>
             <tr><td>3W TEU</td><td><code>w3_fst</code></td><td>출항 3주전 기준 선행 부킹 규모</td></tr>
             <tr><td>3W 확보 TEU</td><td><code>w3_norm_lst</code></td><td>3주전 부킹 중 실제 Normal로 이어진 물량</td></tr>
             <tr><td>BSA</td><td>BSA 테이블의 <code>teu_bsa</code></td><td>선택된 주차/월과 같은 <code>YYYYMM</code>, <code>WW</code> 기준의 구간별 선복/목표 물량 대비 Gap 산정</td></tr>
@@ -527,7 +527,7 @@
           <p>The dashboard uses <strong>OBT only</strong>. It reads the existing -3W Dashboard output <code>dist/data.json</code> locally, <code>../data.json</code> in the deployed Pages structure, and daily accumulated snapshots in <code>history.json</code>.</p>
           <table>
             <tr><th>Item</th><th>Data Used</th><th>Purpose</th></tr>
-            <tr><td>Current TEU</td><td><code>norm_lst</code>, fallback to <code>fst</code></td><td>Current loaded/booking volume for the selected horizon</td></tr>
+            <tr><td>Current BKG</td><td><code>fst</code></td><td>Total booking volume for the selected horizon, matching Total BKG in the existing -3W Dashboard</td></tr>
             <tr><td>3W TEU</td><td><code>w3_fst</code></td><td>Advance booking volume three weeks before sailing</td></tr>
             <tr><td>3W Secured TEU</td><td><code>w3_norm_lst</code></td><td>3W booking volume converted into Normal loaded volume</td></tr>
             <tr><td>BSA</td><td><code>teu_bsa</code> in BSA table</td><td>Route-level capacity or target gap using BSA rows matching the selected <code>YYYYMM</code> and <code>WW</code></td></tr>
@@ -575,22 +575,22 @@
           <p>주차별 대응은 “동일 최종 주차”가 아니라 “동일 리드타임 상태”로 비교해야 합니다. 3주뒤 물량을 이미 마감에 가까운 과거 최종 TEU와 비교하면 대부분 부족으로 보이기 때문입니다.</p>
           <table>
             <tr><th>비교</th><th>기준</th><th>보정 방식</th></tr>
-            <tr><td>전월</td><td>전월 동일 슬롯 주차</td><td>W+3는 <code>w3_norm_lst</code> 또는 <code>w3_fst</code>, W+2/W+1은 성숙도 보정</td></tr>
+            <tr><td>전월</td><td>전월 동일 슬롯 주차</td><td>W+3는 <code>w3_fst</code>, W+2/W+1은 <code>fst</code>와 <code>w3_fst</code>의 성숙도 보정</td></tr>
             <tr><td>전주차</td><td>선택 주차의 직전 주차</td><td>동일 offset에 맞춰 비교</td></tr>
             <tr><td>최근 3개월 평균</td><td>최근 3개월 동일 슬롯 주차</td><td>3개월 값을 합산 후 3으로 나누고 리드타임 보정</td></tr>
           </table>
-          <div class="formula">W+3 기준 TEU = baseline.w3_norm_lst가 있으면 사용, 없으면 baseline.w3_fst<br>W+2 기준 TEU = w3TEU + (finalTEU - w3TEU) * 45%<br>W+1 기준 TEU = w3TEU + (finalTEU - w3TEU) * 75%</div>
+          <div class="formula">W+3 기준 BKG = baseline.w3_fst<br>W+2 기준 BKG = w3_fst + (fst - w3_fst) * 45%<br>W+1 기준 BKG = w3_fst + (fst - w3_fst) * 75%</div>
           <p>이 보정은 데이터 제약을 고려한 운영 기준입니다. 향후 WOS-2, WOS-1 원천 컬럼이 추가되면 보정값이 아니라 실제 시점별 TEU로 대체하는 것이 가장 좋습니다.</p>
         </div>
         <div class="en">
           <p>Horizon comparison should use the same lead-time stage, not final historical TEU. Comparing W+3 volume against near-final historical TEU would overstate shortages.</p>
           <table>
             <tr><th>Compare</th><th>Baseline</th><th>Adjustment</th></tr>
-            <tr><td>Previous month</td><td>Same week slot in previous month</td><td>W+3 uses <code>w3_norm_lst</code> or <code>w3_fst</code>; W+2/W+1 use maturity adjustment</td></tr>
+            <tr><td>Previous month</td><td>Same week slot in previous month</td><td>W+3 uses <code>w3_fst</code>; W+2/W+1 use maturity adjustment between <code>fst</code> and <code>w3_fst</code></td></tr>
             <tr><td>Previous week</td><td>Week immediately before the selected week</td><td>Aligned to the same horizon offset</td></tr>
             <tr><td>3-month average</td><td>Same week slot across last three months</td><td>Sum, divide by three, then align to lead-time maturity</td></tr>
           </table>
-          <div class="formula">W+3 baseline TEU = baseline.w3_norm_lst if available, otherwise baseline.w3_fst<br>W+2 baseline TEU = w3TEU + (finalTEU - w3TEU) * 45%<br>W+1 baseline TEU = w3TEU + (finalTEU - w3TEU) * 75%</div>
+          <div class="formula">W+3 baseline BKG = baseline.w3_fst<br>W+2 baseline BKG = w3_fst + (fst - w3_fst) * 45%<br>W+1 baseline BKG = w3_fst + (fst - w3_fst) * 75%</div>
           <p>This is an operational adjustment under current source limitations. If WOS-2 and WOS-1 source fields become available, the dashboard should replace maturity estimates with actual time-stage TEU.</p>
         </div>
       </section>
@@ -601,17 +601,17 @@
         <table>
           <tr class="ko"><th>KPI</th><th>계산</th><th>해석</th></tr>
           <tr class="en"><th>KPI</th><th>Calculation</th><th>How To Read</th></tr>
-          <tr class="ko"><td>총 TEU</td><td>선택 기간 현재 TEU 합계</td><td>대상 대응 주차의 전체 물량 규모입니다.</td></tr>
-          <tr class="en"><td>Total TEU</td><td>Sum of current TEU in selected horizon</td><td>Total volume for the selected action horizon.</td></tr>
-          <tr class="ko"><td>BSA 대비 TEU</td><td>선택기간 총 TEU / 선택기간 총 BSA</td><td>선택한 주차/월/3주 합산 조건과 동일한 BSA 대비 소석률입니다. 낮으면 BSA Gap 확인이 필요합니다.</td></tr>
-          <tr class="en"><td>TEU vs BSA</td><td>Selected-period total TEU / selected-period total BSA</td><td>Current utilization against BSA for the same selected week, month, or multi-week period.</td></tr>
+          <tr class="ko"><td>전체 BKG</td><td>선택 기간 <code>fst</code> 합계</td><td>기존 -3W Dashboard의 전체BKG와 같은 대상 대응 주차의 전체 부킹 규모입니다.</td></tr>
+          <tr class="en"><td>Total BKG</td><td>Sum of <code>fst</code> in selected horizon</td><td>Total booking volume for the selected action horizon.</td></tr>
+          <tr class="ko"><td>BSA 대비 BKG</td><td>선택기간 전체 BKG / 선택기간 총 BSA</td><td>선택한 주차/월/3주 합산 조건과 동일한 BSA 대비 부킹 비율입니다. 낮으면 BSA Gap 확인이 필요합니다.</td></tr>
+          <tr class="en"><td>BKG vs BSA</td><td>Selected-period total BKG / selected-period total BSA</td><td>Current booking coverage against BSA for the same selected week, month, or multi-week period.</td></tr>
           <tr class="ko"><td>트렌드/속도 부족</td><td>리드타임 트렌드 부족 또는 최근 속도 부족 구간 수</td><td>정상적으로 늦게 들어오는 구간과 실제 지연 구간을 구분합니다.</td></tr>
           <tr class="en"><td>Trend/Pace Risk</td><td>Count of routes with lead-time trend or recent pace shortage</td><td>Separates naturally late lanes from truly delayed lanes.</td></tr>
           <tr class="ko"><td>오늘 Top 조치</td><td>우선순위 필터 이후 상위 Action 후보 수</td><td>영업사원이 처리할 수 있는 수준으로 문제를 압축합니다.</td></tr>
           <tr class="en"><td>Top Actions</td><td>Top action candidates after focus filtering</td><td>Compresses the issue list into a workable action set.</td></tr>
           <tr class="ko"><td>3W Booking TEU</td><td><code>w3_fst</code> 합계</td><td>출항 3주전 선행 부킹이 충분히 들어오는지 봅니다.</td></tr>
           <tr class="en"><td>3W Booking TEU</td><td>Sum of <code>w3_fst</code></td><td>Checks whether advance bookings are coming early enough.</td></tr>
-          <tr class="ko"><td>3W/BSA</td><td>3W Booking TEU / 선택기간 BSA</td><td>3주전 시점의 동일 기간 BSA 대비 선행 확보율입니다.</td></tr>
+          <tr class="ko"><td>3W/BSA</td><td>3W Booking TEU / 선택기간 BSA</td><td>3주전 시점의 동일 기간 BSA 대비 선행 부킹률입니다.</td></tr>
           <tr class="en"><td>3W/BSA</td><td>3W Booking TEU / selected-period BSA</td><td>Advance booking coverage against BSA for the same selected period.</td></tr>
           <tr class="ko"><td>감소/이탈 화주</td><td>화주 단위 특이사항 중 조치대상 수</td><td>실제 접촉해야 할 화주 후보입니다.</td></tr>
           <tr class="en"><td>Declining/Lost Customers</td><td>Actionable customer-level exception count</td><td>Candidate customers to contact.</td></tr>
@@ -628,11 +628,11 @@
         <div class="ko">
           <table>
             <tr><th>열</th><th>표시 내용</th><th>판단 포인트</th></tr>
-            <tr><td>구간</td><td>Origin/POL -> 도착국가/도착포트, P1/P2/P3, 기준 TEU, 증감, 영향 TEU</td><td>P1은 당일 확인, P2는 우선 확인입니다.</td></tr>
-            <tr><td>TEU</td><td>현재 TEU와 Active 화주 수 변화</td><td>BL 수보다 TEU와 화주 기반 변화를 더 중요하게 봅니다.</td></tr>
+            <tr><td>구간</td><td>Origin/POL -> 도착국가/도착포트, P1/P2/P3, 기준 BKG, 증감, 영향 TEU</td><td>P1은 당일 확인, P2는 우선 확인입니다.</td></tr>
+            <tr><td>BKG</td><td>현재 전체 BKG와 Active 화주 수 변화</td><td>BL 수보다 TEU와 화주 기반 변화를 더 중요하게 봅니다.</td></tr>
             <tr><td>BSA</td><td>선택기간 BSA TEU, 소석률, 예상 Gap</td><td>트렌드가 정상이어도 BSA 목표가 높으면 Gap이 남을 수 있습니다.</td></tr>
             <tr><td>트렌드/속도</td><td>리드타임 성숙도, 최근 일별 증가속도, 필요속도</td><td>해당 W+시점에서 정상 속도인지 판단합니다.</td></tr>
-            <tr><td>3W Signal</td><td>3W TEU, 3W 화주 수, 확보율, Late 의존</td><td>3주전 선행 부킹의 양과 품질을 봅니다.</td></tr>
+            <tr><td>3W Signal</td><td>3W TEU, 3W 화주 수, 실선적률, Late 의존</td><td>3주전 선행 부킹의 양과 품질을 봅니다.</td></tr>
             <tr><td>권장 조치</td><td>회복, 재확보, 선행전환, 방어, 대체 필요</td><td>영업 행동으로 바로 옮길 수 있는 방향입니다.</td></tr>
             <tr><td>판단</td><td>대표 리스크 유형과 설명</td><td>마우스 오버로 정의와 접근 방식을 확인합니다.</td></tr>
           </table>
@@ -642,10 +642,10 @@
           <table>
             <tr><th>Column</th><th>What It Shows</th><th>How To Read</th></tr>
             <tr><td>Route</td><td>Origin/POL -> destination country/port, P1/P2/P3, baseline TEU, delta, impact TEU</td><td>P1 means same-day action; P2 means priority check.</td></tr>
-            <tr><td>TEU</td><td>Current TEU and active customer count change</td><td>TEU and customer-base change matter more than BL count alone.</td></tr>
+            <tr><td>BKG</td><td>Current total BKG and active customer count change</td><td>TEU and customer-base change matter more than BL count alone.</td></tr>
             <tr><td>BSA</td><td>Selected-period BSA TEU, utilization, projected gap</td><td>Even with normal trend, a high BSA target may leave a gap.</td></tr>
             <tr><td>Trend / Pace</td><td>Lead-time maturity, recent daily pickup, required pace</td><td>Checks whether the route is normal for the current W+ timing.</td></tr>
-            <tr><td>3W Signal</td><td>3W TEU, 3W customer count, secured rate, Late dependency</td><td>Reads both quantity and quality of advance bookings.</td></tr>
+            <tr><td>3W Signal</td><td>3W TEU, 3W customer count, LFT rate, Late dependency</td><td>Reads both quantity and quality of advance bookings.</td></tr>
             <tr><td>Recommended Action</td><td>Recovery, win-back, advance conversion, protection, substitute need</td><td>Designed to translate into immediate sales actions.</td></tr>
             <tr><td>Judgment</td><td>Primary risk type and explanation</td><td>Hover over the chip to see definition and approach.</td></tr>
           </table>
@@ -730,8 +730,8 @@
           <ol>
             <li>P1 화주부터 확인합니다.</li>
             <li>구간의 판단이 BSA 목표 Gap인지, 리드타임 부족인지 먼저 봅니다.</li>
-            <li>구간 열의 <strong>구간BSA</strong>는 화주별 배정이 아니라 해당 Route 전체의 BSA이며, <strong>소석</strong>은 Route 전체 TEU/BSA, <strong>구간Gap</strong>은 Route 전체 현재 TEU를 뺀 부족분입니다.</li>
-            <li>현재 TEU가 0이면 재확보 접근, 일부 남아 있으면 회복 접근을 합니다.</li>
+            <li>구간 열의 <strong>구간BSA</strong>는 화주별 배정이 아니라 해당 Route 전체의 BSA이며, <strong>소석</strong>은 Route 전체 BKG/BSA, <strong>구간Gap</strong>은 Route 전체 현재 BKG를 뺀 부족분입니다.</li>
+            <li>현재 BKG가 0이면 재확보 접근, 일부 남아 있으면 회복 접근을 합니다.</li>
             <li>3W TEU 감소는 차주 이후 선적 계획과 조기 부킹 가능성을 확인합니다.</li>
             <li>Late 의존 또는 3W 취소위험은 부킹 품질과 취소 사유를 확인합니다.</li>
           </ol>
@@ -741,8 +741,8 @@
           <ol>
             <li>Start with P1 customers.</li>
             <li>Check whether the route judgment is BSA target gap or lead-time shortage.</li>
-            <li><strong>Route BSA</strong> is the route-level BSA, not a customer-specific allocation. <strong>Util</strong> is route TEU/BSA, and <strong>Route Gap</strong> is BSA minus the route's current TEU.</li>
-            <li>If current TEU is zero, use a win-back approach; if some TEU remains, use recovery.</li>
+            <li><strong>Route BSA</strong> is the route-level BSA, not a customer-specific allocation. <strong>Util</strong> is route BKG/BSA, and <strong>Route Gap</strong> is BSA minus the route's current BKG.</li>
+            <li>If current BKG is zero, use a win-back approach; if some BKG remains, use recovery.</li>
             <li>For 3W TEU decline, confirm future shipment plan and early-booking feasibility.</li>
             <li>For Late dependency or 3W cancellation risk, check booking quality and cancellation reasons.</li>
           </ol>

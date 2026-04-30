@@ -41,7 +41,7 @@ def route_snapshot(data: dict) -> list[list]:
 
         key = (f"{origin}|{pol}|{dest}|{dst}", week)
         found = routes.setdefault(key, {"teu": 0.0, "w3": 0.0, "active": set(), "w3_active": set()})
-        teu = float(row.get("norm_lst") or row.get("fst") or 0)
+        teu = float(row.get("fst") or 0)
         w3 = float(row.get("w3_fst") or 0)
         shipper = str(row.get("BKG_SHPR_CST_NO") or row.get("BKG_SHPR_CST_ENM") or "").strip()
 
