@@ -621,13 +621,14 @@ function guideHtmlKo() {
         <li><strong>기준 TEU</strong>: 전월/전주/최근 3개월 비교 기준입니다. 차주, 차차주, 3주뒤를 선택하면 기준도 같은 리드타임 상태로 보정합니다.</li>
         <li><strong>W+3</strong>: 전월 같은 주차의 <code>w3_norm_lst</code> 또는 <code>w3_fst</code>를 기준으로 비교합니다.</li>
         <li><strong>W+2/W+1</strong>: 현재 원천에 WOS-2/WOS-1 필드가 없으므로 최종 TEU를 그대로 쓰지 않고 리드타임 성숙도 보정값으로 비교합니다.</li>
+        <li><strong>BSA</strong>: 선택된 주차의 <code>YYYYMM</code>과 <code>WW</code>가 모두 맞는 BSA만 사용합니다. 차주~3주뒤는 해당 3개 주차 BSA 합, 월 전체는 해당 월 BSA 합입니다.</li>
       </ul>
     </section>
     <section>
       <h3>3. 주요 KPI</h3>
       <ul>
         <li><strong>총 TEU</strong>: 선택된 현재 기간의 전체 TEU입니다.</li>
-        <li><strong>BSA 대비 TEU</strong>: 현재 TEU / BSA입니다. 낮을수록 선복 미소석 위험이 큽니다.</li>
+        <li><strong>BSA 대비 TEU</strong>: 현재 TEU / 선택기간 BSA입니다. 낮을수록 선복 미소석 위험이 큽니다.</li>
         <li><strong>트렌드/속도 부족</strong>: 리드타임 트렌드보다 늦거나 최근 부킹속도가 필요한 속도보다 낮은 구간 수입니다.</li>
         <li><strong>3W Booking TEU</strong>: <code>w3_fst</code> 기반 3주전 선행 부킹량입니다.</li>
         <li><strong>감소/이탈 화주</strong>: 회복 또는 재확보가 필요한 화주 단위 후보입니다.</li>
@@ -645,7 +646,7 @@ function guideHtmlKo() {
       <h3>5. 구간별 특이사항</h3>
       <ul>
         <li><strong>TEU</strong>: 현재 TEU와 현재 Active 화주 수를 보여줍니다.</li>
-        <li><strong>BSA</strong>: BSA TEU, 소석률, 남은 기간 예상 Gap입니다.</li>
+        <li><strong>BSA</strong>: 선택기간 BSA TEU, 소석률, 남은 기간 예상 Gap입니다.</li>
         <li><strong>트렌드/속도</strong>: W+1/W+2/W+3별 포트 기준 성숙도와 최근 일별 부킹속도입니다.</li>
         <li><strong>3W Signal</strong>: <code>w3_fst</code> TEU, 3W 화주 수, <code>w3_norm_lst</code> 기반 확보율과 Late 의존도를 보여줍니다.</li>
         <li><strong>판단</strong>: 대표 리스크입니다. 마우스를 올리면 정의와 접근 방식이 표시됩니다.</li>
@@ -699,13 +700,14 @@ function guideHtmlEn() {
         <li><strong>Baseline TEU</strong>: previous month, previous week, or 3-month average. For W+1/W+2/W+3, the baseline is aligned to the same lead-time stage.</li>
         <li><strong>W+3</strong>: compared against prior-period <code>w3_norm_lst</code> or <code>w3_fst</code> for the same week slot.</li>
         <li><strong>W+2/W+1</strong>: WOS-2/WOS-1 source fields are not available, so final TEU is maturity-adjusted rather than used directly.</li>
+        <li><strong>BSA</strong>: uses only BSA rows where both selected <code>YYYYMM</code> and <code>WW</code> match. W+1 to W+3 sums those three weeks; month view sums the selected month.</li>
       </ul>
     </section>
     <section>
       <h3>3. KPI Definitions</h3>
       <ul>
         <li><strong>Total TEU</strong>: current selected-period TEU.</li>
-        <li><strong>TEU vs BSA</strong>: current TEU divided by BSA. Lower values indicate space-utilization risk.</li>
+        <li><strong>TEU vs BSA</strong>: current TEU divided by selected-period BSA. Lower values indicate space-utilization risk.</li>
         <li><strong>Trend/Pace Risk</strong>: routes behind lead-time maturity or required daily pickup.</li>
         <li><strong>3W Booking TEU</strong>: advance-booked TEU from <code>w3_fst</code>.</li>
         <li><strong>Declining/Lost Customers</strong>: customer-level candidates for recovery or win-back.</li>
@@ -723,7 +725,7 @@ function guideHtmlEn() {
       <h3>5. Route Exceptions</h3>
       <ul>
         <li><strong>TEU</strong>: current TEU and active customer count.</li>
-        <li><strong>BSA</strong>: BSA TEU, utilization, and projected remaining gap.</li>
+        <li><strong>BSA</strong>: selected-period BSA TEU, utilization, and projected remaining gap.</li>
         <li><strong>Trend / Pace</strong>: port-level lead-time maturity benchmark and recent daily pickup.</li>
         <li><strong>3W Signal</strong>: <code>w3_fst</code> TEU, 3W customer count, secured rate and Late dependency from <code>w3_norm_lst</code>.</li>
         <li><strong>Judgment</strong>: primary risk. Hover over a chip to see definition and approach.</li>
@@ -1101,6 +1103,7 @@ function filterBsaForPeriod(period) {
   const rows = state.bsaRows.filter((row) => {
     if (wwSet.size) {
       if (!wwSet.has(row.ww)) return false;
+      if (monthSet.size && !monthSet.has(row.month)) return false;
     } else if (period.month) {
       if (row.month !== period.month) return false;
       if (period.week && period.week !== "ALL") {
@@ -1268,6 +1271,8 @@ function analyze(currentRows, baselineRows, currentBsaRows, baselineBsaRows, per
   const allRouteExceptions = buildRouteExceptions(currentRoutes, baselineRoutes, allShipperExceptions, routeContext, currentBsaRoutes, baselineBsaRoutes);
   const shipperExceptions = applyPriorityFilter(allShipperExceptions);
   const routeExceptions = applyPriorityFilter(allRouteExceptions);
+  const importantRouteExceptions = allRouteExceptions.filter((row) => row.isImportant && row.priority !== "P3");
+  const importantShipperExceptions = allShipperExceptions.filter((row) => row.isImportant && row.priority !== "P3");
   const salesActions = buildSalesActions(shipperExceptions, routeExceptions, currentRows, baselineRows);
   const issueSummary = summarizeIssues(shipperExceptions, routeExceptions);
 
@@ -1336,6 +1341,8 @@ function analyze(currentRows, baselineRows, currentBsaRows, baselineBsaRows, per
       actionSales: salesActions.length,
       highRoutes: routeExceptions.filter((row) => row.level === "high").length,
       importantRoutes: Array.from(routeContext.values()).filter((row) => row.isImportant).length,
+      importantRouteExceptions: importantRouteExceptions.length,
+      importantShipperExceptions: importantShipperExceptions.length,
       bsaRoutes: Array.from(routeContext.values()).filter((row) => row.bsaTeu > 0).length,
       allIssueShippers: allShipperExceptions.filter((row) => row.level !== "watch").length
     }
@@ -1943,11 +1950,13 @@ function buildShipperExceptions(currentMap, baselineMap, routeContext) {
     const impactTeu = Math.max(0, baseTeu - currentTeu, baseW3Teu - currentW3Teu);
     const context = routeContext.get(template.routeKey) || {};
     const bsaShortfall = Math.max(0, (context.bsaTeu || 0) - (context.currentTeu || 0));
+    const routeBsaUtil = context.bsaTeu ? (context.currentTeu || 0) / context.bsaTeu : 0;
     const focus = classifyShipperFocus(issue, context, impactTeu);
     rows.push({
       ...template,
       bsaTeu: context.bsaTeu || 0,
       bsaShortfall,
+      routeBsaUtil,
       routeCurrentTeu: context.currentTeu || 0,
       isImportant: Boolean(context.isImportant),
       priority: focus.priority,
@@ -2788,7 +2797,7 @@ function renderKpis(analysis) {
       key: "bsaUtil",
       label: state.lang === "en" ? "TEU vs BSA" : "BSA 대비 TEU",
       value: t.totalBsaTeu ? rpct(bsaUtil) : "-",
-      note: `BSA ${fmt(t.totalBsaTeu)} TEU · Gap ${fmt(bsaShortfall)}`,
+      note: state.lang === "en" ? `Selected BSA ${fmt(t.totalBsaTeu)} TEU · Gap ${fmt(bsaShortfall)}` : `선택기간 BSA ${fmt(t.totalBsaTeu)} TEU · Gap ${fmt(bsaShortfall)}`,
       tone: t.totalBsaTeu && bsaUtil < .75 ? "neg" : "pos"
     },
     {
@@ -2864,9 +2873,16 @@ function renderRoutes(analysis) {
   const routeMode = state.filters.priority === "important"
     ? (state.lang === "en" ? "destination-port p75 focus routes" : "도착포트별 p75 중요구간")
     : t("options.all");
+  const routeCountText = state.filters.priority === "important"
+    ? (state.lang === "en"
+      ? `focus ${fmt(analysis.routeExceptions.length)} / all ${fmt(analysis.allRouteExceptions.length)}`
+      : `중요 ${fmt(analysis.routeExceptions.length)} / 전체 ${fmt(analysis.allRouteExceptions.length)}`)
+    : (state.lang === "en"
+      ? `all ${fmt(analysis.routeExceptions.length)} / focus ${fmt(analysis.totals.importantRouteExceptions)}`
+      : `전체 ${fmt(analysis.routeExceptions.length)} / 중요 ${fmt(analysis.totals.importantRouteExceptions)}`);
   els.routeSubtitle.textContent = state.lang === "en"
-    ? `${analysis.periods.label} vs ${analysis.periods.baselineLabel} · ${fmt(analysis.routeExceptions.length)} risk routes · ${baselineNote} · lead-time trend + gap judgment · ${routeMode}`
-    : `${analysis.periods.label} vs ${analysis.periods.baselineLabel} · 문제 구간 ${fmt(analysis.routeExceptions.length)}개 · ${baselineNote} · 리드타임 트렌드+Gap 판단 · ${routeMode}`;
+    ? `${analysis.periods.label} vs ${analysis.periods.baselineLabel} · ${routeCountText} risk routes · ${baselineNote} · lead-time trend + gap judgment · ${routeMode}`
+    : `${analysis.periods.label} vs ${analysis.periods.baselineLabel} · 문제 구간 ${routeCountText} · ${baselineNote} · 리드타임 트렌드+Gap 판단 · ${routeMode}`;
 
   if (!rows.length) {
     els.routeTable.innerHTML = emptyRow(7, state.lang === "en" ? "No exceptions for the selected filters." : "선택 조건에서 특이사항이 없습니다.");
@@ -2954,9 +2970,16 @@ function renderSales(analysis) {
 
 function renderShippers(analysis) {
   const rows = analysis.shipperExceptions.slice(0, 60);
+  const shipperCountText = state.filters.priority === "important"
+    ? (state.lang === "en"
+      ? `focus ${fmt(analysis.shipperExceptions.length)} / all ${fmt(analysis.allShipperExceptions.length)}`
+      : `중요 ${fmt(analysis.shipperExceptions.length)} / 전체 ${fmt(analysis.allShipperExceptions.length)}`)
+    : (state.lang === "en"
+      ? `all ${fmt(analysis.shipperExceptions.length)} / focus ${fmt(analysis.totals.importantShipperExceptions)}`
+      : `전체 ${fmt(analysis.shipperExceptions.length)} / 중요 ${fmt(analysis.totals.importantShipperExceptions)}`);
   els.shipperSubtitle.textContent = state.lang === "en"
-    ? `Top ${fmt(rows.length)} rows · ${state.filters.priority === "important" ? "BSA/large-volume focus routes" : "all routes"}`
-    : `상위 ${fmt(rows.length)}건 표시 · ${state.filters.priority === "important" ? "BSA/대형물량 중요구간 기준" : "전체 구간 기준"}`;
+    ? `Top ${fmt(rows.length)} rows · action scope ${shipperCountText} · ${state.filters.priority === "important" ? "BSA/large-volume focus routes" : "all routes"}`
+    : `상위 ${fmt(rows.length)}건 표시 · 조치범위 ${shipperCountText} · ${state.filters.priority === "important" ? "BSA/대형물량 중요구간 기준" : "전체 구간 기준"}`;
 
   if (!rows.length) {
     els.shipperTable.innerHTML = emptyRow(10, state.lang === "en" ? "No customer-level action candidates." : "화주 단위 조치 대상이 없습니다.");
@@ -2975,7 +2998,7 @@ function renderShippers(analysis) {
       <td>${row.sales}</td>
       <td>
         ${row.origin} ${row.pol} → ${row.dest} ${row.dst}
-        <div class="subline" title="${escapeAttr(state.lang === "en" ? "Route-level BSA and route-level gap. This is not a customer-specific BSA allocation." : "구간 전체 BSA와 구간 전체 현재 TEU 기준 Gap입니다. 화주별 BSA 배정값이 아닙니다.")}">${row.bsaTeu ? (state.lang === "en" ? `Route BSA ${fmt(row.bsaTeu)} · Route Gap ${fmt(row.bsaShortfall)}` : `구간BSA ${fmt(row.bsaTeu)} · 구간Gap ${fmt(row.bsaShortfall)}`) : t("labels.bsaNone")}</div>
+        <div class="subline" title="${escapeAttr(state.lang === "en" ? "Route-level BSA, route-level utilization, and route-level gap. This is not a customer-specific BSA allocation." : "구간 전체 BSA, 구간 전체 현재 TEU 기준 소석률과 Gap입니다. 화주별 BSA 배정값이 아닙니다.")}">${row.bsaTeu ? (state.lang === "en" ? `Route BSA ${fmt(row.bsaTeu)} · Util ${rpct(row.routeBsaUtil)} · Route Gap ${fmt(row.bsaShortfall)}` : `구간BSA ${fmt(row.bsaTeu)} · 소석 ${rpct(row.routeBsaUtil)} · 구간Gap ${fmt(row.bsaShortfall)}`) : t("labels.bsaNone")}</div>
       </td>
       <td class="num">${fmt(row.currentTeu)}</td>
       <td class="num">${fmt(row.baseTeu)}</td>
@@ -3344,22 +3367,22 @@ function actionDetailText(text) {
 function kpiHelp(key) {
   const ko = {
     totalTeu: "현재 선택 기간의 norm_lst 합계입니다. norm_lst가 없으면 fst를 사용합니다.",
-    bsaUtil: "현재 TEU를 BSA TEU로 나눈 소석률입니다.",
+    bsaUtil: "현재 선택된 주차/월 조건의 TEU를 같은 기간 BSA TEU로 나눈 소석률입니다.",
     paceRisk: "리드타임 트렌드 부족 또는 최근 일별 부킹속도 부족 구간 수입니다.",
     topAction: "현재 필터에서 상위 조치 후보로 노출되는 건수입니다.",
     w3Teu: "shipper.w3_fst 기반 3주전 선행 부킹 TEU 합계입니다.",
-    w3Bsa: "3W Booking TEU를 BSA로 나눈 비율입니다.",
+    w3Bsa: "3W Booking TEU를 같은 선택기간 BSA로 나눈 비율입니다.",
     issueCustomers: "감소, 급감, 이탈 등 화주 단위 조치 대상 수입니다.",
     impactTeu: "기준 대비 회복이 필요한 영향 TEU 합계입니다.",
     salesOwners: "조치 대상 화주/구간을 보유한 영업사원 수입니다."
   };
   const en = {
     totalTeu: "Sum of norm_lst for the selected current period. fst is used when norm_lst is missing.",
-    bsaUtil: "Current TEU divided by BSA TEU.",
+    bsaUtil: "Current TEU divided by BSA TEU for the same selected week or month period.",
     paceRisk: "Number of routes with lead-time trend shortfall or daily pickup shortfall.",
     topAction: "Number of top action candidates shown under the current filters.",
     w3Teu: "Sum of 3W advance-booked TEU from shipper.w3_fst.",
-    w3Bsa: "3W booking TEU divided by BSA.",
+    w3Bsa: "3W booking TEU divided by BSA for the same selected period.",
     issueCustomers: "Customer-level action targets such as decline, sharp decline, or churn.",
     impactTeu: "Recoverable impact TEU compared with the baseline.",
     salesOwners: "Sales owners with actionable customer or route issues."
