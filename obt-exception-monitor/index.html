@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OBT Exception Monitor</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="login-wrap" id="login"></div>
+
+  <div class="app-root" id="app">
+  <header class="app-header">
+    <div>
+      <h1>OBT Exception Monitor</h1>
+      <p id="dataMeta">데이터 로딩 중</p>
+    </div>
+    <div class="header-actions">
+      <button class="lang-switch" id="langToggle" type="button" aria-label="Switch language">
+        <span class="switch-label">KO</span>
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+        <span class="switch-label">EN</span>
+      </button>
+      <button class="ghost-btn" id="guideBtn" type="button">Guide</button>
+      <button class="ghost-btn" id="refreshBtn" type="button">Refresh</button>
+      <button class="user-chip" id="userInfo" type="button" onclick="OBTAuth.logout()"></button>
+    </div>
+  </header>
+
+  <main class="page-shell">
+    <section class="filter-band" aria-label="filters">
+      <div class="field">
+        <label for="horizonFilter">대응</label>
+        <select id="horizonFilter">
+          <option value="next3">차주~3주뒤</option>
+          <option value="w1">차주</option>
+          <option value="w2">차차주</option>
+          <option value="w3" selected>3주뒤</option>
+          <option value="custom">월/주 선택</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="priorityFilter">조치범위</label>
+        <select id="priorityFilter">
+          <option value="important">중요구간</option>
+          <option value="all">전체</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="monthFilter">Month</label>
+        <select id="monthFilter"></select>
+      </div>
+      <div class="field">
+        <label for="weekFilter">Week</label>
+        <select id="weekFilter"></select>
+      </div>
+      <div class="field">
+        <label for="originFilter">국가</label>
+        <select id="originFilter"></select>
+      </div>
+      <div class="field">
+        <label for="polFilter">선적지</label>
+        <select id="polFilter"></select>
+      </div>
+      <div class="field">
+        <label for="destFilter">도착국가</label>
+        <select id="destFilter"></select>
+      </div>
+      <div class="field">
+        <label for="dstFilter">도착포트</label>
+        <select id="dstFilter"></select>
+      </div>
+      <div class="field">
+        <label for="salesFilter">영업사원</label>
+        <select id="salesFilter"></select>
+      </div>
+      <div class="field">
+        <label for="compareFilter">비교</label>
+        <select id="compareFilter">
+          <option value="prevMonth">전월</option>
+          <option value="prevWeek">전주차</option>
+          <option value="avg3">최근 3개월 평균</option>
+        </select>
+      </div>
+      <div class="field search-field">
+        <label for="searchInput">Search</label>
+        <input id="searchInput" type="search" placeholder="화주 / 코드 / 영업사원 / Port">
+      </div>
+    </section>
+
+    <section class="kpi-grid" id="kpiGrid" aria-label="summary"></section>
+
+    <section class="workbench">
+      <div class="panel panel-wide">
+        <div class="panel-head">
+          <div>
+            <h2>구간별 특이사항</h2>
+            <p id="routeSubtitle"></p>
+          </div>
+          <div class="segmented" role="tablist" aria-label="risk filter">
+            <button class="active" type="button" data-risk="all">전체</button>
+            <button type="button" data-risk="high">High</button>
+            <button type="button" data-risk="watch">Watch</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="route-table">
+            <thead>
+              <tr>
+                <th>구간</th>
+                <th class="num">TEU</th>
+                <th class="num">BSA</th>
+                <th>트렌드/속도</th>
+                <th>3W Signal</th>
+                <th>권장 조치</th>
+                <th>판단</th>
+              </tr>
+            </thead>
+            <tbody id="routeTable"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head compact">
+          <div>
+            <h2>영업사원별 조치</h2>
+            <p id="salesSubtitle"></p>
+          </div>
+        </div>
+        <div class="sales-list fixed-panel" id="salesTable"></div>
+      </div>
+    </section>
+
+    <section class="detail-grid">
+      <div class="panel panel-wide">
+        <div class="panel-head">
+          <div>
+            <h2>화주 단위 Action List</h2>
+            <p id="shipperSubtitle"></p>
+          </div>
+        </div>
+        <div class="table-wrap detail-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Priority</th>
+                <th>화주</th>
+                <th>영업사원</th>
+                <th>구간</th>
+                <th class="num">현재 TEU</th>
+                <th class="num">기준 TEU</th>
+                <th class="num">증감</th>
+                <th class="num">3W TEU</th>
+                <th>권장 조치</th>
+                <th>판단</th>
+              </tr>
+            </thead>
+            <tbody id="shipperTable"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head compact">
+          <div>
+            <h2>리스크 유형</h2>
+            <p id="issueSubtitle"></p>
+          </div>
+        </div>
+        <div id="issueList" class="issue-list"></div>
+      </div>
+    </section>
+  </main>
+
+  <div class="loading" id="loading">
+    <div class="loader"></div>
+    <p>OBT 데이터를 분석하는 중입니다.</p>
+  </div>
+
+  <div class="guide-overlay hidden" id="guideOverlay" role="dialog" aria-modal="true" aria-labelledby="guideTitle">
+    <div class="guide-panel">
+      <div class="guide-head">
+        <div>
+          <h2 id="guideTitle">Guide</h2>
+          <p id="guideSubtitle"></p>
+        </div>
+        <div class="guide-actions">
+          <button class="guide-lang" id="guideLangToggle" type="button">EN</button>
+          <button class="guide-close" id="guideClose" type="button" aria-label="Close">×</button>
+        </div>
+      </div>
+      <div class="guide-body" id="guideBody"></div>
+    </div>
+  </div>
+  </div>
+
+  <script src="auth.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

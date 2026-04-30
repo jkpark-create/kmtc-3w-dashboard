@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OBT Exception Monitor Guide</title>
+  <style>
+    :root {
+      --ink: #202623;
+      --muted: #68736f;
+      --line: #d8dedb;
+      --soft: #f3f6f4;
+      --panel: #fff;
+      --header: #153f31;
+      --green: #1f7658;
+      --gold: #d7a928;
+      --danger: #c8473a;
+      --warn: #bc7a16;
+      --blue: #315f9c;
+      --shadow: 0 1px 5px rgba(15, 31, 25, .11);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: #eef2ef;
+      font-family: "Segoe UI", Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.65;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    .guide-header {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 13px 24px 14px;
+      color: #fff;
+      background: var(--header);
+      border-bottom: 3px solid var(--gold);
+      box-shadow: 0 2px 8px rgba(15, 31, 25, .18);
+    }
+
+    .guide-header h1 {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.2;
+    }
+
+    .guide-header p {
+      margin: 5px 0 0;
+      color: rgba(255, 255, 255, .76);
+      font-size: 12px;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .app-root {
+      display: none;
+    }
+
+    .login-wrap {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+      background: #eef2ef;
+    }
+
+    .login-box {
+      width: min(420px, calc(100vw - 40px));
+      padding: 36px 34px;
+      text-align: center;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 12px 36px rgba(15, 31, 25, .14);
+    }
+
+    .login-box h2 {
+      margin: 0 0 8px;
+      color: var(--header);
+      font-size: 22px;
+    }
+
+    .login-box p {
+      margin: 0 0 22px;
+      color: var(--muted);
+    }
+
+    .google-login {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      height: 38px;
+      padding: 0 18px;
+      color: #fff;
+      font-weight: 800;
+      background: #1a73e8;
+      border: 0;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .error {
+      display: none;
+      margin: 14px 0 0;
+      color: var(--danger);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .user-chip {
+      max-width: 210px;
+      height: 30px;
+      padding: 0 10px;
+      overflow: hidden;
+      color: rgba(255, 255, 255, .82);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      background: rgba(255, 255, 255, .08);
+      border: 1px solid rgba(255, 255, 255, .24);
+      border-radius: 5px;
+      cursor: pointer;
+    }
+
+    .back-link {
+      height: 30px;
+      padding: 5px 12px;
+      color: #fff;
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 800;
+      background: rgba(255, 255, 255, .1);
+      border: 1px solid rgba(255, 255, 255, .35);
+      border-radius: 5px;
+    }
+
+    .lang-switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 30px;
+      padding: 0 9px;
+      color: rgba(255, 255, 255, .78);
+      font-size: 11px;
+      font-weight: 900;
+      background: rgba(255, 255, 255, .1);
+      border: 1px solid rgba(255, 255, 255, .35);
+      border-radius: 999px;
+      cursor: pointer;
+    }
+
+    .switch-track {
+      position: relative;
+      width: 35px;
+      height: 18px;
+      background: rgba(255, 255, 255, .22);
+      border: 1px solid rgba(255, 255, 255, .34);
+      border-radius: 999px;
+    }
+
+    .switch-thumb {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 12px;
+      height: 12px;
+      background: #fff;
+      border-radius: 999px;
+      transition: transform .18s ease;
+    }
+
+    .lang-switch[data-lang="en"] .switch-thumb {
+      transform: translateX(17px);
+    }
+
+    .lang-switch[data-lang="ko"] .switch-label:first-child,
+    .lang-switch[data-lang="en"] .switch-label:last-child {
+      color: #fff;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 238px;
+      gap: 22px;
+      width: min(1180px, calc(100vw - 36px));
+      margin: 0 auto;
+      padding: 22px 0 36px;
+    }
+
+    .content {
+      min-width: 0;
+    }
+
+    .side-toc {
+      position: sticky;
+      top: 78px;
+      height: calc(100vh - 100px);
+      overflow: auto;
+      padding: 14px 16px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .side-toc h2 {
+      margin: 0 0 9px;
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+
+    .side-toc a {
+      display: block;
+      padding: 5px 0 5px 10px;
+      color: #52605b;
+      text-decoration: none;
+      font-size: 12px;
+      border-left: 2px solid transparent;
+    }
+
+    .side-toc a:hover,
+    .side-toc a.active {
+      color: var(--green);
+      border-left-color: var(--green);
+      font-weight: 800;
+    }
+
+    .hero,
+    .section {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .hero {
+      padding: 22px 24px;
+      margin-bottom: 14px;
+    }
+
+    .hero h2,
+    .section h2 {
+      margin: 0 0 10px;
+      font-size: 21px;
+      line-height: 1.25;
+    }
+
+    .hero p {
+      max-width: 850px;
+      margin: 8px 0;
+      color: #3d4743;
+    }
+
+    .quick-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .quick-card {
+      padding: 12px 13px;
+      background: var(--soft);
+      border: 1px solid #e1e7e3;
+      border-radius: 7px;
+    }
+
+    .quick-card strong {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--header);
+      font-size: 13px;
+    }
+
+    .quick-card span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .section {
+      margin-top: 14px;
+      padding: 20px 22px;
+    }
+
+    .section h3 {
+      margin: 18px 0 8px;
+      font-size: 15px;
+    }
+
+    .section p,
+    .section li {
+      color: #3d4743;
+    }
+
+    .section ul,
+    .section ol {
+      margin: 8px 0 0 20px;
+      padding: 0;
+    }
+
+    .section li {
+      margin: 4px 0;
+    }
+
+    table {
+      width: 100%;
+      margin: 12px 0;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th,
+    td {
+      padding: 8px 10px;
+      border: 1px solid #dfe6e2;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: #4b5652;
+      background: #f7faf8;
+      font-weight: 900;
+    }
+
+    code {
+      padding: 1px 5px;
+      color: #a4362c;
+      background: #edf2ef;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+
+    .note {
+      margin: 12px 0;
+      padding: 12px 14px;
+      background: #f6fbf8;
+      border-left: 4px solid var(--green);
+      border-radius: 0 6px 6px 0;
+    }
+
+    .warn-note {
+      border-left-color: var(--warn);
+      background: #fff8ea;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 42px;
+      height: 22px;
+      padding: 0 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .p1 {
+      color: #9b241a;
+      background: #fee9e6;
+    }
+
+    .p2 {
+      color: #8b560a;
+      background: #fff2d7;
+    }
+
+    .p3 {
+      color: #244e86;
+      background: #e7eef9;
+    }
+
+    .formula {
+      padding: 11px 12px;
+      background: #f8faf9;
+      border: 1px solid #e1e7e3;
+      border-radius: 7px;
+      font-family: Consolas, "SFMono-Regular", monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      white-space: normal;
+    }
+
+    .ko,
+    .en {
+      display: none;
+    }
+
+    body[data-lang="ko"] .ko,
+    body[data-lang="en"] .en {
+      display: revert;
+    }
+
+    body[data-lang="ko"] tr.ko,
+    body[data-lang="en"] tr.en {
+      display: table-row;
+    }
+
+    @media (max-width: 980px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .side-toc {
+        position: static;
+        height: auto;
+      }
+
+      .quick-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 680px) {
+      .guide-header {
+        align-items: flex-start;
+        flex-direction: column;
+        padding: 12px 14px;
+      }
+
+      .layout {
+        width: min(100vw - 20px, 680px);
+        padding-top: 14px;
+      }
+
+      table {
+        display: block;
+        overflow-x: auto;
+      }
+    }
+  </style>
+</head>
+<body data-lang="ko">
+  <div class="login-wrap" id="login"></div>
+
+  <div class="app-root" id="app">
+  <header class="guide-header">
+    <div>
+      <h1 class="ko">OBT Exception Monitor 사용 가이드</h1>
+      <h1 class="en">OBT Exception Monitor User Guide</h1>
+      <p class="ko">OBT 적재 데이터를 기준으로 구간, 화주, 영업사원별 조치 우선순위를 읽는 상세 설명서</p>
+      <p class="en">Detailed guide for route, customer, and sales-owner exception actions based on OBT loaded booking data</p>
+    </div>
+    <div class="header-actions">
+      <button class="lang-switch" id="langToggle" type="button" aria-label="Switch language">
+        <span class="switch-label">KO</span>
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+        <span class="switch-label">EN</span>
+      </button>
+      <a href="index.html" class="back-link ko">대시보드</a>
+      <a href="index.html" class="back-link en">Dashboard</a>
+      <button class="user-chip" id="userInfo" type="button" onclick="OBTAuth.logout()"></button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <main class="content">
+      <section class="hero">
+        <div class="ko">
+          <h2>이 화면이 답해야 하는 질문</h2>
+          <p>이 모니터는 “잘 되고 있는 곳”이 아니라 “한정된 영업 시간을 어디에 써야 하는지”를 찾기 위한 화면입니다. 국가, 선적지, 도착국가, 도착포트, 영업사원을 선택하면 OBT 기준의 문제 구간과 담당자별 조치 후보가 먼저 표시됩니다.</p>
+          <p>접속 시 기본 대응 시점은 <strong>3주뒤(W+3)</strong>입니다. 화면의 구간별 특이사항 부제에는 대상 날짜와 <strong>WW 주차</strong>가 함께 표시됩니다.</p>
+        </div>
+        <div class="en">
+          <h2>What This Dashboard Answers</h2>
+          <p>This monitor is designed to show where limited sales time should be spent, not to celebrate healthy lanes. Choose origin, POL, destination country, destination port, and sales owner to surface OBT-based route exceptions and owner actions.</p>
+          <p>The default horizon on entry is <strong>W+3</strong>. The route-exception subtitle displays the target date and the corresponding <strong>WW week number</strong>.</p>
+        </div>
+        <div class="quick-grid">
+          <div class="quick-card">
+            <strong class="ko">먼저 볼 것</strong><strong class="en">Start Here</strong>
+            <span class="ko">구간별 특이사항의 P1/P2, 판단, 권장 조치를 먼저 확인합니다.</span>
+            <span class="en">Review P1/P2, judgment, and recommended action in Route Exceptions first.</span>
+          </div>
+          <div class="quick-card">
+            <strong class="ko">조치 기준</strong><strong class="en">Action Basis</strong>
+            <span class="ko">BSA/물량이 큰 구간, 도착포트별 p75 이상 영향 구간을 우선 노출합니다.</span>
+            <span class="en">Focus routes are selected by BSA/volume and destination-port p75 impact thresholds.</span>
+          </div>
+          <div class="quick-card">
+            <strong class="ko">담당 확인</strong><strong class="en">Owner Check</strong>
+            <span class="ko">영업사원별 카드에서 상태, Gap, 회복/재확보 후보를 확인합니다.</span>
+            <span class="en">Use sales-owner cards to see status, action gap, and recovery/win-back candidates.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="scope">
+        <h2 class="ko">1. 데이터 범위와 기본 전제</h2>
+        <h2 class="en">1. Data Scope And Assumptions</h2>
+        <div class="ko">
+          <p>대상은 <strong>OBT 데이터만</strong>입니다. 화면은 기존 -3W Dashboard의 원천 산출물인 <code>dist/data.json</code>(배포 환경에서는 <code>../data.json</code>)과 일별 누적 스냅샷인 <code>history.json</code>을 읽어 계산합니다.</p>
+          <table>
+            <tr><th>구분</th><th>사용 데이터</th><th>목적</th></tr>
+            <tr><td>현재 BKG</td><td><code>fst</code></td><td>기존 -3W Dashboard의 전체BKG와 같은 선택 대응 시점의 전체 부킹 규모</td></tr>
+            <tr><td>3W TEU</td><td><code>w3_fst</code></td><td>출항 3주전 기준 선행 부킹 규모</td></tr>
+            <tr><td>3W 확보 TEU</td><td><code>w3_norm_lst</code></td><td>3주전 부킹 중 실제 Normal로 이어진 물량</td></tr>
+            <tr><td>BSA</td><td>BSA 테이블의 <code>teu_bsa</code></td><td>선택된 주차/월과 같은 <code>YYYYMM</code>, <code>WW</code> 기준의 구간별 선복/목표 물량 대비 Gap 산정</td></tr>
+            <tr><td>일별 속도</td><td><code>history.json</code> snapshot</td><td>최근 3일/7일 증가속도, 남은 기간 예상 Gap</td></tr>
+          </table>
+          <div class="note">현재 원천에는 WOS-2, WOS-1의 별도 필드가 없기 때문에 W+2/W+1 비교는 최종 TEU를 그대로 기준으로 쓰지 않고 리드타임 성숙도 보정값을 사용합니다.</div>
+        </div>
+        <div class="en">
+          <p>The dashboard uses <strong>OBT only</strong>. It reads the existing -3W Dashboard output <code>dist/data.json</code> locally, <code>../data.json</code> in the deployed Pages structure, and daily accumulated snapshots in <code>history.json</code>.</p>
+          <table>
+            <tr><th>Item</th><th>Data Used</th><th>Purpose</th></tr>
+            <tr><td>Current BKG</td><td><code>fst</code></td><td>Total booking volume for the selected horizon, matching Total BKG in the existing -3W Dashboard</td></tr>
+            <tr><td>3W TEU</td><td><code>w3_fst</code></td><td>Advance booking volume three weeks before sailing</td></tr>
+            <tr><td>3W Secured TEU</td><td><code>w3_norm_lst</code></td><td>3W booking volume converted into Normal loaded volume</td></tr>
+            <tr><td>BSA</td><td><code>teu_bsa</code> in BSA table</td><td>Route-level capacity or target gap using BSA rows matching the selected <code>YYYYMM</code> and <code>WW</code></td></tr>
+            <tr><td>Daily Pace</td><td><code>history.json</code> snapshots</td><td>Recent 3-day/7-day pickup pace and projected remaining gap</td></tr>
+          </table>
+          <div class="note">Because WOS-2 and WOS-1 source fields are not available, W+2/W+1 baselines are maturity-adjusted rather than compared against final TEU directly.</div>
+        </div>
+      </section>
+
+      <section class="section" id="horizon">
+        <h2 class="ko">2. 대응 시점과 주차 계산</h2>
+        <h2 class="en">2. Horizon And Week Logic</h2>
+        <div class="ko">
+          <p>대응 필터는 영업 대응 시점을 의미합니다. 데이터 기준일이 속한 주의 시작일을 기준으로 차주, 차차주, 3주뒤를 계산합니다.</p>
+          <table>
+            <tr><th>필터</th><th>의미</th><th>권장 판단</th></tr>
+            <tr><td>차주(W+1)</td><td>현재 주 시작일 + 7일</td><td>출항 임박. BSA Gap, 미소석, 이탈 화주를 즉시 대응합니다.</td></tr>
+            <tr><td>차차주(W+2)</td><td>현재 주 시작일 + 14일</td><td>회복 시간이 제한적입니다. 감소 화주 회복과 대체 물량을 병행합니다.</td></tr>
+            <tr><td>3주뒤(W+3)</td><td>현재 주 시작일 + 21일</td><td>기본값입니다. 선행부킹 약화, 화주수 감소, BSA 목표 적정성을 먼저 봅니다.</td></tr>
+            <tr><td>차주~3주뒤</td><td>W+1, W+2, W+3 합산</td><td>전체 대응 규모를 볼 때 사용합니다. 주차별 액션은 별도로 나누는 것이 좋습니다.</td></tr>
+          </table>
+          <div class="formula">대상 주차 = 데이터 기준일이 속한 주 시작일 + (대응 offset * 7일)<br>WW = 월별 주차 테이블 기준 누적 주차. 화면에는 예: 05/17 (WW20) 형식으로 표시됩니다.</div>
+          <div class="formula">BSA 매칭 = 선택 주차의 YYYYMM + WW가 모두 일치하는 BSA만 합산<br>차주~3주뒤 = W+1, W+2, W+3 각 주차 BSA 합<br>월 전체 = 선택 월의 전체 BSA 합</div>
+          <p>3주뒤를 선택하면 비교 기준도 같은 “3주뒤 상태”에 맞춰집니다. 예를 들어 금주가 WW17이면 W+3는 WW20이고, 전월 비교는 전월의 동일 슬롯 주차를 W+3 리드타임 기준으로 보정합니다.</p>
+        </div>
+        <div class="en">
+          <p>The Horizon filter represents the sales response timing. W+1, W+2, and W+3 are calculated from the start date of the week containing the data date.</p>
+          <table>
+            <tr><th>Filter</th><th>Meaning</th><th>Recommended Reading</th></tr>
+            <tr><td>W+1</td><td>Current week start + 7 days</td><td>Near sailing. Act immediately on BSA gap, underfill, and lost customers.</td></tr>
+            <tr><td>W+2</td><td>Current week start + 14 days</td><td>Recovery time is limited. Run customer recovery and substitute-volume actions together.</td></tr>
+            <tr><td>W+3</td><td>Current week start + 21 days</td><td>Default. Check weak advance bookings, fewer active customers, and BSA target realism.</td></tr>
+            <tr><td>W+1 to W+3</td><td>Combined W+1, W+2, W+3</td><td>Use for total action size. Operational actions should still be split by horizon.</td></tr>
+          </table>
+          <div class="formula">Target week = week start of data date + (horizon offset * 7 days)<br>WW = cumulative week number from the monthly week table. The screen displays it as 05/17 (WW20).</div>
+          <div class="formula">BSA match = sum only BSA rows where selected YYYYMM and WW both match<br>W+1 to W+3 = sum the BSA of each selected week<br>Month view = sum the selected month BSA</div>
+          <p>When W+3 is selected, the comparison baseline is also aligned to the W+3 timing. For example, if the current week is WW17, W+3 is WW20, and previous-month comparison uses the same week slot adjusted to the W+3 lead-time stage.</p>
+        </div>
+      </section>
+
+      <section class="section" id="baseline">
+        <h2 class="ko">3. 비교 기준과 리드타임 보정</h2>
+        <h2 class="en">3. Baseline And Lead-Time Alignment</h2>
+        <div class="ko">
+          <p>주차별 대응은 “동일 최종 주차”가 아니라 “동일 리드타임 상태”로 비교해야 합니다. 3주뒤 물량을 이미 마감에 가까운 과거 최종 TEU와 비교하면 대부분 부족으로 보이기 때문입니다.</p>
+          <table>
+            <tr><th>비교</th><th>기준</th><th>보정 방식</th></tr>
+            <tr><td>전월</td><td>전월 동일 슬롯 주차</td><td>W+3는 <code>w3_fst</code>, W+2/W+1은 <code>fst</code>와 <code>w3_fst</code>의 성숙도 보정</td></tr>
+            <tr><td>전주차</td><td>선택 주차의 직전 주차</td><td>동일 offset에 맞춰 비교</td></tr>
+            <tr><td>최근 3개월 평균</td><td>최근 3개월 동일 슬롯 주차</td><td>3개월 값을 합산 후 3으로 나누고 리드타임 보정</td></tr>
+          </table>
+          <div class="formula">W+3 기준 BKG = baseline.w3_fst<br>W+2 기준 BKG = w3_fst + (fst - w3_fst) * 45%<br>W+1 기준 BKG = w3_fst + (fst - w3_fst) * 75%</div>
+          <p>이 보정은 데이터 제약을 고려한 운영 기준입니다. 향후 WOS-2, WOS-1 원천 컬럼이 추가되면 보정값이 아니라 실제 시점별 TEU로 대체하는 것이 가장 좋습니다.</p>
+        </div>
+        <div class="en">
+          <p>Horizon comparison should use the same lead-time stage, not final historical TEU. Comparing W+3 volume against near-final historical TEU would overstate shortages.</p>
+          <table>
+            <tr><th>Compare</th><th>Baseline</th><th>Adjustment</th></tr>
+            <tr><td>Previous month</td><td>Same week slot in previous month</td><td>W+3 uses <code>w3_fst</code>; W+2/W+1 use maturity adjustment between <code>fst</code> and <code>w3_fst</code></td></tr>
+            <tr><td>Previous week</td><td>Week immediately before the selected week</td><td>Aligned to the same horizon offset</td></tr>
+            <tr><td>3-month average</td><td>Same week slot across last three months</td><td>Sum, divide by three, then align to lead-time maturity</td></tr>
+          </table>
+          <div class="formula">W+3 baseline BKG = baseline.w3_fst<br>W+2 baseline BKG = w3_fst + (fst - w3_fst) * 45%<br>W+1 baseline BKG = w3_fst + (fst - w3_fst) * 75%</div>
+          <p>This is an operational adjustment under current source limitations. If WOS-2 and WOS-1 source fields become available, the dashboard should replace maturity estimates with actual time-stage TEU.</p>
+        </div>
+      </section>
+
+      <section class="section" id="kpis">
+        <h2 class="ko">4. KPI 계산 로직</h2>
+        <h2 class="en">4. KPI Calculation Logic</h2>
+        <table>
+          <tr class="ko"><th>KPI</th><th>계산</th><th>해석</th></tr>
+          <tr class="en"><th>KPI</th><th>Calculation</th><th>How To Read</th></tr>
+          <tr class="ko"><td>전체 BKG</td><td>선택 기간 <code>fst</code> 합계</td><td>기존 -3W Dashboard의 전체BKG와 같은 대상 대응 주차의 전체 부킹 규모입니다.</td></tr>
+          <tr class="en"><td>Total BKG</td><td>Sum of <code>fst</code> in selected horizon</td><td>Total booking volume for the selected action horizon.</td></tr>
+          <tr class="ko"><td>BSA 대비 BKG</td><td>선택기간 전체 BKG / 선택기간 총 BSA</td><td>선택한 주차/월/3주 합산 조건과 동일한 BSA 대비 부킹 비율입니다. 낮으면 BSA Gap 확인이 필요합니다.</td></tr>
+          <tr class="en"><td>BKG vs BSA</td><td>Selected-period total BKG / selected-period total BSA</td><td>Current booking coverage against BSA for the same selected week, month, or multi-week period.</td></tr>
+          <tr class="ko"><td>트렌드/속도 부족</td><td>리드타임 트렌드 부족 또는 최근 속도 부족 구간 수</td><td>정상적으로 늦게 들어오는 구간과 실제 지연 구간을 구분합니다.</td></tr>
+          <tr class="en"><td>Trend/Pace Risk</td><td>Count of routes with lead-time trend or recent pace shortage</td><td>Separates naturally late lanes from truly delayed lanes.</td></tr>
+          <tr class="ko"><td>오늘 Top 조치</td><td>우선순위 필터 이후 상위 Action 후보 수</td><td>영업사원이 처리할 수 있는 수준으로 문제를 압축합니다.</td></tr>
+          <tr class="en"><td>Top Actions</td><td>Top action candidates after focus filtering</td><td>Compresses the issue list into a workable action set.</td></tr>
+          <tr class="ko"><td>3W Booking TEU</td><td><code>w3_fst</code> 합계</td><td>출항 3주전 선행 부킹이 충분히 들어오는지 봅니다.</td></tr>
+          <tr class="en"><td>3W Booking TEU</td><td>Sum of <code>w3_fst</code></td><td>Checks whether advance bookings are coming early enough.</td></tr>
+          <tr class="ko"><td>3W/BSA</td><td>3W Booking TEU / 선택기간 BSA</td><td>3주전 시점의 동일 기간 BSA 대비 선행 부킹률입니다.</td></tr>
+          <tr class="en"><td>3W/BSA</td><td>3W Booking TEU / selected-period BSA</td><td>Advance booking coverage against BSA for the same selected period.</td></tr>
+          <tr class="ko"><td>감소/이탈 화주</td><td>화주 단위 특이사항 중 조치대상 수</td><td>실제 접촉해야 할 화주 후보입니다.</td></tr>
+          <tr class="en"><td>Declining/Lost Customers</td><td>Actionable customer-level exception count</td><td>Candidate customers to contact.</td></tr>
+          <tr class="ko"><td>문제 영향 TEU</td><td>감소/이탈/3W 부족으로 설명되는 영향 TEU 합계</td><td>문제가 실제 물량에 미치는 크기입니다.</td></tr>
+          <tr class="en"><td>Risk Impact TEU</td><td>Impact TEU explained by decline, churn, or weak 3W signals</td><td>Estimated TEU affected by the exception set.</td></tr>
+          <tr class="ko"><td>조치 영업사원</td><td>Action 후보를 가진 영업사원 수</td><td>조치 책임자를 빠르게 나누기 위한 지표입니다.</td></tr>
+          <tr class="en"><td>Sales Owners</td><td>Count of owners with action candidates</td><td>Helps split ownership quickly.</td></tr>
+        </table>
+      </section>
+
+      <section class="section" id="route">
+        <h2 class="ko">5. 구간별 특이사항 읽는 법</h2>
+        <h2 class="en">5. How To Read Route Exceptions</h2>
+        <div class="ko">
+          <table>
+            <tr><th>열</th><th>표시 내용</th><th>판단 포인트</th></tr>
+            <tr><td>구간</td><td>Origin/POL -> 도착국가/도착포트, P1/P2/P3, 기준 BKG, 증감, 영향 TEU</td><td>P1은 당일 확인, P2는 우선 확인입니다.</td></tr>
+            <tr><td>BKG</td><td>현재 전체 BKG와 Active 화주 수 변화</td><td>BL 수보다 TEU와 화주 기반 변화를 더 중요하게 봅니다.</td></tr>
+            <tr><td>BSA</td><td>선택기간 BSA TEU, 소석률, 예상 Gap</td><td>트렌드가 정상이어도 BSA 목표가 높으면 Gap이 남을 수 있습니다.</td></tr>
+            <tr><td>트렌드/속도</td><td>리드타임 성숙도, 최근 일별 증가속도, 필요속도</td><td>해당 W+시점에서 정상 속도인지 판단합니다.</td></tr>
+            <tr><td>3W Signal</td><td>3W TEU, 3W 화주 수, 실선적률, Late 의존</td><td>3주전 선행 부킹의 양과 품질을 봅니다.</td></tr>
+            <tr><td>권장 조치</td><td>회복, 재확보, 선행전환, 방어, 대체 필요</td><td>영업 행동으로 바로 옮길 수 있는 방향입니다.</td></tr>
+            <tr><td>판단</td><td>대표 리스크 유형과 설명</td><td>마우스 오버로 정의와 접근 방식을 확인합니다.</td></tr>
+          </table>
+          <div class="note">“트렌드 정상 + BSA 목표 Gap”은 부킹 흐름 자체는 같은 시점 대비 정상이나, BSA 또는 목표 물량이 더 큰 상태입니다. 이 경우 영업 문제와 BSA 적정성 문제를 분리해 봐야 합니다.</div>
+        </div>
+        <div class="en">
+          <table>
+            <tr><th>Column</th><th>What It Shows</th><th>How To Read</th></tr>
+            <tr><td>Route</td><td>Origin/POL -> destination country/port, P1/P2/P3, baseline TEU, delta, impact TEU</td><td>P1 means same-day action; P2 means priority check.</td></tr>
+            <tr><td>BKG</td><td>Current total BKG and active customer count change</td><td>TEU and customer-base change matter more than BL count alone.</td></tr>
+            <tr><td>BSA</td><td>Selected-period BSA TEU, utilization, projected gap</td><td>Even with normal trend, a high BSA target may leave a gap.</td></tr>
+            <tr><td>Trend / Pace</td><td>Lead-time maturity, recent daily pickup, required pace</td><td>Checks whether the route is normal for the current W+ timing.</td></tr>
+            <tr><td>3W Signal</td><td>3W TEU, 3W customer count, LFT rate, Late dependency</td><td>Reads both quantity and quality of advance bookings.</td></tr>
+            <tr><td>Recommended Action</td><td>Recovery, win-back, advance conversion, protection, substitute need</td><td>Designed to translate into immediate sales actions.</td></tr>
+            <tr><td>Judgment</td><td>Primary risk type and explanation</td><td>Hover over the chip to see definition and approach.</td></tr>
+          </table>
+          <div class="note">“Normal trend + BSA target gap” means booking flow is normal for the same timing, but the BSA or target is larger. Treat sales recovery and BSA target realism as separate questions.</div>
+        </div>
+      </section>
+
+      <section class="section" id="priority">
+        <h2 class="ko">6. P1/P2/P3 우선순위</h2>
+        <h2 class="en">6. P1/P2/P3 Priority</h2>
+        <table>
+          <tr class="ko"><th>우선순위</th><th>기준</th><th>처리 방식</th></tr>
+          <tr class="en"><th>Priority</th><th>Basis</th><th>How To Handle</th></tr>
+          <tr class="ko"><td><span class="badge p1">P1</span></td><td>큰 BSA Gap, 리드타임 트렌드 부족, 핵심 화주 감소, 출항 임박</td><td>당일 원인 확인 후 회복, 재확보, 대체 물량, BSA 조정 여부를 결정합니다.</td></tr>
+          <tr class="en"><td><span class="badge p1">P1</span></td><td>Large BSA gap, lead-time trend shortage, key-customer decline, near sailing</td><td>Check cause same day and decide recovery, win-back, substitute volume, or BSA adjustment.</td></tr>
+          <tr class="ko"><td><span class="badge p2">P2</span></td><td>회복 시간이 있으나 조치가 필요한 감소, 3W 부족, 속도 Watch</td><td>우선 확인 후 담당 화주와 선적 계획을 조정합니다.</td></tr>
+          <tr class="en"><td><span class="badge p2">P2</span></td><td>Recoverable decline, weak 3W signal, or pace watch with remaining time</td><td>Confirm early and adjust customer shipment plans.</td></tr>
+          <tr class="ko"><td><span class="badge p3">P3</span></td><td>영향이 작거나 참고용 변동</td><td>추세 확인 대상입니다. 영업 시간 부족 시 후순위로 둡니다.</td></tr>
+          <tr class="en"><td><span class="badge p3">P3</span></td><td>Lower-impact or reference signal</td><td>Monitor. Deprioritize when sales time is constrained.</td></tr>
+        </table>
+        <div class="ko note">기본 조치범위는 “중요구간”입니다. 도착포트별 물량, BSA, 영향 TEU 분포의 p75 기준을 사용해 작은 구간의 잡음을 줄입니다.</div>
+        <div class="en note">Default scope is “Focus routes”. It uses destination-port p75 thresholds for volume, BSA, and impact TEU to reduce noise from small lanes.</div>
+      </section>
+
+      <section class="section" id="risks">
+        <h2 class="ko">7. 리스크 유형 설명</h2>
+        <h2 class="en">7. Risk Type Guide</h2>
+        <table>
+          <tr class="ko"><th>상위 유형</th><th>포함 태그</th><th>접근 방식</th></tr>
+          <tr class="en"><th>Group</th><th>Included Tags</th><th>Approach</th></tr>
+          <tr class="ko"><td>리드타임/속도</td><td>리드타임 트렌드 부족, 부킹속도 부족, 예상미달</td><td>같은 W+시점 기준으로 늦은지 확인하고, 부족분을 회복/대체 후보로 나눕니다.</td></tr>
+          <tr class="en"><td>Lead Time / Pace</td><td>Lead-time trend shortage, booking pace shortage, projected shortfall</td><td>Check whether it is behind the same W+ stage and split gap into recovery and substitute candidates.</td></tr>
+          <tr class="ko"><td>BSA/선복 Gap</td><td>BSA 미달, BSA 목표 Gap, 3W/BSA 낮음, 3W 확보 부족</td><td>BSA를 채울 수 있는 영업 후보와 BSA 조정 필요성을 분리합니다.</td></tr>
+          <tr class="en"><td>BSA / Space Gap</td><td>BSA underfill, BSA target gap, low 3W/BSA, weak 3W coverage</td><td>Separate sales-fill candidates from BSA target adjustment needs.</td></tr>
+          <tr class="ko"><td>화주 기반 감소</td><td>이탈, 급감, 감소, 화주수 감소, 핵심 화주 감소</td><td>회복 가능 화주와 재확보 화주를 분리해 담당자가 접촉합니다.</td></tr>
+          <tr class="en"><td>Customer Base Loss</td><td>Churn, sharp decline, decline, fewer active customers, key-customer decline</td><td>Split into recoverable customers and win-back customers for owner outreach.</td></tr>
+          <tr class="ko"><td>3W 선행 부킹</td><td>3W TEU 감소, 3W 화주수 감소, 3W 이탈, 3W 감소</td><td>반복 화주가 3주전 부킹에 들어오지 않은 이유를 확인합니다.</td></tr>
+          <tr class="en"><td>3W Advance Booking</td><td>3W TEU decline, fewer 3W customers, 3W churn, 3W decline</td><td>Check why repeat customers are not appearing in 3W bookings.</td></tr>
+          <tr class="ko"><td>수익/품질</td><td>3W 고수익 감소, 3W 취소율, Late 의존</td><td>물량의 질, 취소 가능성, 늦은 부킹 의존도를 봅니다.</td></tr>
+          <tr class="en"><td>Profit / Quality</td><td>High-profit 3W decline, 3W cancellation, Late dependency</td><td>Review volume quality, cancellation risk, and late-booking dependency.</td></tr>
+          <tr class="ko"><td>집중/변동</td><td>화주 쏠림, 신규대형, 급증, 3W 신규대형</td><td>쏠림 리스크와 반복 가능성, 선복/장비 대응 가능성을 확인합니다.</td></tr>
+          <tr class="en"><td>Concentration / Volatility</td><td>Customer concentration, new large customer, sharp increase, new large 3W booking</td><td>Check dependency risk, recurrence, and space/equipment supportability.</td></tr>
+        </table>
+      </section>
+
+      <section class="section" id="sales">
+        <h2 class="ko">8. 영업사원별 조치 화면</h2>
+        <h2 class="en">8. Sales Owner Action Panel</h2>
+        <div class="ko">
+          <p>영업사원별 카드는 단순 건수보다 “담당자가 지금 어떤 상태인지”를 보여주기 위한 영역입니다.</p>
+          <table>
+            <tr><th>항목</th><th>계산/의미</th><th>활용</th></tr>
+            <tr><td>상태</td><td>즉시 대응, 우선 확인, 화주 회복, 관찰</td><td>당일 미팅이나 담당자 배정 우선순위입니다.</td></tr>
+            <tr><td>영향 TEU</td><td>담당 화주의 감소/이탈 영향 TEU 합계</td><td>실제 물량 영향이 큰 담당자를 우선 봅니다.</td></tr>
+            <tr><td>관리 Gap</td><td>BSA Gap, 예상 Gap, 트렌드 Gap, 영향 TEU 중 큰 값</td><td>담당자가 관리해야 할 최대 리스크 크기입니다.</td></tr>
+            <tr><td>지연구간</td><td>리드타임 트렌드 또는 최근 부킹속도 기준보다 느린 담당 구간 수</td><td>0이면 해당 담당자는 구간 지연보다 화주 감소/이탈, 3W 약화, BSA 목표 Gap 때문에 표시된 것입니다.</td></tr>
+            <tr><td>화주상태</td><td>회복 후보 / 재확보 후보</td><td>감소 화주와 완전 이탈 화주 접근을 다르게 합니다.</td></tr>
+            <tr><td>대표 구간</td><td>영향 TEU가 가장 큰 구간</td><td>담당자와 대화할 때 첫 확인 구간입니다.</td></tr>
+          </table>
+          <p>메시지는 상황별로 다르게 나옵니다. 예를 들어 BSA Gap이 크면 “회복 후보와 대체 물량 분리”, 이탈 화주가 많으면 “재확보 가능성과 경쟁사 전환 사유 확인”, 감소 화주가 많으면 “회복 가능 잔여 물량 확인”으로 표시됩니다.</p>
+        </div>
+        <div class="en">
+          <p>Sales-owner cards show the owner’s operating state, not just row counts.</p>
+          <table>
+            <tr><th>Item</th><th>Calculation / Meaning</th><th>Use</th></tr>
+            <tr><td>Status</td><td>Immediate, Priority Check, Customer Recovery, Watch</td><td>Priority for same-day discussion or owner assignment.</td></tr>
+            <tr><td>Impact TEU</td><td>Sum of decline/churn impact TEU for the owner</td><td>Prioritize owners with larger actual volume impact.</td></tr>
+            <tr><td>Action Gap</td><td>Largest of BSA gap, projected gap, trend gap, and impact TEU</td><td>Largest risk size the owner should manage.</td></tr>
+            <tr><td>Delay Routes</td><td>Owner routes behind either lead-time trend or recent booking pace</td><td>If zero, the owner is flagged mainly by customer decline/churn, weak 3W signal, or BSA target gap rather than route delay.</td></tr>
+            <tr><td>Customer State</td><td>Recovery candidates / win-back candidates</td><td>Declining customers and fully lost customers require different approaches.</td></tr>
+            <tr><td>Top Route</td><td>Route with largest impact TEU</td><td>First route to discuss with the owner.</td></tr>
+          </table>
+          <p>Messages are situation-specific. Large BSA gap points to splitting recovery and substitute volume; many lost customers point to win-back and competitor-switch reasons; many declining customers point to recoverable residual TEU.</p>
+        </div>
+      </section>
+
+      <section class="section" id="actions">
+        <h2 class="ko">9. 화주 단위 Action List</h2>
+        <h2 class="en">9. Customer Action List</h2>
+        <div class="ko">
+          <p>구간 단위 판단은 “어디가 문제인지”를 보여주고, 화주 단위 Action List는 “누구에게 연락해야 하는지”를 보여줍니다.</p>
+          <ol>
+            <li>P1 화주부터 확인합니다.</li>
+            <li>구간의 판단이 BSA 목표 Gap인지, 리드타임 부족인지 먼저 봅니다.</li>
+            <li>구간 열의 <strong>구간BSA</strong>는 화주별 배정이 아니라 해당 Route 전체의 BSA이며, <strong>소석</strong>은 Route 전체 BKG/BSA, <strong>구간Gap</strong>은 Route 전체 현재 BKG를 뺀 부족분입니다.</li>
+            <li>현재 BKG가 0이면 재확보 접근, 일부 남아 있으면 회복 접근을 합니다.</li>
+            <li>3W TEU 감소는 차주 이후 선적 계획과 조기 부킹 가능성을 확인합니다.</li>
+            <li>Late 의존 또는 3W 취소위험은 부킹 품질과 취소 사유를 확인합니다.</li>
+          </ol>
+        </div>
+        <div class="en">
+          <p>Route-level judgment shows where the problem is; the Customer Action List shows whom to contact.</p>
+          <ol>
+            <li>Start with P1 customers.</li>
+            <li>Check whether the route judgment is BSA target gap or lead-time shortage.</li>
+            <li><strong>Route BSA</strong> is the route-level BSA, not a customer-specific allocation. <strong>Util</strong> is route BKG/BSA, and <strong>Route Gap</strong> is BSA minus the route's current BKG.</li>
+            <li>If current BKG is zero, use a win-back approach; if some BKG remains, use recovery.</li>
+            <li>For 3W TEU decline, confirm future shipment plan and early-booking feasibility.</li>
+            <li>For Late dependency or 3W cancellation risk, check booking quality and cancellation reasons.</li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="section" id="workflow">
+        <h2 class="ko">10. 권장 사용 흐름</h2>
+        <h2 class="en">10. Recommended Workflow</h2>
+        <div class="ko">
+          <ol>
+            <li><strong>대응 시점 분리</strong>: 기본 3주뒤에서 시작한 뒤 차차주, 차주 순서로 좁힙니다.</li>
+            <li><strong>목적지 필터</strong>: 도착국가와 도착포트로 실제 관리 단위를 맞춥니다.</li>
+            <li><strong>판단 확인</strong>: 리드타임 부족, BSA 목표 Gap, 화주 기반 감소 중 무엇인지 구분합니다.</li>
+            <li><strong>영업사원 배정</strong>: 담당자 카드에서 상태와 관리 Gap을 보고 우선순위를 정합니다.</li>
+            <li><strong>화주 접촉</strong>: Action List의 P1/P2 화주를 회복, 재확보, 선행전환, 방어로 나누어 처리합니다.</li>
+            <li><strong>BSA 재판단</strong>: 회복 후보로도 Gap을 채우기 어렵다면 대체 물량 또는 BSA 조정을 검토합니다.</li>
+          </ol>
+        </div>
+        <div class="en">
+          <ol>
+            <li><strong>Split horizon</strong>: start from default W+3, then review W+2 and W+1.</li>
+            <li><strong>Filter destination</strong>: use destination country and port to match the real management unit.</li>
+            <li><strong>Read judgment</strong>: distinguish lead-time shortage, BSA target gap, and customer-base decline.</li>
+            <li><strong>Assign owners</strong>: prioritize sales owners by status and action gap.</li>
+            <li><strong>Contact customers</strong>: split P1/P2 customers into recovery, win-back, advance conversion, and protection.</li>
+            <li><strong>Recheck BSA</strong>: if recoverable candidates cannot fill the gap, review substitute volume or BSA adjustment.</li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="section" id="limits">
+        <h2 class="ko">11. 해석 시 주의사항과 개선 후보</h2>
+        <h2 class="en">11. Caveats And Future Improvements</h2>
+        <div class="ko">
+          <ul>
+            <li>현재 W+2/W+1 비교는 실제 WOS-2/WOS-1 값이 아니라 보정값입니다.</li>
+            <li>일별 속도는 <code>history.json</code>에 누적된 스냅샷이 많을수록 안정적으로 계산됩니다.</li>
+            <li>작은 포트는 p75 기준이 낮게 잡힐 수 있어 기본 최소 기준을 함께 사용합니다.</li>
+            <li>BSA 목표 Gap은 영업 부족만 의미하지 않습니다. 목표 선복 자체가 과도한지 함께 봐야 합니다.</li>
+            <li>향후 개선 데이터: WOS-2/WOS-1 TEU, 운임/CM1, 장비 제약, 선박별 BSA 변경 이력, 경쟁사 전환 사유 코드.</li>
+          </ul>
+        </div>
+        <div class="en">
+          <ul>
+            <li>Current W+2/W+1 comparison uses maturity adjustment, not actual WOS-2/WOS-1 values.</li>
+            <li>Daily pace becomes more stable as <code>history.json</code> accumulates more snapshots.</li>
+            <li>Small ports can produce low p75 thresholds, so minimum thresholds are also applied.</li>
+            <li>BSA target gap is not always a sales failure. Review whether the target capacity itself is realistic.</li>
+            <li>Future data improvements: WOS-2/WOS-1 TEU, rate/CM1, equipment constraints, vessel-level BSA history, competitor-switch reason codes.</li>
+          </ul>
+        </div>
+      </section>
+    </main>
+
+    <aside class="side-toc">
+      <h2 class="ko">목차</h2>
+      <h2 class="en">Contents</h2>
+      <nav class="ko">
+        <a href="#scope">데이터 범위</a>
+        <a href="#horizon">대응 시점</a>
+        <a href="#baseline">비교 기준</a>
+        <a href="#kpis">KPI 계산</a>
+        <a href="#route">구간별 특이사항</a>
+        <a href="#priority">우선순위</a>
+        <a href="#risks">리스크 유형</a>
+        <a href="#sales">영업사원별 조치</a>
+        <a href="#actions">화주 Action List</a>
+        <a href="#workflow">사용 흐름</a>
+        <a href="#limits">주의사항</a>
+      </nav>
+      <nav class="en">
+        <a href="#scope">Data Scope</a>
+        <a href="#horizon">Horizon</a>
+        <a href="#baseline">Baseline</a>
+        <a href="#kpis">KPI Logic</a>
+        <a href="#route">Route Exceptions</a>
+        <a href="#priority">Priority</a>
+        <a href="#risks">Risk Types</a>
+        <a href="#sales">Sales Owners</a>
+        <a href="#actions">Customer Actions</a>
+        <a href="#workflow">Workflow</a>
+        <a href="#limits">Caveats</a>
+      </nav>
+    </aside>
+  </div>
+  </div>
+
+  <script src="auth.js"></script>
+  <script>
+    const langToggle = document.getElementById("langToggle");
+    const anchors = Array.from(document.querySelectorAll(".side-toc a"));
+    let lang = localStorage.getItem("obtExceptionLang") || "ko";
+
+    function applyLanguage() {
+      if (lang !== "ko" && lang !== "en") lang = "ko";
+      document.body.dataset.lang = lang;
+      document.documentElement.lang = lang;
+      langToggle.dataset.lang = lang;
+      langToggle.setAttribute("aria-pressed", lang === "en" ? "true" : "false");
+      langToggle.setAttribute("aria-label", lang === "ko" ? "Switch to English" : "한국어로 전환");
+      localStorage.setItem("obtExceptionLang", lang);
+    }
+
+    langToggle.addEventListener("click", () => {
+      lang = lang === "ko" ? "en" : "ko";
+      applyLanguage();
+      if (window.OBTAuth) OBTAuth.refreshUser();
+    });
+
+    document.querySelectorAll('a[href^="#"]').forEach((link) => {
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        const target = document.querySelector(link.getAttribute("href"));
+        if (!target) return;
+        window.scrollTo({ top: target.getBoundingClientRect().top + window.pageYOffset - 72, behavior: "smooth" });
+      });
+    });
+
+    function updateActiveAnchor() {
+      let current = "";
+      document.querySelectorAll(".section[id]").forEach((section) => {
+        if (section.getBoundingClientRect().top <= 92) current = section.id;
+      });
+      anchors.forEach((anchor) => {
+        anchor.classList.toggle("active", anchor.getAttribute("href") === `#${current}`);
+      });
+    }
+
+    window.addEventListener("scroll", updateActiveAnchor, { passive: true });
+    applyLanguage();
+    updateActiveAnchor();
+    OBTAuth.requireAuth();
+  </script>
+</body>
+</html>
