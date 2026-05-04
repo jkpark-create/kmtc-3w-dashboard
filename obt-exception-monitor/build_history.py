@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import subprocess
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -64,6 +64,54 @@ def route_snapshot(data: dict) -> list[list]:
     return rows
 
 
+def target_action_weeks(data_date: str) -> set[str]:
+    if not data_date or len(data_date) != 8:
+        return set()
+    current = datetime.strptime(data_date, "%Y%m%d").date()
+    week_start = current - timedelta(days=(current.weekday() + 1) % 7)
+    weeks = set()
+    for offset in (1, 2, 3):
+        target = week_start + timedelta(days=offset * 7)
+        weeks.add(f"{target.year}년 {target.month:02d}월 {target.day:02d}일")
+    return weeks
+
+
+def shipper_snapshot(data: dict, target_weeks: set[str]) -> list[list]:
+    shippers = {}
+
+    for row in data.get("shipper", []):
+        if row.get("team") != "OBT":
+            continue
+
+        origin = str(row.get("origin") or "").strip()
+        pol = str(row.get("ori_port") or "").strip()
+        dest = str(row.get("dest") or "").strip()
+        dst = str(row.get("dst_port") or "").strip()
+        week = str(row.get("week_start_date") or "").strip()
+        if target_weeks and week not in target_weeks:
+            continue
+        sales = str(row.get("Salesman_POR") or "미지정").strip()
+        shipper = str(row.get("BKG_SHPR_CST_NO") or row.get("BKG_SHPR_CST_ENM") or "").strip()
+        if not (origin and pol and dest and dst and week and shipper):
+            continue
+
+        route_key = f"{origin}|{pol}|{dest}|{dst}"
+        key = (shipper, route_key, week, sales)
+        found = shippers.setdefault(key, {"teu": 0.0, "w3": 0.0})
+        found["teu"] += float(row.get("fst") or 0)
+        found["w3"] += float(row.get("w3_fst") or 0)
+
+    rows = []
+    for (shipper, route_key, week, sales), values in shippers.items():
+        teu = round(values["teu"], 2)
+        w3 = round(values["w3"], 2)
+        if teu <= 0 and w3 <= 0:
+            continue
+        rows.append([shipper, route_key, week, sales, teu, w3])
+    rows.sort(key=lambda item: (item[2], item[1], item[0], item[3]))
+    return rows
+
+
 def existing_generated_at(snapshots: list[dict]) -> str | None:
     for path in (DEPLOY_OUT, SOURCE_OUT):
         if not path.exists():
@@ -92,6 +140,7 @@ def main() -> None:
             "data_date": data_date,
             "commit": commit[:7],
             "routes": route_snapshot(data),
+            "shippers": shipper_snapshot(data, target_action_weeks(data_date)),
         })
 
     snapshots.sort(key=lambda item: item["data_date"])

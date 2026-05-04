@@ -287,8 +287,8 @@ const I18N = {
       priority: "조치범위",
       month: "Month",
       week: "Week",
-      origin: "국가",
-      pol: "선적지",
+      origin: "선적국가",
+      pol: "선적포트",
       dest: "도착국가",
       dst: "도착포트",
       sales: "영업사원",
@@ -311,7 +311,10 @@ const I18N = {
       route: "구간별 특이사항",
       sales: "영업사원별 조치",
       shipper: "화주 단위 Action List",
-      issue: "리스크 유형"
+      issue: "리스크 유형",
+      actionSummary: "선적지별 Action Performance",
+      actionSales: "영업사원별 개선 현황",
+      actionDetail: "자동 Action 후보 상세"
     },
     headers: {
       route: "구간",
@@ -338,7 +341,16 @@ const I18N = {
       trend: "지연구간",
       customerState: "화주상태",
       impactTeu: "영향",
-      actionGap: "관리 Gap"
+      actionGap: "관리 Gap",
+      improving: "개선중",
+      noPickup: "No Pickup",
+      monitoredGap: "관리 3W Gap",
+      weekdayGap: "요일 Gap",
+      weekdayExpected: "요일기대",
+      weekdayVs: "평소 대비",
+      belowAvg: "평소보다 낮음",
+      recentPickup: "최근 3W Pickup",
+      gapClosed: "Gap 해소율"
     }
   },
   en: {
@@ -356,7 +368,7 @@ const I18N = {
       month: "Month",
       week: "Week",
       origin: "Origin Country",
-      pol: "POL",
+      pol: "Origin Port",
       dest: "Destination Country",
       dst: "Destination Port",
       sales: "Sales Owner",
@@ -379,7 +391,10 @@ const I18N = {
       route: "Route Exceptions",
       sales: "Sales Action Status",
       shipper: "Customer Action List",
-      issue: "Risk Types"
+      issue: "Risk Types",
+      actionSummary: "Action Performance by Origin",
+      actionSales: "Sales Improvement Status",
+      actionDetail: "Automatic Action Candidates"
     },
     headers: {
       route: "Route",
@@ -406,7 +421,16 @@ const I18N = {
       trend: "Delay Routes",
       customerState: "Customer State",
       impactTeu: "Impact",
-      actionGap: "Action Gap"
+      actionGap: "Action Gap",
+      improving: "Improving",
+      noPickup: "No Pickup",
+      monitoredGap: "Managed 3W Gap",
+      weekdayGap: "Weekday Gap",
+      weekdayExpected: "Weekday Expected",
+      weekdayVs: "Vs Usual",
+      belowAvg: "Below Usual",
+      recentPickup: "Recent 3W Pickup",
+      gapClosed: "Gap Closed"
     }
   }
 };
@@ -419,20 +443,30 @@ const state = {
   bsaRows: [],
   months: [],
   lang: "ko",
+  activeTab: "exceptions",
   riskFilter: "all",
+  actionGroup: "origin",
   filters: {
     horizon: "w3",
     priority: "important",
     month: "",
     week: "ALL",
-    origin: "ALL",
-    pol: "ALL",
-    dest: "ALL",
-    dst: "ALL",
+    origin: [],
+    pol: [],
+    dest: [],
+    dst: [],
     sales: "ALL",
     compare: "prevMonth",
     query: ""
   }
+};
+
+const MULTI_FILTER_IDS = ["originFilter", "polFilter", "destFilter", "dstFilter"];
+const MULTI_FILTER_KEYS = {
+  originFilter: "origin",
+  polFilter: "pol",
+  destFilter: "dest",
+  dstFilter: "dst"
 };
 
 const els = {};
@@ -446,6 +480,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.documentElement.lang = state.lang;
   }
   applyLanguage();
+  applyActiveTab();
   OBTAuth.requireAuth({ onReady: () => loadData() });
 });
 
@@ -455,7 +490,10 @@ function cacheElements() {
     "destFilter", "dstFilter", "salesFilter", "compareFilter", "searchInput", "kpiGrid",
     "routeTable", "salesTable", "shipperTable", "issueList", "loading",
     "routeSubtitle", "salesSubtitle", "shipperSubtitle", "issueSubtitle",
-    "refreshBtn", "langToggle", "dashboardLink", "guideBtn", "guideOverlay", "guideLangToggle", "guideClose", "guideTitle", "guideSubtitle", "guideBody"
+    "refreshBtn", "langToggle", "dashboardLink", "guideBtn", "guideOverlay", "guideLangToggle", "guideClose", "guideTitle", "guideSubtitle", "guideBody",
+    "exceptionsView", "actionMonitorView", "actionKpiGrid", "actionSummaryTitle", "actionSummarySubtitle", "actionSummaryTable",
+    "actionSalesTitle", "actionSalesSubtitle", "actionSalesTable", "actionDetailTitle", "actionDetailSubtitle", "actionDetailTable",
+    "actionGroupMode"
   ].forEach((id) => {
     els[id] = document.getElementById(id);
   });
@@ -471,7 +509,7 @@ function dashboardHref() {
 }
 
 function bindEvents() {
-  ["horizonFilter", "priorityFilter", "monthFilter", "weekFilter", "originFilter", "polFilter", "destFilter", "dstFilter", "salesFilter", "compareFilter"].forEach((id) => {
+  ["horizonFilter", "priorityFilter", "monthFilter", "weekFilter", "salesFilter", "compareFilter"].forEach((id) => {
     els[id].addEventListener("change", () => {
       const key = id.replace("Filter", "");
       state.filters[key] = els[id].value;
@@ -483,6 +521,15 @@ function bindEvents() {
       render();
     });
   });
+
+  MULTI_FILTER_IDS.forEach((id) => {
+    els[id].addEventListener("change", () => {
+      state.filters[MULTI_FILTER_KEYS[id]] = multiSelected(id);
+      refreshDependentFilters();
+      render();
+    });
+  });
+  bindMultiSelectClose();
 
   els.searchInput.addEventListener("input", debounce(() => {
     state.filters.query = els.searchInput.value.trim().toLowerCase();
@@ -503,11 +550,27 @@ function bindEvents() {
     if (event.key === "Escape") closeGuide();
   });
 
-  document.querySelectorAll(".segmented button").forEach((button) => {
+  document.querySelectorAll(".app-tabs button[data-tab]").forEach((button) => {
     button.addEventListener("click", () => {
-      document.querySelectorAll(".segmented button").forEach((b) => b.classList.remove("active"));
+      state.activeTab = button.dataset.tab;
+      applyActiveTab();
+    });
+  });
+
+  document.querySelectorAll(".segmented button[data-risk]").forEach((button) => {
+    button.addEventListener("click", () => {
+      document.querySelectorAll(".segmented button[data-risk]").forEach((b) => b.classList.remove("active"));
       button.classList.add("active");
       state.riskFilter = button.dataset.risk;
+      render();
+    });
+  });
+
+  document.querySelectorAll("#actionGroupMode button[data-action-group]").forEach((button) => {
+    button.addEventListener("click", () => {
+      document.querySelectorAll("#actionGroupMode button[data-action-group]").forEach((b) => b.classList.remove("active"));
+      button.classList.add("active");
+      state.actionGroup = button.dataset.actionGroup;
       render();
     });
   });
@@ -527,6 +590,14 @@ function toggleLanguage() {
 
 function closeGuide() {
   els.guideOverlay.classList.add("hidden");
+}
+
+function applyActiveTab() {
+  document.querySelectorAll(".app-tabs button[data-tab]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.tab === state.activeTab);
+  });
+  if (els.exceptionsView) els.exceptionsView.classList.toggle("hidden", state.activeTab !== "exceptions");
+  if (els.actionMonitorView) els.actionMonitorView.classList.toggle("hidden", state.activeTab !== "actions");
 }
 
 function t(path) {
@@ -570,10 +641,23 @@ function applyLanguage() {
   setText(".workbench .panel:not(.panel-wide) h2", t("panels.sales"));
   setText(".detail-grid .panel-wide h2", t("panels.shipper"));
   setText(".detail-grid .panel:not(.panel-wide) h2", t("panels.issue"));
+  setText("#actionSummaryTitle", t("panels.actionSummary"));
+  setText("#actionSalesTitle", t("panels.actionSales"));
+  setText("#actionDetailTitle", t("panels.actionDetail"));
+  const tabLabels = state.lang === "en" ? ["Exception View", "Action Monitor"] : ["Exception View", "Action Monitor"];
+  document.querySelectorAll(".app-tabs button[data-tab]").forEach((button, index) => {
+    button.textContent = tabLabels[index] || button.textContent;
+  });
 
-  document.querySelectorAll(".segmented button").forEach((button) => {
+  document.querySelectorAll(".segmented button[data-risk]").forEach((button) => {
     button.textContent = button.dataset.risk === "all" ? t("all") : button.dataset.risk === "high" ? t("high") : t("watch");
     button.title = riskFilterHelp(button.dataset.risk);
+  });
+  document.querySelectorAll("#actionGroupMode button[data-action-group]").forEach((button) => {
+    const isPol = button.dataset.actionGroup === "pol";
+    button.textContent = state.lang === "en"
+      ? (isPol ? "Origin Port" : "Origin Country")
+      : (isPol ? "선적포트" : "선적국가");
   });
 
   const routeHeads = document.querySelectorAll(".route-table thead th");
@@ -597,8 +681,23 @@ function applyLanguage() {
   shipperHeads.forEach((head, index) => {
     head.textContent = shipperHeadLabels[index];
   });
+  const actionSummaryHeads = document.querySelectorAll(".action-summary-table thead th");
+  const actionSummaryLabels = state.lang === "en"
+    ? ["Origin", "Actions", "P1/P2", "3W Gap", "Weekday Gap", "3W Pickup", "Vs Usual", "BSA Gap", "Status", "Top Owners"]
+    : ["선적지", "Actions", "P1/P2", "3W Gap", "요일 Gap", "3W Pickup", "평소 대비", "BSA Gap", "상태", "주요 담당"];
+  actionSummaryHeads.forEach((head, index) => {
+    head.textContent = actionSummaryLabels[index];
+  });
+  const actionDetailHeads = document.querySelectorAll(".action-detail-table thead th");
+  const actionDetailLabels = state.lang === "en"
+    ? ["Priority", "Action", "Customer", "Sales", "Route", "Current 3W", "Weekday Exp.", "Vs Usual", "Weekday Gap", "3W Pickup", "Status"]
+    : ["Priority", "Action", "화주", "영업사원", "구간", "현재 3W", "요일기대", "평소 대비", "요일 Gap", "3W Pickup", "상태"];
+  actionDetailHeads.forEach((head, index) => {
+    head.textContent = actionDetailLabels[index];
+  });
 
   if (state.raw) updateMeta(state.loadedPath || "data.json");
+  if (state.raw) MULTI_FILTER_IDS.forEach((id) => renderMultiSelect(id, els[id].classList.contains("open")));
 }
 
 function setText(selector, text) {
@@ -967,45 +1066,73 @@ function refreshDependentFilters() {
     .sort((a, b) => parseKoreanDate(a) - parseKoreanDate(b));
 
   setOptions(els.weekFilter, [["ALL", t("all")], ...weeks.map((week) => [week, shortWeek(week)])], state.filters.week);
-
-  const filteredForChoices = state.rows.filter((row) => {
-    if (useCustomPeriod) {
-      if (row.month !== state.filters.month) return false;
-      if (state.filters.week !== "ALL" && row.week !== state.filters.week) return false;
-    } else if (!forcedPeriod.weekSet.has(row.week)) {
-      return false;
-    }
-    return true;
-  });
-
-  const origins = uniqueSorted(filteredForChoices.map((row) => row.origin));
-  setOptions(els.originFilter, [["ALL", t("all")], ...origins.map((v) => [v, v])], state.filters.origin);
-
-  const polRows = filteredForChoices.filter((row) => state.filters.origin === "ALL" || row.origin === state.filters.origin);
-  const pols = uniqueSorted(polRows.map((row) => row.pol));
-  setOptions(els.polFilter, [["ALL", t("all")], ...pols.map((v) => [v, v])], state.filters.pol);
-
-  const destRows = polRows.filter((row) => state.filters.pol === "ALL" || row.pol === state.filters.pol);
-  const dests = uniqueSorted(destRows.map((row) => row.dest));
-  setOptions(els.destFilter, [["ALL", t("all")], ...dests.map((v) => [v, v])], state.filters.dest);
-
-  const dstRows = destRows.filter((row) => state.filters.dest === "ALL" || row.dest === state.filters.dest);
-  const dsts = uniqueSorted(dstRows.map((row) => row.dst));
-  setOptions(els.dstFilter, [["ALL", t("all")], ...dsts.map((v) => [v, v])], state.filters.dst);
-
-  const salesRows = dstRows.filter((row) => state.filters.dst === "ALL" || row.dst === state.filters.dst);
-  const sales = uniqueSorted(salesRows.map((row) => row.sales));
-  setOptions(els.salesFilter, [["ALL", t("all")], ...sales.map((v) => [v, v])], state.filters.sales);
-
   state.filters.week = els.weekFilter.value;
-  state.filters.origin = els.originFilter.value;
-  state.filters.pol = els.polFilter.value;
-  state.filters.dest = els.destFilter.value;
-  state.filters.dst = els.dstFilter.value;
-  state.filters.sales = els.salesFilter.value;
   state.filters.compare = els.compareFilter.value;
   state.filters.horizon = els.horizonFilter.value;
   state.filters.priority = els.priorityFilter.value;
+
+  const periodsForChoices = getPeriods();
+  const filteredForChoices = mergeChoiceRows(
+    rowsForChoicePeriod(periodsForChoices.current),
+    rowsForChoicePeriod(periodsForChoices.baseline)
+  );
+
+  const origins = uniqueSorted(filteredForChoices.map((row) => row.origin));
+  setMultiOptions("originFilter", origins, state.filters.origin);
+  const originSet = multiSelectedSet("originFilter");
+
+  const polRows = filteredForChoices.filter((row) => matchAny(row.origin, originSet));
+  const pols = uniqueSorted(polRows.map((row) => row.pol));
+  setMultiOptions("polFilter", pols, state.filters.pol);
+  const polSet = multiSelectedSet("polFilter");
+
+  const destRows = polRows.filter((row) => matchAny(row.pol, polSet));
+  const dests = uniqueSorted(destRows.map((row) => row.dest));
+  setMultiOptions("destFilter", dests, state.filters.dest);
+  const destSet = multiSelectedSet("destFilter");
+
+  const dstRows = destRows.filter((row) => matchAny(row.dest, destSet));
+  const dsts = uniqueSorted(dstRows.map((row) => row.dst));
+  setMultiOptions("dstFilter", dsts, state.filters.dst);
+  const dstSet = multiSelectedSet("dstFilter");
+
+  const salesRows = dstRows.filter((row) => matchAny(row.dst, dstSet));
+  const sales = uniqueSorted(salesRows.map((row) => row.sales));
+  setOptions(els.salesFilter, [["ALL", t("all")], ...sales.map((v) => [v, v])], state.filters.sales);
+
+  state.filters.origin = multiSelected("originFilter");
+  state.filters.pol = multiSelected("polFilter");
+  state.filters.dest = multiSelected("destFilter");
+  state.filters.dst = multiSelected("dstFilter");
+  state.filters.sales = els.salesFilter.value;
+}
+
+function rowsForChoicePeriod(period) {
+  if (!period) return [];
+  return state.rows.filter((row) => {
+    if (period.weekSet && period.weekSet.size) return period.weekSet.has(row.week);
+    if (period.months && period.months.length) return period.months.includes(row.month);
+    if (period.month && row.month !== period.month) return false;
+    if (period.week && period.week !== "ALL" && row.week !== period.week) return false;
+    return true;
+  });
+}
+
+function mergeChoiceRows(...groups) {
+  const map = new Map();
+  groups.flat().forEach((row) => {
+    const key = [
+      row.origin,
+      row.pol,
+      row.dest,
+      row.dst,
+      row.sales,
+      row.shipperKey,
+      row.week
+    ].join("|");
+    map.set(key, row);
+  });
+  return Array.from(map.values());
 }
 
 function render() {
@@ -1023,6 +1150,7 @@ function render() {
   renderSales(analysis);
   renderShippers(analysis);
   renderIssues(analysis);
+  renderActionMonitor(analysis);
 }
 
 function getPeriods() {
@@ -1149,10 +1277,10 @@ function filterRowsForPeriod(period) {
       if (row.month !== period.month) return false;
       if (period.week !== "ALL" && row.week !== period.week) return false;
     }
-    if (state.filters.origin !== "ALL" && row.origin !== state.filters.origin) return false;
-    if (state.filters.pol !== "ALL" && row.pol !== state.filters.pol) return false;
-    if (state.filters.dest !== "ALL" && row.dest !== state.filters.dest) return false;
-    if (state.filters.dst !== "ALL" && row.dst !== state.filters.dst) return false;
+    if (!matchesFilter(row.origin, "origin")) return false;
+    if (!matchesFilter(row.pol, "pol")) return false;
+    if (!matchesFilter(row.dest, "dest")) return false;
+    if (!matchesFilter(row.dst, "dst")) return false;
     if (state.filters.sales !== "ALL" && row.sales !== state.filters.sales) return false;
     if (state.filters.query && !row.search.includes(state.filters.query)) return false;
     return true;
@@ -1215,10 +1343,10 @@ function filterBsaForPeriod(period) {
     } else if (monthSet.size && !monthSet.has(row.month)) {
       return false;
     }
-    if (state.filters.origin !== "ALL" && row.origin !== state.filters.origin) return false;
-    if (state.filters.pol !== "ALL" && row.pol !== state.filters.pol) return false;
-    if (state.filters.dest !== "ALL" && row.dest !== state.filters.dest) return false;
-    if (state.filters.dst !== "ALL" && row.dst !== state.filters.dst) return false;
+    if (!matchesFilter(row.origin, "origin")) return false;
+    if (!matchesFilter(row.pol, "pol")) return false;
+    if (!matchesFilter(row.dest, "dest")) return false;
+    if (!matchesFilter(row.dst, "dst")) return false;
     return true;
   });
   return rows.map((row) => {
@@ -1354,10 +1482,10 @@ function weeksForMonth(month) {
 
 function filterByDimensions(rows) {
   return rows.filter((row) => {
-    if (state.filters.origin !== "ALL" && row.origin !== state.filters.origin) return false;
-    if (state.filters.pol !== "ALL" && row.pol !== state.filters.pol) return false;
-    if (state.filters.dest !== "ALL" && row.dest !== state.filters.dest) return false;
-    if (state.filters.dst !== "ALL" && row.dst !== state.filters.dst) return false;
+    if (!matchesFilter(row.origin, "origin")) return false;
+    if (!matchesFilter(row.pol, "pol")) return false;
+    if (!matchesFilter(row.dest, "dest")) return false;
+    if (!matchesFilter(row.dst, "dst")) return false;
     if (state.filters.sales !== "ALL" && row.sales !== state.filters.sales) return false;
     if (state.filters.query && !row.search.includes(state.filters.query)) return false;
     return true;
@@ -1374,8 +1502,11 @@ function analyze(currentRows, baselineRows, currentBsaRows, baselineBsaRows, per
   const routeContext = buildRouteContext(currentRoutes, baselineRoutes, currentBsaRoutes, baselineBsaRoutes);
   const paceMap = buildPaceMap(periods, routeContext);
   mergePaceIntoContext(routeContext, paceMap);
-  const leadTrendMap = buildLeadTrendMap(periods, currentRows, baselineRows, currentBsaRows, routeContext);
-  mergeLeadTrendIntoContext(routeContext, leadTrendMap);
+  const weekdayBenchmarks = buildWeekdayBenchmarks(periods);
+  mergeWeekdayBenchmarkIntoContext(routeContext, weekdayBenchmarks);
+  const leadTrendScope = leadTimeTrendScope(periods);
+  const leadTrendMap = buildLeadTrendMap(periods, currentRows, baselineRows, currentBsaRows, routeContext, leadTrendScope);
+  mergeLeadTrendIntoContext(routeContext, leadTrendMap, leadTrendScope);
 
   const allShipperExceptions = buildShipperExceptions(currentShippers, baselineShippers, routeContext);
   const allRouteExceptions = buildRouteExceptions(currentRoutes, baselineRoutes, allShipperExceptions, routeContext, currentBsaRoutes, baselineBsaRoutes);
@@ -1421,6 +1552,8 @@ function analyze(currentRows, baselineRows, currentBsaRows, baselineBsaRows, per
     baselineBsaRoutes,
     routeContext,
     paceMap,
+    weekdayBenchmarks,
+    leadTrendScope,
     leadTrendMap,
     allRouteExceptions,
     allShipperExceptions,
@@ -1725,9 +1858,13 @@ function buildPaceMap(periods, routeContext) {
     const p7 = prior7Agg.get(routeKey) || {};
     const days3 = prior3 ? Math.max(1, diffDays(parseDataDate(prior3.data_date), currentDate)) : 0;
     const days7 = prior7 ? Math.max(1, diffDays(parseDataDate(prior7.data_date), currentDate)) : 0;
-    const pace3 = days3 ? (latestTeu - (p3.teu || 0)) / days3 : null;
-    const pace7 = days7 ? (latestTeu - (p7.teu || 0)) / days7 : null;
-    const w3Pace3 = days3 ? (latestW3Teu - (p3.w3Teu || 0)) / days3 : null;
+    const pickup3 = days3 ? latestTeu - (p3.teu || 0) : null;
+    const pickup7 = days7 ? latestTeu - (p7.teu || 0) : null;
+    const w3Pickup3 = days3 ? latestW3Teu - (p3.w3Teu || 0) : null;
+    const w3Pickup7 = days7 ? latestW3Teu - (p7.w3Teu || 0) : null;
+    const pace3 = days3 ? pickup3 / days3 : null;
+    const pace7 = days7 ? pickup7 / days7 : null;
+    const w3Pace3 = days3 ? w3Pickup3 / days3 : null;
     const gap = Math.max(0, (context.bsaTeu || 0) - (context.currentTeu || 0));
     const requiredDaily = gap > 0 ? gap / Math.max(1, daysRemaining) : 0;
     const usablePace = Math.max(0, pace3 == null ? 0 : pace3);
@@ -1739,6 +1876,12 @@ function buildPaceMap(periods, routeContext) {
     paceMap.set(routeKey, {
       routeKey,
       daysRemaining,
+      days3,
+      days7,
+      pickup3,
+      pickup7,
+      w3Pickup3,
+      w3Pickup7,
       pace3,
       pace7,
       w3Pace3,
@@ -1787,9 +1930,274 @@ function mergePaceIntoContext(routeContext, paceMap) {
   });
 }
 
-function buildLeadTrendMap(periods, currentRows, baselineRows, currentBsaRows, routeContext) {
+function buildWeekdayBenchmarks(periods) {
+  const scope = weekdayBenchmarkScope(periods);
+  if (!scope.enabled) {
+    return {
+      route: new Map(),
+      shipper: new Map(),
+      sampleCount: 0,
+      weekday: "",
+      offsets: [],
+      enabled: false,
+      reason: scope.reason
+    };
+  }
+
+  const snapshots = (state.history && state.history.snapshots || []).slice().sort((a, b) => String(a.data_date).localeCompare(String(b.data_date)));
+  const latestDate = String(state.raw && state.raw.data_date || snapshots.at(-1)?.data_date || "");
+  const latest = parseDataDate(latestDate);
+  if (!latest || snapshots.length < 2) {
+    return {
+      route: new Map(),
+      shipper: new Map(),
+      sampleCount: 0,
+      weekday: latest ? weekdayLabel(latest) : "",
+      offsets: scope.offsets,
+      enabled: true,
+      reason: "no-samples"
+    };
+  }
+
+  const offsets = scope.offsets;
+  const weekday = latest.getDay();
+  const samples = snapshots.filter((snapshot) => {
+    const date = parseDataDate(snapshot.data_date);
+    return date && String(snapshot.data_date) < latestDate && date.getDay() === weekday;
+  });
+  const route = new Map();
+  const shipper = new Map();
+
+  samples.forEach((snapshot) => {
+    const weeks = weeksForSnapshotOffsets(snapshot.data_date, offsets);
+    aggregateHistoryRoutes(snapshot, weeks).forEach((row, routeKey) => {
+      const found = route.get(routeKey) || { teu: 0, w3Teu: 0 };
+      found.teu += row.teu || 0;
+      found.w3Teu += row.w3Teu || 0;
+      route.set(routeKey, found);
+    });
+    aggregateHistoryShippers(snapshot, weeks).forEach((row, key) => {
+      const found = shipper.get(key) || { teu: 0, w3Teu: 0 };
+      found.teu += row.teu || 0;
+      found.w3Teu += row.w3Teu || 0;
+      shipper.set(key, found);
+    });
+  });
+
+  return {
+    route,
+    shipper,
+    sampleCount: samples.length,
+    weekday: weekdayLabel(latest),
+    offsets,
+    enabled: true,
+    reason: samples.length ? "" : "no-samples"
+  };
+}
+
+function weekdayBenchmarkScope(periods) {
+  const current = periods && periods.current;
+  if (!current) return { enabled: false, reason: "no-period", offsets: [] };
+
+  if (current.mode === "forced") {
+    const offsets = (current.offsets || periodLeadOffsets(current))
+      .map(Number)
+      .filter((offset) => Number.isFinite(offset) && offset >= 1 && offset <= 3);
+    return offsets.length
+      ? { enabled: true, reason: "", offsets: uniqueSorted(offsets.map(String)).map(Number) }
+      : { enabled: false, reason: "out-of-range", offsets: [] };
+  }
+
+  if (current.mode === "custom") {
+    if (!current.week || current.week === "ALL") {
+      return { enabled: false, reason: "custom-range", offsets: [] };
+    }
+    const currentDate = parseDataDate(state.raw && state.raw.data_date) || new Date();
+    const offset = weekLeadOffset(current.week, currentDate);
+    if (!Number.isFinite(offset)) return { enabled: false, reason: "out-of-range", offsets: [] };
+    if (offset < 1) return { enabled: false, reason: "custom-past", offsets: [] };
+    if (offset > 3) return { enabled: false, reason: "custom-future", offsets: [] };
+    return { enabled: true, reason: "", offsets: [offset] };
+  }
+
+  const offsets = periodLeadOffsets(current).filter((offset) => offset >= 1 && offset <= 3);
+  return offsets.length
+    ? { enabled: true, reason: "", offsets }
+    : { enabled: false, reason: "out-of-range", offsets: [] };
+}
+
+function weekdayBenchmarkText(benchmarks, format = "short") {
+  const en = state.lang === "en";
+  const reason = benchmarks && benchmarks.reason || "";
+  const detail = {
+    "custom-range": en
+      ? "Custom all/month view uses period comparison, not same-weekday pace."
+      : "Custom 전체/월 선택은 기간 합산 비교로 보고 요일 기준은 적용하지 않습니다.",
+    "custom-past": en
+      ? "Past custom weeks use final performance comparison, not same-weekday pace."
+      : "과거 Custom 주차는 최종 실적 비교로 보고 요일 기준은 적용하지 않습니다.",
+    "custom-future": en
+      ? "Same-weekday pace is applied only to W+1 to W+3."
+      : "요일 기준은 W+1~W+3 단일 주차에만 적용합니다.",
+    "out-of-range": en
+      ? "Same-weekday pace is outside the supported W+1 to W+3 range."
+      : "W+1~W+3 범위를 벗어나 요일 기준을 적용하지 않습니다.",
+    "no-period": en
+      ? "No selected period for same-weekday pace."
+      : "요일 기준을 적용할 선택기간이 없습니다.",
+    "no-samples": en
+      ? "No prior same-weekday samples yet."
+      : "같은 요일 이전 샘플이 아직 충분하지 않습니다."
+  };
+  const short = {
+    "custom-range": en ? "period comparison only" : "기간 비교 기준",
+    "custom-past": en ? "past week: final comparison" : "과거 주차는 최종 비교",
+    "custom-future": en ? "W+4+: no weekday pace" : "W+4 이상 요일 제외",
+    "out-of-range": en ? "outside W+1 to W+3" : "W+1~W+3 범위 밖",
+    "no-period": en ? "no selected period" : "선택기간 없음",
+    "no-samples": en ? "no same-weekday samples" : "같은 요일 샘플 없음"
+  };
+  return (format === "detail" ? detail : short)[reason] || (en ? "same-weekday benchmark unavailable" : "같은 요일 기준 없음");
+}
+
+function weekdayBenchmarkHasSamples(benchmarks) {
+  return Boolean(benchmarks && benchmarks.enabled !== false && benchmarks.sampleCount > 0);
+}
+
+function leadTimeTrendScope(periods) {
+  return weekdayBenchmarkScope(periods);
+}
+
+function leadTimeTrendText(scope, format = "short") {
+  const en = state.lang === "en";
+  const reason = scope && scope.reason || "";
+  const detail = {
+    "custom-range": en
+      ? "Custom all/month view mixes lead times, so use period comparison instead of lead-time trend."
+      : "Custom 전체/월 선택은 여러 리드타임이 섞이므로 트렌드 대신 기간 비교로 봅니다.",
+    "custom-past": en
+      ? "Past custom weeks are elapsed, so use final performance comparison instead of pace."
+      : "과거 Custom 주차는 이미 지난 실적이므로 속도보다 최종 실적 비교로 봅니다.",
+    "custom-future": en
+      ? "Lead-time trend is shown only for W+1 to W+3."
+      : "리드타임 트렌드는 W+1~W+3 단일 주차에서만 표시합니다.",
+    "out-of-range": en
+      ? "Lead-time trend is outside the supported W+1 to W+3 range."
+      : "W+1~W+3 범위를 벗어나 리드타임 트렌드를 표시하지 않습니다.",
+    "no-period": en
+      ? "No selected period for lead-time trend."
+      : "리드타임 트렌드를 적용할 선택기간이 없습니다."
+  };
+  const short = {
+    "custom-range": en ? "period comparison" : "기간 비교 기준",
+    "custom-past": en ? "past week comparison" : "과거 실적 비교",
+    "custom-future": en ? "W+4+: no trend" : "W+4 이상 트렌드 제외",
+    "out-of-range": en ? "outside W+1 to W+3" : "W+1~W+3 범위 밖",
+    "no-period": en ? "no selected period" : "선택기간 없음"
+  };
+  return (format === "detail" ? detail : short)[reason] || (en ? "no lead-time trend" : "리드타임 트렌드 없음");
+}
+
+function mergeWeekdayBenchmarkIntoContext(routeContext, benchmarks) {
+  const sampleCount = benchmarks && benchmarks.sampleCount || 0;
+  routeContext.forEach((context, routeKey) => {
+    const expected = weekdayExpected(benchmarks && benchmarks.route, routeKey, sampleCount);
+    const gap = Math.max(0, expected.w3Teu - (context.currentW3Teu || 0));
+    const ratio = expected.w3Teu ? (context.currentW3Teu || 0) / expected.w3Teu : null;
+    Object.assign(context, {
+      weekdayExpectedW3: expected.w3Teu,
+      weekdayExpectedTeu: expected.teu,
+      weekdayW3Gap: gap,
+      weekdayW3Delta: (context.currentW3Teu || 0) - expected.w3Teu,
+      weekdayW3Ratio: ratio,
+      weekdaySamples: sampleCount,
+      weekdayLabel: benchmarks && benchmarks.weekday || "",
+      weekdayStatus: weekdayStatus(ratio, expected.w3Teu, gap).code
+    });
+    if (sampleCount >= 1 && gap >= Math.max(30, context.portImpactThreshold || 30) && ratio != null && ratio < .65) {
+      context.isImportant = true;
+    }
+  });
+}
+
+function periodLeadOffsets(period) {
+  if (period && Array.isArray(period.offsets) && period.offsets.length) return period.offsets;
+  const currentDate = parseDataDate(state.raw && state.raw.data_date) || new Date();
+  const offsets = uniqueSorted((periodWeeks(period) || [])
+    .map((week) => weekLeadOffset(week, currentDate))
+    .filter((offset) => Number.isFinite(offset) && offset >= 1 && offset <= 3)
+    .map(String))
+    .map(Number);
+  return offsets.length ? offsets : [3];
+}
+
+function weeksForSnapshotOffsets(dataDate, offsets) {
+  const start = getCurrentWeekStartDate(dataDate);
+  return (offsets && offsets.length ? offsets : [3]).map((offset) => formatKoreanDate(addDays(start, offset * 7)));
+}
+
+function weekdayExpected(map, key, sampleCount) {
+  if (!sampleCount || !map) return { teu: 0, w3Teu: 0 };
+  const found = map.get(key) || {};
+  return {
+    teu: (found.teu || 0) / sampleCount,
+    w3Teu: (found.w3Teu || 0) / sampleCount
+  };
+}
+
+function weekdayStatus(ratio, expected, gap) {
+  if (!expected) {
+    return {
+      code: "no-benchmark",
+      label: state.lang === "en" ? "No usual" : "기준 없음",
+      tone: "neutral",
+      title: state.lang === "en" ? "No same-weekday benchmark is available." : "같은 요일 기준값이 없습니다."
+    };
+  }
+  if (ratio >= 1.05) {
+    return {
+      code: "above",
+      label: state.lang === "en" ? "Above usual" : "평소 이상",
+      tone: "pos",
+      title: state.lang === "en" ? "Current 3W booking is above the same-weekday benchmark." : "현재 3W 부킹이 같은 요일 평균보다 높습니다."
+    };
+  }
+  if (ratio >= .9) {
+    return {
+      code: "normal",
+      label: state.lang === "en" ? "Usual range" : "평균권",
+      tone: "pos",
+      title: state.lang === "en" ? "Current 3W booking is close to the same-weekday benchmark." : "현재 3W 부킹이 같은 요일 평균권입니다."
+    };
+  }
+  if (ratio >= .6) {
+    return {
+      code: "low",
+      label: state.lang === "en" ? "Below usual" : "평소보다 낮음",
+      tone: "warn",
+      title: state.lang === "en" ? `Current 3W booking is below the same-weekday benchmark by ${fmt(gap)} TEU.` : `현재 3W 부킹이 같은 요일 평균보다 ${fmt(gap)} TEU 낮습니다.`
+    };
+  }
+  return {
+    code: "very-low",
+    label: state.lang === "en" ? "Very low" : "매우 낮음",
+    tone: "neg",
+    title: state.lang === "en" ? `Current 3W booking is far below the same-weekday benchmark by ${fmt(gap)} TEU.` : `현재 3W 부킹이 같은 요일 평균보다 ${fmt(gap)} TEU 크게 낮습니다.`
+  };
+}
+
+function weekdayLabel(date) {
+  const labels = state.lang === "en"
+    ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    : ["일", "월", "화", "수", "목", "금", "토"];
+  return labels[date.getDay()] || "";
+}
+
+function buildLeadTrendMap(periods, currentRows, baselineRows, currentBsaRows, routeContext, scope) {
+  if (scope && scope.enabled === false) return new Map();
   const selectedWeeks = periodWeeks(periods.current);
   if (!selectedWeeks.length) return new Map();
+  const allowedOffsets = new Set((scope && scope.offsets || []).map(Number));
 
   const currentByWeek = aggregateByRouteWeek(currentRows);
   const bsaByWeek = aggregateBsaByRouteWeek(currentBsaRows, selectedWeeks);
@@ -1810,7 +2218,8 @@ function buildLeadTrendMap(periods, currentRows, baselineRows, currentBsaRows, r
       const targetTeu = Math.max(bsaTeu || 0, baseTeu || fallbackBase || 0, currentTeu || 0);
       if (targetTeu <= 0) return;
       const leadOffset = weekLeadOffset(week, currentDate);
-      if (leadOffset < 0) return;
+      if (leadOffset < 1 || leadOffset > 3) return;
+      if (allowedOffsets.size && !allowedOffsets.has(leadOffset)) return;
       records.push({
         routeKey,
         week,
@@ -1952,8 +2361,22 @@ function leadTrendSeverity(row) {
   return statusScore * 100000 + (row.gap || 0);
 }
 
-function mergeLeadTrendIntoContext(routeContext, leadTrendMap) {
+function mergeLeadTrendIntoContext(routeContext, leadTrendMap, scope) {
   routeContext.forEach((context, routeKey) => {
+    if (scope && scope.enabled === false) {
+      Object.assign(context, {
+        leadTrendStatus: "no-trend",
+        leadTrendGap: 0,
+        leadTrendExpectedTeu: 0,
+        leadTrendCurrentRate: null,
+        leadTrendExpectedRate: 0,
+        leadTrendLabel: "",
+        leadTrendWorst: null,
+        leadTrendWeeks: [],
+        leadTrendDisabledReason: scope.reason
+      });
+      return;
+    }
     const trend = leadTrendMap.get(routeKey);
     if (!trend) return;
     Object.assign(context, {
@@ -1964,7 +2387,8 @@ function mergeLeadTrendIntoContext(routeContext, leadTrendMap) {
       leadTrendExpectedRate: trend.expectedRate,
       leadTrendLabel: trend.label,
       leadTrendWorst: trend.worst,
-      leadTrendWeeks: trend.weeks
+      leadTrendWeeks: trend.weeks,
+      leadTrendDisabledReason: ""
     });
     if (["trend-short", "trend-slow"].includes(trend.status) && trend.trendGap >= Math.max(30, context.portImpactThreshold || 30)) {
       context.isImportant = true;
@@ -2095,6 +2519,9 @@ function buildShipperExceptions(currentMap, baselineMap, routeContext) {
       focusAction: focus.action,
       paceStatus: context.status || "no-history",
       pace3: context.pace3,
+      pickup3: context.pickup3,
+      w3Pickup3: context.w3Pickup3,
+      w3Pace3: context.w3Pace3,
       requiredDaily: context.requiredDaily,
       projectedGap: context.projectedGap || 0,
       currentTeu,
@@ -2429,15 +2856,28 @@ function buildRouteExceptions(currentRoutes, baselineRoutes, shipperExceptions, 
       paceStatus: context.status || "no-history",
       pace3: context.pace3,
       pace7: context.pace7,
+      pickup3: context.pickup3,
+      pickup7: context.pickup7,
+      w3Pickup3: context.w3Pickup3,
+      w3Pickup7: context.w3Pickup7,
       w3Pace3: context.w3Pace3,
       requiredDaily: context.requiredDaily,
       projectedTeu: context.projectedTeu,
       projectedGap: context.projectedGap || 0,
       daysRemaining: context.daysRemaining,
+      weekdayExpectedW3: context.weekdayExpectedW3 || 0,
+      weekdayExpectedTeu: context.weekdayExpectedTeu || 0,
+      weekdayW3Gap: context.weekdayW3Gap || 0,
+      weekdayW3Delta: context.weekdayW3Delta || 0,
+      weekdayW3Ratio: context.weekdayW3Ratio,
+      weekdaySamples: context.weekdaySamples || 0,
+      weekdayLabel: context.weekdayLabel || "",
+      weekdayStatus: context.weekdayStatus || "no-benchmark",
       leadTrendStatus: context.leadTrendStatus || "no-trend",
       leadTrendGap: context.leadTrendGap || 0,
       leadTrendLabel: context.leadTrendLabel || "",
       leadTrendExpectedRate: context.leadTrendExpectedRate || 0,
+      leadTrendDisabledReason: context.leadTrendDisabledReason || "",
       currentTeu,
       baseTeu,
       delta,
@@ -3235,6 +3675,543 @@ function renderIssues(analysis) {
   `).join("");
 }
 
+function renderActionMonitor(analysis) {
+  if (!els.actionKpiGrid) return;
+  const monitor = buildActionMonitor(analysis);
+  renderActionKpis(monitor, analysis);
+  renderActionSummary(monitor, analysis);
+  renderActionSales(monitor, analysis);
+  renderActionDetails(monitor, analysis);
+}
+
+function buildActionMonitor(analysis) {
+  const selectedWeeks = periodWeeks(analysis.periods.current);
+  const routeByKey = new Map(analysis.routeExceptions.map((row) => [row.routeKey || row.key, row]));
+  const actionRows = analysis.shipperExceptions.map((row) => {
+    const route = routeByKey.get(row.routeKey) || analysis.routeContext.get(row.routeKey) || {};
+    const history = shipperHistoryPickup(row, selectedWeeks, 3);
+    const routePickup = numberOrNull(route.w3Pickup3 ?? row.w3Pickup3);
+    const recentW3Pickup = history.hasHistory ? history.w3Pickup : routePickup;
+    const w3Gap = Math.max(0, (row.baseW3Teu || 0) - (row.currentW3Teu || 0));
+    const weekday = shipperWeekdayBenchmark(row, analysis.weekdayBenchmarks);
+    const status = actionMonitorStatus(row, w3Gap, recentW3Pickup);
+    return {
+      ...row,
+      actionType: actionTypeForCandidate(row),
+      w3Gap,
+      weekdayExpectedW3: weekday.expectedW3,
+      weekdayExpectedTeu: weekday.expectedTeu,
+      weekdayGap: weekday.gap,
+      weekdayDelta: weekday.delta,
+      weekdayRatio: weekday.ratio,
+      weekdaySamples: weekday.samples,
+      weekdayStatus: weekday.status.code,
+      weekdayStatusLabel: weekday.status.label,
+      weekdayStatusTone: weekday.status.tone,
+      weekdayStatusTitle: weekday.status.title,
+      recentW3Pickup,
+      recentTeuPickup: history.hasHistory ? history.teuPickup : numberOrNull(route.pickup3 ?? row.pickup3),
+      historySource: history.hasHistory ? "shipper" : routePickup == null ? "none" : "route",
+      actionStatus: status.code,
+      actionStatusLabel: status.label,
+      actionStatusTone: status.tone,
+      actionStatusTitle: status.title,
+      recoveryRate: row.baseW3Teu ? Math.max(0, Math.min(1, row.currentW3Teu / row.baseW3Teu)) : 0
+    };
+  });
+
+  const summary = aggregateActionByPlace(actionRows, analysis, routeByKey);
+  const sales = aggregateActionBySales(actionRows);
+  const totals = {
+    actionCount: actionRows.length,
+    p1: actionRows.filter((row) => row.priority === "P1").length,
+    p2: actionRows.filter((row) => row.priority === "P2").length,
+    w3Gap: actionRows.reduce((sum, row) => sum + row.w3Gap, 0),
+    weekdayGap: actionRows.reduce((sum, row) => sum + row.weekdayGap, 0),
+    weekdayExpectedW3: actionRows.reduce((sum, row) => sum + row.weekdayExpectedW3, 0),
+    weekdayCurrentW3: actionRows.reduce((sum, row) => sum + row.currentW3Teu, 0),
+    belowWeekday: actionRows.filter((row) => ["low", "very-low"].includes(row.weekdayStatus)).length,
+    recentW3Pickup: actionRows.reduce((sum, row) => sum + (row.recentW3Pickup || 0), 0),
+    improving: actionRows.filter((row) => row.actionStatus === "improving").length,
+    noPickup: actionRows.filter((row) => row.actionStatus === "no-pickup").length,
+    open: actionRows.filter((row) => row.actionStatus === "open").length,
+    baseW3Teu: summary.reduce((sum, row) => sum + row.baseW3Teu, 0),
+    currentW3Teu: summary.reduce((sum, row) => sum + row.currentW3Teu, 0)
+  };
+  totals.gapClosedRate = totals.baseW3Teu ? Math.max(0, Math.min(1.2, totals.currentW3Teu / totals.baseW3Teu)) : 0;
+  totals.weekdayRatio = totals.weekdayExpectedW3 ? totals.weekdayCurrentW3 / totals.weekdayExpectedW3 : null;
+
+  return { actionRows, summary, sales, totals };
+}
+
+function aggregateActionByPlace(actionRows, analysis, routeByKey) {
+  const map = new Map();
+  const routeSeen = new Map();
+
+  actionRows.forEach((row) => {
+    const groupKey = state.actionGroup === "pol" ? `${row.origin}|${row.pol}` : row.origin;
+    const label = state.actionGroup === "pol" ? `${row.origin} ${row.pol}` : row.origin;
+    const found = map.get(groupKey) || {
+      key: groupKey,
+      label,
+      actionCount: 0,
+      p1: 0,
+      p2: 0,
+      w3Gap: 0,
+      weekdayGap: 0,
+      weekdayExpectedW3: 0,
+      weekdayCurrentW3: 0,
+      impactTeu: 0,
+      recentW3Pickup: 0,
+      improving: 0,
+      noPickup: 0,
+      open: 0,
+      baseW3Teu: 0,
+      currentW3Teu: 0,
+      bsaGap: 0,
+      projectedGap: 0,
+      sales: new Set(),
+      routes: new Set(),
+      issues: new Map()
+    };
+
+    found.actionCount += 1;
+    found.p1 += row.priority === "P1" ? 1 : 0;
+    found.p2 += row.priority === "P2" ? 1 : 0;
+    found.w3Gap += row.w3Gap || 0;
+    found.weekdayGap += row.weekdayGap || 0;
+    found.weekdayExpectedW3 += row.weekdayExpectedW3 || 0;
+    found.weekdayCurrentW3 += row.currentW3Teu || 0;
+    found.impactTeu += row.impactTeu || 0;
+    found.recentW3Pickup += row.recentW3Pickup || 0;
+    found.improving += row.actionStatus === "improving" ? 1 : 0;
+    found.noPickup += row.actionStatus === "no-pickup" ? 1 : 0;
+    found.open += row.actionStatus === "open" ? 1 : 0;
+    found.sales.add(row.sales);
+    found.routes.add(row.routeKey);
+    found.issues.set(row.actionType, (found.issues.get(row.actionType) || 0) + 1);
+
+    const seenKey = `${groupKey}@@${row.routeKey}`;
+    if (!routeSeen.has(seenKey)) {
+      const route = routeByKey.get(row.routeKey) || analysis.routeContext.get(row.routeKey) || {};
+      found.baseW3Teu += route.baseW3Teu || 0;
+      found.currentW3Teu += route.currentW3Teu || 0;
+      found.bsaGap += route.bsaShortfall || Math.max(0, (route.bsaTeu || 0) - (route.currentTeu || 0));
+      found.projectedGap += route.projectedGap || 0;
+      routeSeen.set(seenKey, true);
+    }
+
+    map.set(groupKey, found);
+  });
+
+  return Array.from(map.values()).map((row) => ({
+    ...row,
+    gapClosedRate: row.baseW3Teu ? Math.max(0, Math.min(1.2, row.currentW3Teu / row.baseW3Teu)) : 0,
+    weekdayRatio: row.weekdayExpectedW3 ? row.weekdayCurrentW3 / row.weekdayExpectedW3 : null,
+    weekdayStatus: weekdayStatus(row.weekdayExpectedW3 ? row.weekdayCurrentW3 / row.weekdayExpectedW3 : null, row.weekdayExpectedW3, row.weekdayGap),
+    topSales: topSetEntries(row.sales, 3).join(", ") || "-",
+    topIssue: topIssue(row.issues),
+    statusLabel: actionGroupStatus(row).label,
+    statusTone: actionGroupStatus(row).tone,
+    statusTitle: actionGroupStatus(row).title
+  })).sort((a, b) => b.p1 - a.p1 || b.weekdayGap - a.weekdayGap || b.w3Gap - a.w3Gap || b.actionCount - a.actionCount);
+}
+
+function aggregateActionBySales(actionRows) {
+  const map = new Map();
+  actionRows.forEach((row) => {
+    const found = map.get(row.sales) || {
+      sales: row.sales,
+      actionCount: 0,
+      p1: 0,
+      p2: 0,
+      w3Gap: 0,
+      weekdayGap: 0,
+      weekdayExpectedW3: 0,
+      weekdayCurrentW3: 0,
+      recentW3Pickup: 0,
+      improving: 0,
+      noPickup: 0,
+      routes: new Set(),
+      shippers: new Set(),
+      issues: new Map()
+    };
+    found.actionCount += 1;
+    found.p1 += row.priority === "P1" ? 1 : 0;
+    found.p2 += row.priority === "P2" ? 1 : 0;
+    found.w3Gap += row.w3Gap || 0;
+    found.weekdayGap += row.weekdayGap || 0;
+    found.weekdayExpectedW3 += row.weekdayExpectedW3 || 0;
+    found.weekdayCurrentW3 += row.currentW3Teu || 0;
+    found.recentW3Pickup += row.recentW3Pickup || 0;
+    found.improving += row.actionStatus === "improving" ? 1 : 0;
+    found.noPickup += row.actionStatus === "no-pickup" ? 1 : 0;
+    found.routes.add(row.routeKey);
+    found.shippers.add(row.shipperCode || row.shipperName);
+    found.issues.set(row.actionType, (found.issues.get(row.actionType) || 0) + 1);
+    map.set(row.sales, found);
+  });
+  return Array.from(map.values()).map((row) => ({
+    ...row,
+    weekdayRatio: row.weekdayExpectedW3 ? row.weekdayCurrentW3 / row.weekdayExpectedW3 : null,
+    topIssue: topIssue(row.issues),
+    statusLabel: actionGroupStatus(row).label,
+    statusTone: actionGroupStatus(row).tone,
+    statusTitle: actionGroupStatus(row).title
+  })).sort((a, b) => b.noPickup - a.noPickup || b.weekdayGap - a.weekdayGap || b.p1 - a.p1 || b.w3Gap - a.w3Gap);
+}
+
+function renderActionKpis(monitor, analysis) {
+  const totals = monitor.totals;
+  const weekday = analysis.weekdayBenchmarks || {};
+  const weekdayEnabled = weekday.enabled !== false;
+  const weekdayHasSamples = weekdayBenchmarkHasSamples(weekday);
+  const weekdayDetail = weekdayBenchmarkText(weekday, "detail");
+  const weekdayShort = weekdayBenchmarkText(weekday);
+  const kpis = [
+    {
+      label: state.lang === "en" ? "Auto Actions" : "자동 Action 후보",
+      value: fmt(totals.actionCount),
+      note: state.lang === "en" ? `P1 ${fmt(totals.p1)} · P2 ${fmt(totals.p2)}` : `P1 ${fmt(totals.p1)} · P2 ${fmt(totals.p2)}`,
+      tone: totals.p1 ? "neg" : totals.actionCount ? "warn" : "pos"
+    },
+    {
+      label: t("labels.monitoredGap"),
+      value: `${fmt(totals.w3Gap)} TEU`,
+      note: state.lang === "en" ? `${analysis.periods.label} action candidates` : `${analysis.periods.label} 조치 후보 기준`,
+      tone: totals.w3Gap ? "neg" : "pos"
+    },
+    {
+      label: t("labels.weekdayGap"),
+      value: weekdayHasSamples ? `${fmt(totals.weekdayGap)} TEU` : "-",
+      note: weekdayHasSamples
+        ? (state.lang === "en" ? `${fmt(totals.belowWeekday)} below same weekday` : `같은 요일 기준 낮음 ${fmt(totals.belowWeekday)}건`)
+        : (weekdayEnabled ? weekdayShort : weekdayDetail),
+      tone: !weekdayEnabled || !weekdayHasSamples ? "warn" : totals.weekdayGap ? "neg" : "pos"
+    },
+    {
+      label: t("labels.weekdayVs"),
+      value: weekdayHasSamples && totals.weekdayRatio != null ? rpct(totals.weekdayRatio) : "-",
+      note: weekdayHasSamples
+        ? (state.lang === "en" ? `current ${fmt(totals.weekdayCurrentW3)} / usual ${fmt(totals.weekdayExpectedW3)}` : `현재 ${fmt(totals.weekdayCurrentW3)} / 요일기대 ${fmt(totals.weekdayExpectedW3)}`)
+        : (weekdayEnabled ? weekdayShort : weekdayDetail),
+      tone: !weekdayEnabled || !weekdayHasSamples || totals.weekdayRatio == null ? "warn" : totals.weekdayRatio >= .9 ? "pos" : totals.weekdayRatio >= .6 ? "warn" : "neg"
+    },
+    {
+      label: t("labels.recentPickup"),
+      value: signed(totals.recentW3Pickup),
+      note: state.lang === "en" ? "shipper history when available" : "화주 이력 우선, 없으면 구간 이력",
+      tone: totals.recentW3Pickup > 0 ? "pos" : totals.recentW3Pickup < 0 ? "neg" : "warn"
+    },
+    {
+      label: t("labels.noPickup"),
+      value: fmt(totals.noPickup),
+      note: state.lang === "en" ? `${fmt(totals.open)} still open` : `Open ${fmt(totals.open)}건`,
+      tone: totals.noPickup ? "neg" : "pos"
+    }
+  ];
+
+  els.actionKpiGrid.innerHTML = kpis.map((item) => `
+    <article class="kpi">
+      <div class="label">${item.label}</div>
+      <div class="value ${item.tone}">${item.value}</div>
+      <div class="note">${item.note}</div>
+    </article>
+  `).join("");
+}
+
+function renderActionSummary(monitor, analysis) {
+  const rows = monitor.summary.slice(0, 45);
+  const weekday = analysis.weekdayBenchmarks || {};
+  const weekdayHasSamples = weekdayBenchmarkHasSamples(weekday);
+  const sampleNote = weekdayHasSamples
+    ? (state.lang === "en" ? `${weekday.weekday} benchmark ${weekday.sampleCount} samples` : `${weekday.weekday}요일 기준 ${weekday.sampleCount}개 샘플`)
+    : weekdayBenchmarkText(weekday, weekday.enabled === false ? "detail" : "short");
+  els.actionSummarySubtitle.textContent = state.lang === "en"
+    ? `${analysis.periods.label} vs ${analysis.periods.baselineLabel} · ${sampleNote} · grouped by ${state.actionGroup === "pol" ? "origin port" : "origin country"}`
+    : `${analysis.periods.label} vs ${analysis.periods.baselineLabel} · ${sampleNote} · ${state.actionGroup === "pol" ? "선적포트" : "선적국가"} 기준`;
+
+  if (!rows.length) {
+    els.actionSummaryTable.innerHTML = emptyRow(10, state.lang === "en" ? "No automatic action candidates." : "자동 Action 후보가 없습니다.");
+    return;
+  }
+
+  els.actionSummaryTable.innerHTML = rows.map((row) => `
+    <tr>
+      <td>
+        <div class="action-place">
+          <strong>${escapeHtml(row.label)}</strong>
+          <span class="subline">${fmt(row.routes.size)} ${t("labels.routes")} · ${fmt(row.sales.size)} ${state.lang === "en" ? "owners" : "명"}</span>
+        </div>
+      </td>
+      <td class="num">${fmt(row.actionCount)}</td>
+      <td class="num"><span class="${row.p1 ? "neg" : ""}">${fmt(row.p1)}</span> / ${fmt(row.p2)}</td>
+      <td class="num neg">${fmt(row.w3Gap)}</td>
+      <td class="num ${weekdayHasSamples && row.weekdayGap ? "neg" : "pos"}">${weekdayHasSamples ? fmt(row.weekdayGap) : "-"}</td>
+      <td class="num ${row.recentW3Pickup > 0 ? "pos" : row.recentW3Pickup < 0 ? "neg" : "warn"}">${signed(row.recentW3Pickup)}</td>
+      <td class="num ${!weekdayHasSamples || row.weekdayRatio == null ? "" : row.weekdayRatio >= .9 ? "pos" : row.weekdayRatio >= .6 ? "warn" : "neg"}">${weekdayHasSamples && row.weekdayRatio != null ? rpct(row.weekdayRatio) : "-"}</td>
+      <td class="num">${fmt(Math.max(row.bsaGap, row.projectedGap))}</td>
+      <td><span class="status-pill ${weekdayHasSamples ? row.weekdayStatus.tone : "neutral"}" title="${escapeAttr(weekdayHasSamples ? row.weekdayStatus.title : sampleNote)}">${weekdayHasSamples ? row.weekdayStatus.label : "-"}</span><div class="subline">${row.statusLabel} · ${actionTypeLabel(row.topIssue)}</div></td>
+      <td>${escapeHtml(row.topSales)}</td>
+    </tr>
+  `).join("");
+}
+
+function renderActionSales(monitor, analysis) {
+  const rows = monitor.sales.slice(0, 18);
+  const weekday = analysis.weekdayBenchmarks || {};
+  const weekdayHasSamples = weekdayBenchmarkHasSamples(weekday);
+  const weekdayNote = weekdayHasSamples
+    ? (state.lang === "en" ? "same-weekday gap and 3W pickup" : "요일 Gap 및 3W Pickup 상태")
+    : weekdayBenchmarkText(weekday, weekday.enabled === false ? "detail" : "short");
+  els.actionSalesSubtitle.textContent = state.lang === "en"
+    ? `${fmt(monitor.sales.length)} owners · ${weekdayNote}`
+    : `${fmt(monitor.sales.length)}명 · ${weekdayNote}`;
+
+  if (!rows.length) {
+    els.actionSalesTable.innerHTML = `<div class="empty-row">${state.lang === "en" ? "No owner-level action status." : "영업사원별 개선 현황이 없습니다."}</div>`;
+    return;
+  }
+
+  els.actionSalesTable.innerHTML = rows.map((row) => `
+    <article class="sales-card">
+      <div class="sales-top">
+        <div>
+          <strong>${escapeHtml(row.sales)}</strong>
+          <div class="subline">${fmt(row.routes.size)} ${t("labels.routes")} · ${fmt(row.shippers.size)}${t("labels.shippers")} · P1 ${fmt(row.p1)} / P2 ${fmt(row.p2)}</div>
+        </div>
+        <span class="status-pill ${row.statusTone}" title="${escapeAttr(row.statusTitle)}">${row.statusLabel}</span>
+      </div>
+      <div class="sales-metrics action-sales-metrics">
+        <div>
+          <span class="metric-label">${t("labels.monitoredGap")}</span>
+          <strong class="neg">${fmt(row.w3Gap)} TEU</strong>
+        </div>
+        <div>
+          <span class="metric-label">${t("labels.weekdayGap")}</span>
+          <strong class="${weekdayHasSamples && row.weekdayGap ? "neg" : "pos"}">${weekdayHasSamples ? fmt(row.weekdayGap) : "-"}</strong>
+        </div>
+        <div>
+          <span class="metric-label">${t("labels.recentPickup")}</span>
+          <strong class="${row.recentW3Pickup > 0 ? "pos" : row.recentW3Pickup < 0 ? "neg" : "warn"}">${signed(row.recentW3Pickup)}</strong>
+        </div>
+        <div>
+          <span class="metric-label">${t("labels.noPickup")}</span>
+          <strong class="${row.noPickup ? "neg" : "pos"}">${fmt(row.noPickup)}</strong>
+        </div>
+      </div>
+      <div class="sales-focus">${actionTypeLabel(row.topIssue)}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${Math.min(100, (row.w3Gap + row.actionCount * 3) / 5)}%"></div></div>
+    </article>
+  `).join("");
+}
+
+function renderActionDetails(monitor, analysis) {
+  const rows = monitor.actionRows
+    .slice()
+    .sort((a, b) => priorityScore(b.priority) - priorityScore(a.priority) || b.weekdayGap - a.weekdayGap || b.w3Gap - a.w3Gap || b.impactTeu - a.impactTeu)
+    .slice(0, 80);
+  const weekday = analysis.weekdayBenchmarks || {};
+  const weekdayHasSamples = weekdayBenchmarkHasSamples(weekday);
+  const weekdayNote = weekdayHasSamples
+    ? (state.lang === "en" ? "same-weekday benchmark + recent 3W pickup" : "같은 요일 기대치 + 최근 3W Pickup 기준")
+    : weekdayBenchmarkText(weekday, weekday.enabled === false ? "detail" : "short");
+  els.actionDetailSubtitle.textContent = state.lang === "en"
+    ? `Top ${fmt(rows.length)} candidates · ${weekdayNote}`
+    : `상위 ${fmt(rows.length)}건 · ${weekdayNote}`;
+
+  if (!rows.length) {
+    els.actionDetailTable.innerHTML = emptyRow(11, state.lang === "en" ? "No action candidates." : "Action 후보가 없습니다.");
+    return;
+  }
+
+  els.actionDetailTable.innerHTML = rows.map((row) => `
+    <tr>
+      <td><span class="badge ${priorityClass(row.priority)}" title="${escapeAttr(priorityTitle(row.priority))}">${row.priority}</span></td>
+      <td>
+        <div class="action-main">
+          <strong class="action-type">${actionTypeLabel(row.actionType)}</strong>
+          <span class="subline">${riskLabel(row.focusReason || row.issue)}</span>
+        </div>
+      </td>
+      <td>
+        <div class="shipper-main">
+          <strong title="${escapeAttr(row.shipperName)}">${escapeHtml(row.shipperName)}</strong>
+          <span class="subline">${escapeHtml(row.shipperCode || "-")}</span>
+        </div>
+      </td>
+      <td>${escapeHtml(row.sales)}</td>
+      <td>${escapeHtml(`${row.origin} ${row.pol} → ${row.dest} ${row.dst}`)}</td>
+      <td class="num">${fmt(row.currentW3Teu)}</td>
+      <td class="num">${weekdayHasSamples && row.weekdayExpectedW3 ? fmt(row.weekdayExpectedW3) : "-"}</td>
+      <td class="num ${!weekdayHasSamples || row.weekdayRatio == null ? "" : row.weekdayRatio >= .9 ? "pos" : row.weekdayRatio >= .6 ? "warn" : "neg"}">${weekdayHasSamples && row.weekdayRatio != null ? rpct(row.weekdayRatio) : "-"}</td>
+      <td class="num ${weekdayHasSamples && row.weekdayGap ? "neg" : "pos"}">${weekdayHasSamples ? fmt(row.weekdayGap) : "-"}</td>
+      <td class="num ${row.recentW3Pickup > 0 ? "pos" : row.recentW3Pickup < 0 ? "neg" : "warn"}">${row.recentW3Pickup == null ? "-" : signed(row.recentW3Pickup)}</td>
+      <td><span class="status-pill ${weekdayHasSamples ? row.weekdayStatusTone : "neutral"}" title="${escapeAttr(weekdayHasSamples ? row.weekdayStatusTitle : weekdayNote)}">${weekdayHasSamples ? row.weekdayStatusLabel : "-"}</span><div class="subline">${row.actionStatusLabel} · ${row.historySource === "shipper" ? (state.lang === "en" ? "shipper" : "화주") : row.historySource === "route" ? (state.lang === "en" ? "route" : "구간") : "history -"}</div></td>
+    </tr>
+  `).join("");
+}
+
+function shipperWeekdayBenchmark(row, benchmarks) {
+  const samples = benchmarks && benchmarks.sampleCount || 0;
+  const key = historyShipperKey(row.routeKey, row.shipperCode || row.shipperName);
+  const expected = weekdayExpected(benchmarks && benchmarks.shipper, key, samples);
+  const gap = Math.max(0, expected.w3Teu - (row.currentW3Teu || 0));
+  const ratio = expected.w3Teu ? (row.currentW3Teu || 0) / expected.w3Teu : null;
+  const status = weekdayStatus(ratio, expected.w3Teu, gap);
+  return {
+    expectedW3: expected.w3Teu,
+    expectedTeu: expected.teu,
+    gap,
+    delta: (row.currentW3Teu || 0) - expected.w3Teu,
+    ratio,
+    samples,
+    status
+  };
+}
+
+function shipperHistoryPickup(row, selectedWeeks, targetDays) {
+  const snapshots = (state.history && state.history.snapshots || []).slice().sort((a, b) => String(a.data_date).localeCompare(String(b.data_date)));
+  if (!snapshots.length || !snapshots.some((snapshot) => Array.isArray(snapshot.shippers))) {
+    return { hasHistory: false, w3Pickup: null, teuPickup: null };
+  }
+  const latestDate = String(state.raw && state.raw.data_date || snapshots.at(-1).data_date);
+  const prior = pickPriorSnapshot(snapshots, latestDate, targetDays);
+  if (!prior || !Array.isArray(prior.shippers)) return { hasHistory: false, w3Pickup: null, teuPickup: null };
+  const priorMap = aggregateHistoryShippers(prior, selectedWeeks);
+  const key = historyShipperKey(row.routeKey, row.shipperCode || row.shipperName);
+  const priorValue = priorMap.get(key) || { teu: 0, w3Teu: 0 };
+  return {
+    hasHistory: true,
+    w3Pickup: (row.currentW3Teu || 0) - (priorValue.w3Teu || 0),
+    teuPickup: (row.currentTeu || 0) - (priorValue.teu || 0)
+  };
+}
+
+function aggregateHistoryShippers(snapshot, selectedWeeks) {
+  const weekSet = new Set(selectedWeeks || []);
+  const map = new Map();
+  (snapshot.shippers || []).forEach((item) => {
+    const shipperKey = clean(item[0]);
+    const routeKey = clean(item[1]);
+    const week = clean(item[2]);
+    if (weekSet.size && !weekSet.has(week)) return;
+    const key = historyShipperKey(routeKey, shipperKey);
+    const found = map.get(key) || { teu: 0, w3Teu: 0 };
+    found.teu += Number(item[4] || 0);
+    found.w3Teu += Number(item[5] || 0);
+    map.set(key, found);
+  });
+  return map;
+}
+
+function historyShipperKey(routeKey, shipperKey) {
+  return `${clean(routeKey)}@@${clean(shipperKey)}`;
+}
+
+function actionTypeForCandidate(row) {
+  if (hasSignal(row, "3W 이탈") || hasSignal(row, "3W 감소") || hasSignal(row, "3W 급감") || hasSignal(row, "3W TEU 감소")) return "advance";
+  if (row.issue === "이탈" || hasSignal(row, "이탈")) return "winback";
+  if (row.issue === "감소" || row.issue === "급감" || hasSignal(row, "감소") || hasSignal(row, "급감")) return "recovery";
+  if (hasSignal(row, "Late 의존") || hasSignal(row, "3W 취소위험")) return "protect";
+  if ((row.bsaShortfall || 0) > Math.max(row.impactTeu || 0, row.w3Gap || 0)) return "substitute";
+  return "recovery";
+}
+
+function actionTypeLabel(type) {
+  const ko = {
+    advance: "선행부킹 전환",
+    winback: "재확보",
+    recovery: "회복",
+    protect: "품질 방어",
+    substitute: "대체 물량/BSA 판단"
+  };
+  const en = {
+    advance: "Advance Booking",
+    winback: "Win-back",
+    recovery: "Recovery",
+    protect: "Quality Protection",
+    substitute: "Substitute/BSA Review"
+  };
+  return (state.lang === "en" ? en : ko)[type] || type || "-";
+}
+
+function actionMonitorStatus(row, w3Gap, recentW3Pickup) {
+  const labels = {
+    improving: state.lang === "en" ? "Improving" : "개선중",
+    "no-pickup": "No Pickup",
+    recovered: state.lang === "en" ? "Recovered" : "회복",
+    open: "Open"
+  };
+  if (w3Gap <= 0 && (row.impactTeu || 0) <= 0) {
+    return {
+      code: "recovered",
+      label: labels.recovered,
+      tone: "pos",
+      title: state.lang === "en" ? "The 3W gap is closed." : "3W Gap이 해소된 상태입니다."
+    };
+  }
+  if (recentW3Pickup != null && recentW3Pickup > .5) {
+    return {
+      code: "improving",
+      label: labels.improving,
+      tone: "pos",
+      title: state.lang === "en" ? "Recent 3W pickup is positive." : "최근 3W Booking TEU가 증가했습니다."
+    };
+  }
+  if (w3Gap > 0 && recentW3Pickup != null && recentW3Pickup <= .5) {
+    return {
+      code: "no-pickup",
+      label: labels["no-pickup"],
+      tone: "neg",
+      title: state.lang === "en" ? "No recent 3W pickup against an open gap." : "3W Gap이 남아 있는데 최근 Pickup이 없습니다."
+    };
+  }
+  return {
+    code: "open",
+    label: labels.open,
+    tone: "warn",
+    title: state.lang === "en" ? "Open action candidate." : "아직 개선 여부를 확인해야 하는 후보입니다."
+  };
+}
+
+function actionGroupStatus(row) {
+  if (row.noPickup > 0) {
+    return {
+      label: t("labels.noPickup"),
+      tone: "neg",
+      title: state.lang === "en" ? "At least one candidate has no recent 3W pickup." : "최근 3W Pickup이 없는 후보가 포함되어 있습니다."
+    };
+  }
+  if (row.improving > 0) {
+    return {
+      label: t("labels.improving"),
+      tone: "pos",
+      title: state.lang === "en" ? "Recent 3W pickup is visible." : "최근 3W Booking TEU 증가가 확인됩니다."
+    };
+  }
+  return {
+    label: "Open",
+    tone: "warn",
+    title: state.lang === "en" ? "Still open for monitoring." : "모니터링 중인 후보입니다."
+  };
+}
+
+function topSetEntries(set, limit) {
+  return Array.from(set || []).filter(Boolean).sort((a, b) => a.localeCompare(b)).slice(0, limit);
+}
+
+function numberOrNull(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function priorityScore(priority) {
+  if (priority === "P1") return 3;
+  if (priority === "P2") return 2;
+  return 1;
+}
+
 function renderError(message) {
   els.kpiGrid.innerHTML = `
     <article class="kpi">
@@ -3260,6 +4237,209 @@ function setOptions(select, options, selected) {
   const nextSelected = values.includes(selected) ? selected : options[0]?.[0] || "";
   select.innerHTML = options.map(([value, label]) => `<option value="${escapeAttr(value)}">${escapeHtml(label)}</option>`).join("");
   select.value = nextSelected;
+}
+
+function setMultiOptions(id, values, selected) {
+  const el = els[id];
+  if (!el) return;
+  const cleanValues = uniqueSorted(values.map((value) => clean(value)).filter(Boolean));
+  const allowed = new Set(cleanValues);
+  const current = Array.isArray(selected) ? selected : multiSelected(id);
+  el._values = cleanValues;
+  el._selected = cleanVals(current).filter((value) => allowed.has(value));
+  el._pending = cleanVals(el._pending || el._selected).filter((value) => allowed.has(value));
+  if (!sameList(el._selected, cleanVals(current).filter((value) => allowed.has(value)))) {
+    el._pending = [...el._selected];
+  }
+  renderMultiSelect(id, el.classList.contains("open"));
+}
+
+function renderMultiSelect(id, keepOpen = false) {
+  const el = els[id];
+  if (!el || !Array.isArray(el._values)) return;
+  const values = el._values || [];
+  const pending = new Set(cleanVals(el._pending || []));
+  const searchText = keepOpen ? clean(el._searchText) : "";
+  const query = normalizeSearchText(searchText);
+  const visibleValues = query ? values.filter((value) => normalizeSearchText(value).includes(query)) : values;
+  const label = multiSelectLabel(el._selected || []);
+  const emptyLabel = state.lang === "en" ? "No matches" : "검색 결과 없음";
+  const options = visibleValues.length
+    ? visibleValues.map((value) => `<label class="multi-option"><input type="checkbox" value="${escapeAttr(value)}"${pending.has(value) ? " checked" : ""}><span>${escapeHtml(value)}</span></label>`).join("")
+    : `<div class="multi-empty">${emptyLabel}</div>`;
+
+  el.innerHTML = `
+    <button type="button" class="multi-toggle" title="${escapeAttr(label)}"><span>${escapeHtml(label)}</span><span class="multi-caret">v</span></button>
+    <div class="multi-menu">
+      <div class="multi-search-wrap"><input type="search" class="multi-search" value="${escapeAttr(searchText)}" placeholder="${escapeAttr(state.lang === "en" ? "Search" : "검색")}" autocomplete="off"></div>
+      <div class="multi-actions">
+        <button type="button" class="multi-clear">${t("all")}</button>
+        <button type="button" class="multi-apply">${state.lang === "en" ? "Apply" : "적용"}</button>
+        <button type="button" class="multi-close">${state.lang === "en" ? "Close" : "닫기"}</button>
+      </div>
+      <div class="multi-options">${options}</div>
+    </div>
+  `;
+  el.classList.toggle("open", Boolean(keepOpen));
+
+  el.querySelector(".multi-toggle").addEventListener("click", (event) => {
+    event.stopPropagation();
+    const willOpen = !el.classList.contains("open");
+    closeAllMultiSelects();
+    if (willOpen) {
+      el._pending = [...(el._selected || [])];
+      el._searchText = "";
+      renderMultiSelect(id, true);
+      focusMultiSearch(id);
+    }
+  });
+
+  const searchInput = el.querySelector(".multi-search");
+  searchInput.addEventListener("click", (event) => event.stopPropagation());
+  searchInput.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeAllMultiSelects();
+    if (event.key === "Enter" && !el.querySelector(".multi-apply").disabled) applyMultiSelect(id);
+  });
+  searchInput.addEventListener("input", (event) => {
+    el._searchText = event.target.value;
+    const cursor = event.target.selectionStart;
+    renderMultiSelect(id, true);
+    focusMultiSearch(id, cursor);
+  });
+
+  el.querySelector(".multi-clear").addEventListener("click", (event) => {
+    event.stopPropagation();
+    el._pending = [];
+    updateMultiSelectPendingState(id);
+    renderMultiSelect(id, true);
+    focusMultiSearch(id);
+  });
+  el.querySelector(".multi-apply").addEventListener("click", (event) => {
+    event.stopPropagation();
+    applyMultiSelect(id);
+  });
+  el.querySelector(".multi-close").addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeAllMultiSelects();
+  });
+
+  el.querySelectorAll(".multi-option").forEach((option) => {
+    const input = option.querySelector('input[type="checkbox"]');
+    option.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const next = new Set(cleanVals(el._pending || []));
+      const value = input.value;
+      if (next.has(value)) next.delete(value);
+      else next.add(value);
+      el._pending = Array.from(next);
+      renderMultiSelect(id, true);
+      focusMultiSearch(id);
+    });
+  });
+
+  updateMultiSelectPendingState(id);
+}
+
+function applyMultiSelect(id) {
+  const el = els[id];
+  if (!el) return;
+  el._selected = pendingList(id);
+  el._pending = [...el._selected];
+  el._searchText = "";
+  el.classList.remove("open");
+  updateMultiSelectPendingState(id);
+  el.dispatchEvent(new CustomEvent("change", { bubbles: true, detail: { source: "multi-select" } }));
+}
+
+function bindMultiSelectClose() {
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".multi-select")) closeAllMultiSelects();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeAllMultiSelects();
+  });
+}
+
+function closeAllMultiSelects() {
+  MULTI_FILTER_IDS.forEach((id) => {
+    const el = els[id];
+    if (!el || !el.classList.contains("open")) return;
+    el._pending = [...(el._selected || [])];
+    el._searchText = "";
+    el.classList.remove("open");
+    renderMultiSelect(id, false);
+  });
+}
+
+function updateMultiSelectPendingState(id) {
+  const el = els[id];
+  if (!el) return;
+  const dirty = !sameList(pendingList(id), multiSelected(id));
+  el.classList.toggle("dirty", dirty);
+  const apply = el.querySelector(".multi-apply");
+  if (apply) apply.disabled = !dirty;
+  const label = el.querySelector(".multi-toggle span:first-child");
+  const toggle = el.querySelector(".multi-toggle");
+  if (label) label.textContent = multiSelectLabel(multiSelected(id));
+  if (toggle) toggle.title = multiSelectLabel(multiSelected(id));
+}
+
+function pendingList(id) {
+  const el = els[id];
+  const allowed = new Set(el && el._values || []);
+  return cleanVals(el && el._pending || []).filter((value) => allowed.has(value));
+}
+
+function multiSelected(id) {
+  const el = els[id];
+  const allowed = new Set(el && el._values || []);
+  return cleanVals(el && el._selected || []).filter((value) => allowed.has(value));
+}
+
+function multiSelectedSet(id) {
+  return new Set(multiSelected(id));
+}
+
+function multiSelectLabel(values) {
+  const vals = cleanVals(values);
+  if (!vals.length) return t("all");
+  if (vals.length <= 2) return vals.join(", ");
+  return state.lang === "en" ? `${vals[0]} +${vals.length - 1}` : `${vals[0]} 외 ${vals.length - 1}`;
+}
+
+function cleanVals(values) {
+  return Array.from(new Set((Array.isArray(values) ? values : [])
+    .map((value) => clean(value))
+    .filter(Boolean)));
+}
+
+function sameList(a, b) {
+  return cleanVals(a).join("\u0001") === cleanVals(b).join("\u0001");
+}
+
+function focusMultiSearch(id, cursor) {
+  window.requestAnimationFrame(() => {
+    const input = els[id] && els[id].querySelector(".multi-search");
+    if (!input) return;
+    input.focus();
+    const pos = cursor == null ? input.value.length : cursor;
+    input.setSelectionRange(pos, pos);
+  });
+}
+
+function normalizeSearchText(value) {
+  return clean(value).toLowerCase();
+}
+
+function matchAny(value, selectedSet) {
+  return !selectedSet || !selectedSet.size || selectedSet.has(clean(value));
+}
+
+function matchesFilter(value, key) {
+  const selected = state.filters[key];
+  if (!Array.isArray(selected) || !selected.length) return true;
+  return selected.includes(clean(value));
 }
 
 function uniqueSorted(values) {
@@ -3624,8 +4804,14 @@ function paceCell(row) {
     ? { "trend-short": "Trend short", "trend-slow": "Trend slow", "trend-ok": "Trend normal" }
     : { "trend-short": "트렌드 부족", "trend-slow": "트렌드 느림", "trend-ok": "트렌드 정상" };
   const hasTrend = row.leadTrendStatus && row.leadTrendStatus !== "no-trend";
+  const trendDisabledNote = row.leadTrendDisabledReason
+    ? leadTimeTrendText({ reason: row.leadTrendDisabledReason }, "short")
+    : "";
   if (!hasTrend && (!state.history || row.pace3 == null)) {
-    return `<span class="issue-chip" title="${escapeAttr(state.lang === "en" ? "No history data is available." : "속도 이력이 없어 계산할 수 없습니다.")}">${state.lang === "en" ? "No history" : "이력 없음"}</span><div class="subline">history.json ${state.lang === "en" ? "needed" : "필요"}</div>`;
+    const title = trendDisabledNote
+      ? leadTimeTrendText({ reason: row.leadTrendDisabledReason }, "detail")
+      : (state.lang === "en" ? "No history data is available." : "속도 이력이 없어 계산할 수 없습니다.");
+    return `<span class="issue-chip" title="${escapeAttr(title)}">${trendDisabledNote || (state.lang === "en" ? "No history" : "이력 없음")}</span><div class="subline">${trendDisabledNote ? (state.lang === "en" ? "use baseline" : "기준기간 비교") : `history.json ${state.lang === "en" ? "needed" : "필요"}`}</div>`;
   }
   const labels = state.lang === "en"
     ? { filled: "Filled", stalled: "Stalled", slow: "Slow", short: "Short", ok: "Normal", watch: "Watch", "no-bsa": "No BSA" }
@@ -3644,14 +4830,25 @@ function paceCell(row) {
       <span class="${trendTone}" title="${escapeAttr(state.lang === "en" ? "Lead-time maturity compared with destination-port benchmark." : "도착포트별 같은 리드타임 부킹 성숙도 대비 상태입니다.")}">${trendLabels[row.leadTrendStatus] || (state.lang === "en" ? "Trend check" : "트렌드 확인")}</span>
       <span class="subline">${leadTrendLabelText(row)}</span>
     ` : "";
+  const disabledTrendBlock = trendDisabledNote ? `
+      <span class="warn" title="${escapeAttr(leadTimeTrendText({ reason: row.leadTrendDisabledReason }, "detail"))}">${trendDisabledNote}</span>
+      <span class="subline">${state.lang === "en" ? "baseline comparison" : "기준기간 비교"}</span>
+    ` : "";
   const paceBlock = state.history && row.pace3 != null ? `
       <span class="subline">${state.lang === "en" ? "Recent" : "최근"} ${fmt(row.pace3 || 0)}/${state.lang === "en" ? "day" : "일"} · ${state.lang === "en" ? "required" : "필요"} ${fmt(row.requiredDaily || 0)}/${state.lang === "en" ? "day" : "일"}</span>
       <span class="subline">${fmt(row.daysRemaining || 0)}${state.lang === "en" ? " days left" : "일 남음"}</span>
     ` : "";
+  const weekday = weekdayStatus(row.weekdayW3Ratio, row.weekdayExpectedW3 || 0, row.weekdayW3Gap || 0);
+  const weekdayBlock = row.weekdaySamples && row.weekdayExpectedW3 > 0 ? `
+      <span class="subline" title="${escapeAttr(state.lang === "en" ? "Same-weekday benchmark from prior snapshots for the same lead offset." : "동일 요일 이전 스냅샷의 같은 리드타임 기준 3W 평균입니다.")}">
+        ${state.lang === "en" ? "Weekday" : "요일"} ${row.weekdayW3Ratio == null ? "-" : rpct(row.weekdayW3Ratio)} · ${state.lang === "en" ? "exp" : "기대"} ${fmt(row.weekdayExpectedW3 || 0)} · Gap ${fmt(row.weekdayW3Gap || 0)}
+      </span>
+    ` : "";
   return `
     <div class="metric-pair">
-      ${trendBlock || `<span class="${tone}">${labels[row.paceStatus] || "확인"}</span>`}
+      ${trendBlock || disabledTrendBlock || `<span class="${tone}">${labels[row.paceStatus] || "확인"}</span>`}
       ${paceBlock}
+      ${weekdayBlock ? `<span class="${weekday.tone}">${weekday.label}</span>${weekdayBlock}` : ""}
     </div>
   `;
 }

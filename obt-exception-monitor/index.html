@@ -57,19 +57,19 @@
       </div>
       <div class="field">
         <label for="originFilter">국가</label>
-        <select id="originFilter"></select>
+        <div id="originFilter" class="multi-select" aria-label="국가"></div>
       </div>
       <div class="field">
         <label for="polFilter">선적지</label>
-        <select id="polFilter"></select>
+        <div id="polFilter" class="multi-select" aria-label="선적지"></div>
       </div>
       <div class="field">
         <label for="destFilter">도착국가</label>
-        <select id="destFilter"></select>
+        <div id="destFilter" class="multi-select" aria-label="도착국가"></div>
       </div>
       <div class="field">
         <label for="dstFilter">도착포트</label>
-        <select id="dstFilter"></select>
+        <div id="dstFilter" class="multi-select" aria-label="도착포트"></div>
       </div>
       <div class="field">
         <label for="salesFilter">영업사원</label>
@@ -89,88 +89,175 @@
       </div>
     </section>
 
-    <section class="kpi-grid" id="kpiGrid" aria-label="summary"></section>
-
-    <section class="workbench">
-      <div class="panel panel-wide">
-        <div class="panel-head">
-          <div>
-            <h2>구간별 특이사항</h2>
-            <p id="routeSubtitle"></p>
-          </div>
-          <div class="segmented" role="tablist" aria-label="risk filter">
-            <button class="active" type="button" data-risk="all">전체</button>
-            <button type="button" data-risk="high">High</button>
-            <button type="button" data-risk="watch">Watch</button>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table class="route-table">
-            <thead>
-              <tr>
-                <th>구간</th>
-                <th class="num">BKG</th>
-                <th class="num">BSA</th>
-                <th>트렌드/속도</th>
-                <th>3W Signal</th>
-                <th>권장 조치</th>
-                <th>판단</th>
-              </tr>
-            </thead>
-            <tbody id="routeTable"></tbody>
-          </table>
-        </div>
-      </div>
-
-      <div class="panel">
-        <div class="panel-head compact">
-          <div>
-            <h2>영업사원별 조치</h2>
-            <p id="salesSubtitle"></p>
-          </div>
-        </div>
-        <div class="sales-list fixed-panel" id="salesTable"></div>
-      </div>
+    <section class="app-tabs" aria-label="monitor tabs">
+      <button class="active" type="button" data-tab="exceptions">Exception View</button>
+      <button type="button" data-tab="actions">Action Monitor</button>
     </section>
 
-    <section class="detail-grid">
-      <div class="panel panel-wide">
-        <div class="panel-head">
-          <div>
-            <h2>화주 단위 Action List</h2>
-            <p id="shipperSubtitle"></p>
+    <section class="tab-view" id="exceptionsView">
+      <section class="kpi-grid" id="kpiGrid" aria-label="summary"></section>
+
+      <section class="workbench">
+        <div class="panel panel-wide">
+          <div class="panel-head">
+            <div>
+              <h2>구간별 특이사항</h2>
+              <p id="routeSubtitle"></p>
+            </div>
+            <div class="segmented" role="tablist" aria-label="risk filter">
+              <button class="active" type="button" data-risk="all">전체</button>
+              <button type="button" data-risk="high">High</button>
+              <button type="button" data-risk="watch">Watch</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="route-table">
+              <thead>
+                <tr>
+                  <th>구간</th>
+                  <th class="num">BKG</th>
+                  <th class="num">BSA</th>
+                  <th>트렌드/속도</th>
+                  <th>3W Signal</th>
+                  <th>권장 조치</th>
+                  <th>판단</th>
+                </tr>
+              </thead>
+              <tbody id="routeTable"></tbody>
+            </table>
           </div>
         </div>
-        <div class="table-wrap detail-table">
+
+        <div class="panel">
+          <div class="panel-head compact">
+            <div>
+              <h2>영업사원별 조치</h2>
+              <p id="salesSubtitle"></p>
+            </div>
+          </div>
+          <div class="sales-list fixed-panel" id="salesTable"></div>
+        </div>
+      </section>
+
+      <section class="detail-grid">
+        <div class="panel panel-wide">
+          <div class="panel-head">
+            <div>
+              <h2>화주 단위 Action List</h2>
+              <p id="shipperSubtitle"></p>
+            </div>
+          </div>
+          <div class="table-wrap detail-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Priority</th>
+                  <th>화주</th>
+                  <th>영업사원</th>
+                  <th>구간</th>
+                  <th class="num">현재 BKG</th>
+                  <th class="num">기준 BKG</th>
+                  <th class="num">증감</th>
+                  <th class="num">3W TEU</th>
+                  <th>권장 조치</th>
+                  <th>판단</th>
+                </tr>
+              </thead>
+              <tbody id="shipperTable"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head compact">
+            <div>
+              <h2>리스크 유형</h2>
+              <p id="issueSubtitle"></p>
+            </div>
+          </div>
+          <div id="issueList" class="issue-list"></div>
+        </div>
+      </section>
+    </section>
+
+    <section class="tab-view hidden" id="actionMonitorView">
+      <section class="action-toolbar">
+        <div class="segmented" id="actionGroupMode" role="tablist" aria-label="action grouping">
+          <button class="active" type="button" data-action-group="origin">선적국가</button>
+          <button type="button" data-action-group="pol">선적포트</button>
+        </div>
+      </section>
+
+      <section class="kpi-grid action-kpi-grid" id="actionKpiGrid" aria-label="action summary"></section>
+
+      <section class="action-grid">
+        <div class="panel panel-wide">
+          <div class="panel-head">
+            <div>
+              <h2 id="actionSummaryTitle">선적지별 Action Performance</h2>
+              <p id="actionSummarySubtitle"></p>
+            </div>
+          </div>
+          <div class="table-wrap action-summary-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>선적지</th>
+                  <th class="num">Actions</th>
+                  <th class="num">P1/P2</th>
+                  <th class="num">3W Gap</th>
+                  <th class="num">요일 Gap</th>
+                  <th class="num">3W Pickup</th>
+                  <th class="num">평소 대비</th>
+                  <th class="num">BSA Gap</th>
+                  <th>상태</th>
+                  <th>주요 담당</th>
+                </tr>
+              </thead>
+              <tbody id="actionSummaryTable"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head compact">
+            <div>
+              <h2 id="actionSalesTitle">영업사원별 개선 현황</h2>
+              <p id="actionSalesSubtitle"></p>
+            </div>
+          </div>
+          <div class="sales-list fixed-panel" id="actionSalesTable"></div>
+        </div>
+      </section>
+
+      <section class="panel panel-wide">
+        <div class="panel-head">
+          <div>
+            <h2 id="actionDetailTitle">자동 Action 후보 상세</h2>
+            <p id="actionDetailSubtitle"></p>
+          </div>
+        </div>
+        <div class="table-wrap action-detail-table">
           <table>
             <thead>
               <tr>
                 <th>Priority</th>
+                <th>Action</th>
                 <th>화주</th>
                 <th>영업사원</th>
                 <th>구간</th>
-                <th class="num">현재 BKG</th>
-                <th class="num">기준 BKG</th>
-                <th class="num">증감</th>
-                <th class="num">3W TEU</th>
-                <th>권장 조치</th>
-                <th>판단</th>
+                <th class="num">현재 3W</th>
+                <th class="num">요일기대</th>
+                <th class="num">평소 대비</th>
+                <th class="num">요일 Gap</th>
+                <th class="num">3W Pickup</th>
+                <th>상태</th>
               </tr>
             </thead>
-            <tbody id="shipperTable"></tbody>
+            <tbody id="actionDetailTable"></tbody>
           </table>
         </div>
-      </div>
-
-      <div class="panel">
-        <div class="panel-head compact">
-          <div>
-            <h2>리스크 유형</h2>
-            <p id="issueSubtitle"></p>
-          </div>
-        </div>
-        <div id="issueList" class="issue-list"></div>
-      </div>
+      </section>
     </section>
   </main>
 
