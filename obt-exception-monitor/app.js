@@ -923,7 +923,16 @@ function populateBaseFilters() {
   setOptions(els.monthFilter, state.months.map((m) => [m, formatMonth(m)]), state.filters.month);
   setOptions(els.horizonFilter, [["next3", horizonOptionLabel("next3")], ["w1", horizonOptionLabel("w1")], ["w2", horizonOptionLabel("w2")], ["w3", horizonOptionLabel("w3")], ["custom", t("options.custom")]], state.filters.horizon);
   setOptions(els.priorityFilter, [["important", t("options.important")], ["all", t("options.all")]], state.filters.priority);
-  setOptions(els.compareFilter, [["prevMonth", t("options.prevMonth")], ["prevWeek", t("options.prevWeek")], ["avg3", t("options.avg3")]], state.filters.compare);
+  setCompareOptions();
+}
+
+function setCompareOptions() {
+  const options = [["prevMonth", t("options.prevMonth")]];
+  if (state.filters.horizon !== "custom") {
+    options.push(["prevWeek", t("options.prevWeek")]);
+  }
+  options.push(["avg3", t("options.avg3")]);
+  setOptions(els.compareFilter, options, state.filters.compare);
 }
 
 function horizonOptionLabel(mode) {
@@ -947,6 +956,8 @@ function refreshDependentFilters() {
   const useCustomPeriod = state.filters.horizon === "custom";
   els.monthFilter.disabled = !useCustomPeriod;
   els.weekFilter.disabled = !useCustomPeriod;
+
+  setCompareOptions();
 
   const monthRows = useCustomPeriod
     ? state.rows.filter((row) => row.month === state.filters.month)
