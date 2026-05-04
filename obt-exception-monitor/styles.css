@@ -211,6 +211,19 @@ select {
   padding: 18px 0 26px;
 }
 
+.sticky-bar {
+  position: sticky;
+  top: 70px;
+  z-index: 19;
+  padding: 10px 0 0;
+  margin: -10px 0 12px;
+  background: #eef2ef;
+}
+
+.sticky-bar .app-tabs {
+  margin-bottom: 0;
+}
+
 .filter-band {
   display: grid;
   grid-template-columns: 115px 115px 105px 135px 105px 125px 115px 125px 135px 120px minmax(210px, 1fr);
