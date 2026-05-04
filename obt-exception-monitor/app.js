@@ -1961,6 +1961,7 @@ function buildWeekdayBenchmarks(periods) {
 
   const offsets = scope.offsets;
   const weekday = latest.getDay();
+  const selectedWeeks = periodWeeks(periods.current);
   const samples = snapshots.filter((snapshot) => {
     const date = parseDataDate(snapshot.data_date);
     return date && String(snapshot.data_date) < latestDate && date.getDay() === weekday;
@@ -1969,7 +1970,7 @@ function buildWeekdayBenchmarks(periods) {
   const shipper = new Map();
 
   samples.forEach((snapshot) => {
-    const weeks = weeksForSnapshotOffsets(snapshot.data_date, offsets);
+    const weeks = selectedWeeks;
     aggregateHistoryRoutes(snapshot, weeks).forEach((row, routeKey) => {
       const found = route.get(routeKey) || { teu: 0, w3Teu: 0 };
       found.teu += row.teu || 0;
