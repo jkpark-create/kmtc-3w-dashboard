@@ -404,6 +404,21 @@
       white-space: normal;
     }
 
+    .metric-block {
+      margin: 18px 0 22px;
+    }
+
+    .metric-block h3 {
+      margin: 0 0 7px;
+      color: var(--header);
+      font-size: 16px;
+    }
+
+    .metric-block p {
+      margin: 0 0 10px;
+      color: #4e5a56;
+    }
+
     .ko,
     .en {
       display: none;
@@ -622,6 +637,212 @@
         </table>
       </section>
 
+      <section class="section" id="metric-dictionary">
+        <h2 class="ko">4-1. 계산 항목 상세 사전</h2>
+        <h2 class="en">4-1. Metric Dictionary</h2>
+
+        <div class="ko">
+          <p>이 화면의 숫자는 단순 집계가 아니라 “지금 확인해야 할 문제 구간을 찾기 위한 운영 지표”입니다. 따라서 각 숫자는 목적, 기준 기간, 비교 기준, 조치 방향을 함께 읽어야 합니다.</p>
+
+          <div class="metric-block">
+            <h3>공통 기준</h3>
+            <table>
+              <tr><th>항목</th><th>숫자의 의미</th><th>계산 수식 / 기준</th><th>읽는 방법</th></tr>
+              <tr><td>Route</td><td>문제를 판단하는 기본 구간 단위</td><td><code>origin + POL + destination country + destination port</code></td><td>화주 단위보다 먼저 구간 전체가 부족한지 확인합니다.</td></tr>
+              <tr><td>선택기간</td><td>현재 대응해야 할 주차 또는 기간</td><td>W+1, W+2, W+3, W+1~W+3, Custom 선택값</td><td>같은 화면의 모든 BKG/BSA/비교값은 이 선택기간 기준으로 맞춰 계산됩니다.</td></tr>
+              <tr><td>현재 BKG</td><td>선택기간에 이미 잡힌 현재 부킹 물량</td><td><code>sum(fst)</code></td><td>실제 확보된 TEU 규모입니다. 기존 -3W Dashboard의 Total BKG와 같은 기준입니다.</td></tr>
+              <tr><td>3W BKG</td><td>출항 3주 전 시점에 선행 확보된 부킹 물량</td><td><code>sum(w3_fst)</code></td><td>반복 화주가 충분히 빨리 들어오고 있는지 보는 선행 신호입니다.</td></tr>
+              <tr><td>BSA</td><td>해당 구간/주차의 선복 또는 목표 물량</td><td>선택 주차의 <code>YYYYMM</code>과 <code>WW</code>가 모두 일치하는 <code>teu_bsa</code> 합계</td><td>BKG가 충분한지 판단하는 목표값입니다. 단, BSA Gap은 영업 부족과 목표 과다 가능성을 함께 봐야 합니다.</td></tr>
+              <tr><td>Active 화주</td><td>해당 기간에 실제 물량이 있는 화주 수</td><td><code>fst &gt; 0</code>인 고유 화주 수</td><td>TEU가 비슷해도 화주 수가 줄면 특정 화주 의존도가 높아진 상태일 수 있습니다.</td></tr>
+              <tr><td>비교 기준</td><td>현재 숫자가 부족한지 판단하는 기준</td><td>전월 동일 slot 주차, 전주차, 최근 3개월 동일 slot 평균</td><td>비교 기준은 최종 TEU가 아니라 현재 W+ 시점에 맞게 보정됩니다.</td></tr>
+            </table>
+          </div>
+
+          <div class="metric-block">
+            <h3>상단 KPI</h3>
+            <table>
+              <tr><th>KPI</th><th>목적</th><th>계산 수식</th><th>해석</th></tr>
+              <tr><td>전체 BKG</td><td>선택기간의 현재 부킹 규모 확인</td><td><code>sum(current.fst)</code></td><td>보조문구의 증감은 기준기간 대비 현재 BKG 차이입니다.</td></tr>
+              <tr><td>BSA 대비 BKG</td><td>목표 선복 대비 현재 확보율 확인</td><td><code>sum(current.fst) / sum(current BSA)</code></td><td>낮으면 BSA 미달 가능성이 큽니다. BSA 자체가 과도한지도 같이 확인합니다.</td></tr>
+              <tr><td>확인 필요 구간</td><td>지금 원인 확인이 필요한 Route 수 확인</td><td><code>leadTrendStatus in trend-short/trend-slow</code> 또는 <code>paceStatus in stalled/slow/short</code>인 Route 수</td><td>카드의 트렌드/속도/예상 Gap 분해를 보고 구간 테이블의 P1/P2부터 봅니다.</td></tr>
+              <tr><td>P1 구간</td><td>당일 우선 확인 Route 수 확인</td><td>구간 우선순위가 <code>P1</code>인 Route 수</td><td>원인 확인, 회복 가능 물량, 대체 물량, BSA 조정 여부를 당일 판단해야 하는 구간입니다.</td></tr>
+              <tr><td>오늘 Top 조치</td><td>실제로 처리할 Action 후보 규모 확인</td><td>중요도 필터 후 상위 화주 Action 후보 수, 최대 60건 표시</td><td>화주/담당자 연락 우선순위를 압축한 숫자입니다.</td></tr>
+              <tr><td>3W Booking TEU</td><td>선행 부킹이 충분히 들어왔는지 확인</td><td><code>sum(current.w3_fst)</code></td><td>현재 BKG보다 먼저 움직이는 조기 경고 지표입니다.</td></tr>
+              <tr><td>3W/BSA</td><td>3주 전 선행 확보율 확인</td><td><code>sum(current.w3_fst) / sum(current BSA)</code></td><td>낮으면 출항 가까이 가서 late booking에 의존할 가능성이 큽니다.</td></tr>
+              <tr><td>감소/이탈 화주</td><td>화주 단위로 연락해야 할 후보 수 확인</td><td>감소, 급감, 이탈, 3W 감소/이탈 등 actionable 화주 예외 수</td><td>구간 문제가 어떤 화주에서 발생했는지 찾는 출발점입니다.</td></tr>
+              <tr><td>조치 영업사원</td><td>담당자별 업무 배분 규모 확인</td><td>조치 후보가 있는 sales owner 수</td><td>담당자별 미팅 또는 follow-up 우선순위를 정하는 숫자입니다.</td></tr>
+            </table>
+          </div>
+
+          <div class="metric-block">
+            <h3>구간 테이블 지표</h3>
+            <table>
+              <tr><th>항목</th><th>목적</th><th>계산 수식</th><th>해석</th></tr>
+              <tr><td>기준 BKG</td><td>현재 BKG가 정상 수준인지 비교</td><td>전월/전주/3개월 평균 BKG를 선택 W+ 시점으로 보정</td><td>현재 BKG가 기준보다 낮으면 감소 신호입니다.</td></tr>
+              <tr><td>증감 TEU</td><td>현재와 기준의 물량 차이 확인</td><td><code>currentTeu - baseTeu</code></td><td>음수이면 기준 대비 부족, 양수이면 증가입니다.</td></tr>
+              <tr><td>증감률</td><td>기준 대비 감소 강도 확인</td><td><code>(currentTeu - baseTeu) / baseTeu</code></td><td>기준이 있는 구간에서 감소율을 판단합니다.</td></tr>
+              <tr><td>구간 BSA</td><td>Route 전체 목표 물량 확인</td><td><code>sum(teu_bsa)</code> for same route and selected period</td><td>화주별 배정이 아니라 Route 전체 BSA입니다.</td></tr>
+              <tr><td>소석률</td><td>BSA 대비 현재 채움 정도 확인</td><td><code>currentTeu / bsaTeu</code></td><td>75% 미만이면 BSA 미달 이슈가 강하게 표시될 수 있습니다.</td></tr>
+              <tr><td>구간 Gap</td><td>현재 부족 물량 확인</td><td><code>max(0, bsaTeu - currentTeu)</code></td><td>현재까지 BSA를 채우기 위해 필요한 TEU입니다.</td></tr>
+              <tr><td>예상 BKG</td><td>최근 속도로 기간 종료까지 도달 가능한 물량 추정</td><td><code>currentTeu + max(0, recentPace3) * remainingDays</code></td><td>최근 속도가 유지된다고 가정한 단순 예측입니다.</td></tr>
+              <tr><td>예상 Gap</td><td>최근 속도로도 남을 가능성이 있는 부족분</td><td><code>max(0, bsaTeu - projectedTeu)</code></td><td>클수록 회복 물량, 대체 물량, BSA 조정 검토가 필요합니다.</td></tr>
+              <tr><td>영향 TEU</td><td>화주 감소/이탈이 만든 회복 가능 물량 크기</td><td>화주별 <code>max(0, baseTeu - currentTeu, baseW3Teu - currentW3Teu)</code> 합계</td><td>영업 담당자가 회복 또는 재확보할 수 있는 후보 물량 규모입니다.</td></tr>
+              <tr><td>Active 화주 증감</td><td>화주 기반이 약해졌는지 확인</td><td><code>current active shippers - baseline active shippers</code></td><td>TEU 감소가 작아도 화주 수 감소가 크면 리스크입니다.</td></tr>
+              <tr><td>Late 의존</td><td>3W 이후 늦게 들어온 물량 비중 확인</td><td><code>max(0, currentTeu - currentW3Teu) / currentTeu</code></td><td>55% 이상이면 늦은 부킹 의존 신호로 점수에 반영됩니다.</td></tr>
+              <tr><td>3W 취소율</td><td>선행 부킹의 품질/취소 위험 확인</td><td><code>currentW3CancelTeu / currentW3Teu</code></td><td>15% 이상이고 취소 TEU가 충분히 크면 품질 이슈로 표시됩니다.</td></tr>
+              <tr><td>Top 화주 집중도</td><td>특정 화주 의존도 확인</td><td><code>largest shipper TEU / route currentTeu</code></td><td>55% 이상이고 화주 수가 적으면 집중 리스크입니다.</td></tr>
+            </table>
+          </div>
+
+          <div class="metric-block">
+            <h3>리드타임 트렌드와 속도 계산</h3>
+            <p>이 영역은 “현재 W+ 시점에서 정상적인 속도로 물량이 들어오고 있는가”를 봅니다. 최종 물량이 아니라 같은 리드타임 단계의 성숙도를 비교합니다.</p>
+            <table>
+              <tr><th>항목</th><th>목적</th><th>계산 수식</th><th>판정</th></tr>
+              <tr><td>Target TEU</td><td>트렌드 비교의 목표 기준 설정</td><td><code>max(BSA, baselineTeu, currentTeu)</code></td><td>BSA, 기준 BKG, 현재 BKG 중 가장 큰 값을 기준으로 봅니다.</td></tr>
+              <tr><td>현재 성숙률</td><td>현재 W+ 시점의 달성률 확인</td><td><code>currentTeu / targetTeu</code></td><td>같은 시점 대비 얼마나 성숙했는지 보는 비율입니다.</td></tr>
+              <tr><td>기대 성숙률</td><td>도착포트/W+ peer 기준 설정</td><td>같은 destination port와 W+ offset의 성숙률 하위 35% 분위값. 표본 5건 미만이면 전체 W+ 기준 사용</td><td>너무 높은 목표가 아니라 “최소한 이 정도는 와야 한다”는 운영 기준입니다.</td></tr>
+              <tr><td>트렌드 Gap</td><td>리드타임 기준으로 부족한 TEU</td><td><code>max(0, expectedRate * targetTeu - currentTeu)</code></td><td>같은 W+ 시점 기준으로 뒤처진 물량입니다.</td></tr>
+              <tr><td>trend-short</td><td>강한 트렌드 부족</td><td><code>trendGap >= max(portImpactThreshold, targetTeu * 12%)</code> and 기대 대비 부족률 25% 이상</td><td>P1/P2 판단에 강하게 반영됩니다.</td></tr>
+              <tr><td>trend-slow</td><td>주의가 필요한 트렌드 둔화</td><td><code>trendGap >= max(10, portImpactThreshold * 45%)</code> and 기대 대비 부족률 12% 이상</td><td>아직 회복 가능하지만 확인이 필요한 구간입니다.</td></tr>
+              <tr><td>최근 3일 속도</td><td>최근 부킹 pickup 확인</td><td><code>(latestTeu - prior3Teu) / daysBetween</code></td><td><code>history.json</code>의 최신 snapshot과 3일 전 snapshot을 사용합니다.</td></tr>
+              <tr><td>필요 일별 속도</td><td>BSA Gap을 닫기 위해 필요한 하루 평균 물량</td><td><code>max(0, bsaTeu - currentTeu) / remainingDays</code></td><td>최근 속도가 이 값보다 낮으면 속도 부족입니다.</td></tr>
+              <tr><td>속도 비율</td><td>현재 속도가 필요한 속도 대비 충분한지 확인</td><td><code>recentPace3 / requiredDaily</code></td><td>50% 미만은 slow, 90% 미만은 short로 판정됩니다.</td></tr>
+              <tr><td>stalled</td><td>부킹 정체</td><td>BSA Gap이 있는데 최근 3일 속도가 0 이하</td><td>즉시 원인 확인이 필요한 상태입니다.</td></tr>
+            </table>
+          </div>
+
+          <div class="metric-block">
+            <h3>화주 Action List 지표</h3>
+            <table>
+              <tr><th>항목</th><th>목적</th><th>계산 수식 / 조건</th><th>조치 방향</th></tr>
+              <tr><td>이탈</td><td>기준에는 있었지만 현재 없는 화주 식별</td><td><code>baseTeu >= 5</code> and <code>currentTeu = 0</code></td><td>재확보 가능성, 경쟁사 전환, 선적 계획 변경 여부를 확인합니다.</td></tr>
+              <tr><td>급감</td><td>큰 폭으로 줄어든 화주 식별</td><td><code>baseTeu >= 8</code>, 감소율 45% 이상, 감소 5 TEU 이상</td><td>회복 가능한 잔여 물량과 감소 사유를 확인합니다.</td></tr>
+              <tr><td>감소</td><td>우선 확인할 감소 화주 식별</td><td><code>baseTeu >= 5</code>, 감소율 25% 이상, 감소 3 TEU 이상</td><td>해당 주차 선적 계획을 재확인합니다.</td></tr>
+              <tr><td>3W 이탈/감소</td><td>선행 부킹 단계에서 빠진 화주 식별</td><td><code>w3_fst</code> 기준 이탈/급감/감소 조건 적용</td><td>차주 이후 조기 부킹 가능성과 선적 예정 물량을 확인합니다.</td></tr>
+              <tr><td>3W 고수익 감소</td><td>수익성 좋은 선행 물량 약화 확인</td><td><code>baseW3HiTeu >= 5</code> and 감소 30% 이상</td><td>운임/조건/공급 제약 여부를 우선 확인합니다.</td></tr>
+              <tr><td>3W 취소위험</td><td>선행 부킹 취소 리스크 확인</td><td><code>currentW3Teu >= 10</code>, 취소 3 TEU 이상, 취소율 15% 이상</td><td>취소 사유와 대체 가능 물량을 확인합니다.</td></tr>
+              <tr><td>신규대량/급증</td><td>새로운 기회 또는 변동성 확인</td><td>기준 0에서 현재 20 TEU 이상, 또는 기준 대비 2배 이상/20 TEU 이상 증가</td><td>반복 가능성과 선복/장비 지원 가능성을 확인합니다.</td></tr>
+            </table>
+          </div>
+
+          <div class="metric-block">
+            <h3>영업사원 카드 지표</h3>
+            <table>
+              <tr><th>항목</th><th>목적</th><th>계산 수식</th><th>활용</th></tr>
+              <tr><td>영향 TEU</td><td>담당자에게 연결된 감소/이탈 영향 규모</td><td>담당자 화주 Action의 <code>impactTeu</code> 합계</td><td>실제 회복 가능 물량이 큰 담당자를 먼저 봅니다.</td></tr>
+              <tr><td>관리 Gap</td><td>담당자가 관리해야 할 최대 리스크 크기</td><td><code>max(BSA gap, projectedGap, trendGap, impactTeu)</code></td><td>화주 감소와 BSA 부족 중 더 큰 이슈를 파악합니다.</td></tr>
+              <tr><td>지연구간</td><td>담당자가 가진 지연 Route 수</td><td>담당 Route 중 <code>trend-short/trend-slow</code> 또는 <code>stalled/slow/short</code> 상태 수</td><td>0이면 구간 속도보다 화주 감소/3W 약화/BSA 목표 Gap 때문에 표시된 것입니다.</td></tr>
+              <tr><td>회복 후보</td><td>일부 물량이 남아 있어 회복 가능한 화주</td><td><code>currentTeu > 0</code> and <code>baseTeu > currentTeu</code></td><td>남은 선적 계획을 당겨올 수 있는지 확인합니다.</td></tr>
+              <tr><td>재확보 후보</td><td>현재 물량이 0인 이탈 화주</td><td><code>currentTeu = 0</code> and <code>baseTeu > 0</code></td><td>경쟁사 전환, 생산/수요 변화, 스케줄 문제를 확인합니다.</td></tr>
+              <tr><td>대상 구간</td><td>담당자의 최우선 Route</td><td>담당자 관련 Route 중 영향 TEU 또는 Gap이 가장 큰 구간</td><td>담당자와 가장 먼저 논의할 Route입니다.</td></tr>
+            </table>
+          </div>
+
+          <div class="note">중요구간 필터는 작은 구간의 잡음을 줄이기 위해 destination port별 p75 기준과 최소 기준을 함께 사용합니다. 기준값은 물량, BSA, 영향 TEU 분포에서 계산되며, 작은 포트라도 최소 volume 50 TEU, BSA 100 TEU, impact 30 TEU 기준이 함께 적용됩니다.</div>
+        </div>
+
+        <div class="en">
+          <p>Every number in this monitor is an operational signal for finding routes that need review. Read each metric together with its purpose, selected period, baseline, and action meaning.</p>
+
+          <div class="metric-block">
+            <h3>Common Definitions</h3>
+            <table>
+              <tr><th>Metric</th><th>Meaning</th><th>Formula / Basis</th><th>How To Read</th></tr>
+              <tr><td>Route</td><td>Base unit for route judgment</td><td><code>origin + POL + destination country + destination port</code></td><td>Check the route problem before drilling into customers.</td></tr>
+              <tr><td>Selected Period</td><td>Week or period currently being managed</td><td>W+1, W+2, W+3, W+1 to W+3, or Custom</td><td>All BKG, BSA, and baseline values are aligned to this period.</td></tr>
+              <tr><td>Current BKG</td><td>Current booked TEU in the selected period</td><td><code>sum(fst)</code></td><td>Same source basis as Total BKG in the existing -3W Dashboard.</td></tr>
+              <tr><td>3W BKG</td><td>TEU booked three weeks before sailing</td><td><code>sum(w3_fst)</code></td><td>Early warning signal for advance-booking health.</td></tr>
+              <tr><td>BSA</td><td>Route/week capacity or target TEU</td><td>Sum of <code>teu_bsa</code> where both <code>YYYYMM</code> and <code>WW</code> match the selected week</td><td>BSA gap can mean sales shortfall or an unrealistic target. Check both.</td></tr>
+              <tr><td>Active Customers</td><td>Customers with actual volume in the period</td><td>Distinct customers where <code>fst &gt; 0</code></td><td>Fewer customers can signal dependency even when TEU is stable.</td></tr>
+              <tr><td>Baseline</td><td>Reference used to judge shortage</td><td>Previous-month same slot, previous week, or same-slot 3-month average</td><td>Baseline BKG is aligned to the same W+ maturity stage.</td></tr>
+            </table>
+          </div>
+
+          <div class="metric-block">
+            <h3>Top KPIs</h3>
+            <table>
+              <tr><th>KPI</th><th>Purpose</th><th>Formula</th><th>How To Read</th></tr>
+              <tr><td>Total BKG</td><td>Current booking size</td><td><code>sum(current.fst)</code></td><td>The note shows TEU difference versus baseline.</td></tr>
+              <tr><td>BKG vs BSA</td><td>Coverage against target space</td><td><code>sum(current.fst) / sum(current BSA)</code></td><td>Low coverage means check BSA gap and target realism.</td></tr>
+              <tr><td>Routes To Check</td><td>Routes needing cause review</td><td>Count of routes where lead trend is <code>trend-short/trend-slow</code> or pace is <code>stalled/slow/short</code></td><td>Start with P1/P2 routes and largest projected gaps.</td></tr>
+              <tr><td>P1 Routes</td><td>Routes to check today</td><td>Count of route exceptions with priority <code>P1</code></td><td>Requires same-day cause review and action decision.</td></tr>
+              <tr><td>Top Actions</td><td>Workable action list size</td><td>Top customer action candidates after focus filtering, capped at 60 visible rows</td><td>Use for immediate customer follow-up planning.</td></tr>
+              <tr><td>3W Booking TEU</td><td>Advance booking volume</td><td><code>sum(current.w3_fst)</code></td><td>Early signal before final BKG is formed.</td></tr>
+              <tr><td>3W/BSA</td><td>Advance coverage against BSA</td><td><code>sum(current.w3_fst) / sum(current BSA)</code></td><td>Low values imply late-booking dependency risk.</td></tr>
+              <tr><td>Declining/Lost Customers</td><td>Customers requiring contact</td><td>Actionable customer exceptions such as decline, sharp decline, churn, and 3W decline/churn</td><td>Shows where route issues come from.</td></tr>
+              <tr><td>Sales Owners</td><td>Owners with action candidates</td><td>Count of owners linked to route or customer actions</td><td>Helps split ownership quickly.</td></tr>
+            </table>
+          </div>
+
+          <div class="metric-block">
+            <h3>Route Metrics</h3>
+            <table>
+              <tr><th>Metric</th><th>Purpose</th><th>Formula</th><th>How To Read</th></tr>
+              <tr><td>Baseline BKG</td><td>Reference for normal volume</td><td>Previous month/week/3-month average, aligned to current W+ timing</td><td>Current below baseline is a decline signal.</td></tr>
+              <tr><td>Delta TEU</td><td>Volume difference</td><td><code>currentTeu - baseTeu</code></td><td>Negative means short versus baseline.</td></tr>
+              <tr><td>Delta %</td><td>Decline intensity</td><td><code>(currentTeu - baseTeu) / baseTeu</code></td><td>Used when a valid baseline exists.</td></tr>
+              <tr><td>Route BSA</td><td>Route-level target</td><td><code>sum(teu_bsa)</code> for the same route and selected period</td><td>Not a customer allocation; it is the full route BSA.</td></tr>
+              <tr><td>Utilization</td><td>BSA fill rate</td><td><code>currentTeu / bsaTeu</code></td><td>Below 75% can trigger BSA underfill judgment.</td></tr>
+              <tr><td>Route Gap</td><td>Current shortage against BSA</td><td><code>max(0, bsaTeu - currentTeu)</code></td><td>TEU still needed to fill BSA.</td></tr>
+              <tr><td>Projected BKG</td><td>Expected final TEU at recent pace</td><td><code>currentTeu + max(0, recentPace3) * remainingDays</code></td><td>Simple projection assuming recent pickup continues.</td></tr>
+              <tr><td>Projected Gap</td><td>Likely remaining shortfall</td><td><code>max(0, bsaTeu - projectedTeu)</code></td><td>Large gap means recovery, substitute volume, or BSA adjustment.</td></tr>
+              <tr><td>Impact TEU</td><td>Recoverable customer decline size</td><td>Sum of customer <code>max(0, baseTeu - currentTeu, baseW3Teu - currentW3Teu)</code></td><td>Volume that sales may recover or win back.</td></tr>
+              <tr><td>Active Customer Delta</td><td>Customer-base health</td><td><code>current active customers - baseline active customers</code></td><td>Customer loss matters even if TEU decline is small.</td></tr>
+              <tr><td>Late Share</td><td>Dependency on late bookings</td><td><code>max(0, currentTeu - currentW3Teu) / currentTeu</code></td><td>55% or more is treated as late dependency risk.</td></tr>
+              <tr><td>3W Cancel Rate</td><td>Advance booking quality</td><td><code>currentW3CancelTeu / currentW3Teu</code></td><td>15% or more with enough TEU is a cancellation-quality signal.</td></tr>
+              <tr><td>Top Customer Share</td><td>Concentration risk</td><td><code>largest customer TEU / route currentTeu</code></td><td>55% or more with few customers signals dependency.</td></tr>
+            </table>
+          </div>
+
+          <div class="metric-block">
+            <h3>Lead Trend And Pace</h3>
+            <table>
+              <tr><th>Metric</th><th>Purpose</th><th>Formula</th><th>Status</th></tr>
+              <tr><td>Target TEU</td><td>Trend comparison target</td><td><code>max(BSA, baselineTeu, currentTeu)</code></td><td>Uses the largest relevant operational target.</td></tr>
+              <tr><td>Current Maturity</td><td>Current W+ completion</td><td><code>currentTeu / targetTeu</code></td><td>How mature the booking is at this lead-time stage.</td></tr>
+              <tr><td>Expected Maturity</td><td>Peer benchmark</td><td>35th percentile of same destination port and W+ offset. Falls back to all routes at the same W+ if sample count is below 5.</td><td>A practical lower-bound expectation, not a stretch target.</td></tr>
+              <tr><td>Trend Gap</td><td>Lead-time shortage TEU</td><td><code>max(0, expectedRate * targetTeu - currentTeu)</code></td><td>TEU behind the same W+ maturity benchmark.</td></tr>
+              <tr><td>trend-short</td><td>Severe lead-time shortage</td><td><code>trendGap >= max(portImpactThreshold, targetTeu * 12%)</code> and rate gap at least 25%</td><td>Strong input to P1/P2 judgment.</td></tr>
+              <tr><td>trend-slow</td><td>Moderate lead-time shortage</td><td><code>trendGap >= max(10, portImpactThreshold * 45%)</code> and rate gap at least 12%</td><td>Needs early review while recovery time remains.</td></tr>
+              <tr><td>Recent 3-Day Pace</td><td>Recent pickup speed</td><td><code>(latestTeu - prior3Teu) / daysBetween</code></td><td>Uses latest and prior snapshots in <code>history.json</code>.</td></tr>
+              <tr><td>Required Daily Pace</td><td>Daily TEU needed to close BSA gap</td><td><code>max(0, bsaTeu - currentTeu) / remainingDays</code></td><td>Benchmark for recent pickup speed.</td></tr>
+              <tr><td>Pace Ratio</td><td>Whether recent pace is enough</td><td><code>recentPace3 / requiredDaily</code></td><td>Below 50% is slow; below 90% is short.</td></tr>
+              <tr><td>stalled</td><td>No meaningful pickup</td><td>BSA gap exists and recent 3-day pace is zero or negative</td><td>Needs immediate cause check.</td></tr>
+            </table>
+          </div>
+
+          <div class="metric-block">
+            <h3>Customer Actions</h3>
+            <table>
+              <tr><th>Item</th><th>Purpose</th><th>Formula / Condition</th><th>Action</th></tr>
+              <tr><td>Churn</td><td>Customer present in baseline but absent now</td><td><code>baseTeu >= 5</code> and <code>currentTeu = 0</code></td><td>Check win-back, competitor switch, or shipment-plan change.</td></tr>
+              <tr><td>Sharp Decline</td><td>Large customer volume drop</td><td><code>baseTeu >= 8</code>, decline at least 45%, loss at least 5 TEU</td><td>Confirm recoverable residual volume and decline reason.</td></tr>
+              <tr><td>Decline</td><td>Customer requiring review</td><td><code>baseTeu >= 5</code>, decline at least 25%, loss at least 3 TEU</td><td>Recheck shipment plan for the selected week.</td></tr>
+              <tr><td>3W Churn/Decline</td><td>Advance-booking weakness</td><td>Same churn/decline logic using <code>w3_fst</code></td><td>Confirm future booking plan and early-booking feasibility.</td></tr>
+              <tr><td>High-Profit 3W Decline</td><td>Weakness in valuable advance volume</td><td><code>baseW3HiTeu >= 5</code> and decline at least 30%</td><td>Review rate, condition, and capacity constraints.</td></tr>
+              <tr><td>3W Cancellation Risk</td><td>Advance booking quality risk</td><td><code>currentW3Teu >= 10</code>, cancel TEU at least 3, cancel rate at least 15%</td><td>Check cancellation reasons and substitute volume.</td></tr>
+              <tr><td>New Large / Sharp Increase</td><td>Opportunity or volatility</td><td>Baseline zero and current at least 20 TEU, or 2x baseline and at least +20 TEU</td><td>Check repeatability and space/equipment support.</td></tr>
+            </table>
+          </div>
+
+          <div class="metric-block">
+            <h3>Sales Owner Cards</h3>
+            <table>
+              <tr><th>Metric</th><th>Purpose</th><th>Formula</th><th>Use</th></tr>
+              <tr><td>Impact TEU</td><td>Owner-linked customer decline size</td><td>Sum of owner customer-action <code>impactTeu</code></td><td>Prioritize owners with larger recoverable impact.</td></tr>
+              <tr><td>Action Gap</td><td>Largest risk the owner should manage</td><td><code>max(BSA gap, projectedGap, trendGap, impactTeu)</code></td><td>Shows whether the owner issue is customer recovery or space gap.</td></tr>
+              <tr><td>Delay Routes</td><td>Owner routes behind timing</td><td>Count of owner routes with <code>trend-short/trend-slow</code> or <code>stalled/slow/short</code></td><td>If zero, the owner is shown mainly by customer decline, weak 3W, or BSA gap.</td></tr>
+              <tr><td>Recovery Candidates</td><td>Customers with some remaining volume</td><td><code>currentTeu > 0</code> and <code>baseTeu > currentTeu</code></td><td>Ask whether residual volume can be pulled back.</td></tr>
+              <tr><td>Win-Back Candidates</td><td>Customers with no current volume</td><td><code>currentTeu = 0</code> and <code>baseTeu > 0</code></td><td>Check competitor switch, demand change, or schedule issue.</td></tr>
+              <tr><td>Top Route</td><td>Owner's first discussion route</td><td>Route with the largest linked impact or gap</td><td>Use as the first owner discussion topic.</td></tr>
+            </table>
+          </div>
+
+          <div class="note">The focus-route filter reduces noise from small lanes by combining destination-port p75 thresholds with minimum thresholds. Volume, BSA, and impact distributions are used, with minimum thresholds of 50 TEU volume, 100 TEU BSA, and 30 TEU impact.</div>
+        </div>
+      </section>
+
       <section class="section" id="route">
         <h2 class="ko">5. 구간별 특이사항 읽는 법</h2>
         <h2 class="en">5. How To Read Route Exceptions</h2>
@@ -806,6 +1027,7 @@
         <a href="#horizon">대응 시점</a>
         <a href="#baseline">비교 기준</a>
         <a href="#kpis">KPI 계산</a>
+        <a href="#metric-dictionary">계산 상세</a>
         <a href="#route">구간별 특이사항</a>
         <a href="#priority">우선순위</a>
         <a href="#risks">리스크 유형</a>
@@ -819,6 +1041,7 @@
         <a href="#horizon">Horizon</a>
         <a href="#baseline">Baseline</a>
         <a href="#kpis">KPI Logic</a>
+        <a href="#metric-dictionary">Metric Dictionary</a>
         <a href="#route">Route Exceptions</a>
         <a href="#priority">Priority</a>
         <a href="#risks">Risk Types</a>
