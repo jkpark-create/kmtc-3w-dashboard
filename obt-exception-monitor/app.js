@@ -683,8 +683,8 @@ function applyLanguage() {
   });
   const actionSummaryHeads = document.querySelectorAll(".action-summary-table thead th");
   const actionSummaryLabels = state.lang === "en"
-    ? ["Origin", "Actions", "P1/P2", "3W Gap", "Weekday Gap", "3W Pickup", "Vs Usual", "BSA Gap", "Status", "Top Owners"]
-    : ["선적지", "Actions", "P1/P2", "3W Gap", "요일 Gap", "3W Pickup", "평소 대비", "BSA Gap", "상태", "주요 담당"];
+    ? ["Origin", "Actions", "P1/P2", "3W Gap", "Weekday Gap", "3W Pickup", "Vs Usual", "BSA Gap", "Status"]
+    : ["선적지", "Actions", "P1/P2", "3W Gap", "요일 Gap", "3W Pickup", "평소 대비", "BSA Gap", "상태"];
   actionSummaryHeads.forEach((head, index) => {
     head.textContent = actionSummaryLabels[index];
   });
@@ -3932,7 +3932,7 @@ function renderActionSummary(monitor, analysis) {
     : `${analysis.periods.label} vs ${analysis.periods.baselineLabel} · ${sampleNote} · ${state.actionGroup === "pol" ? "선적포트" : "선적국가"} 기준`;
 
   if (!rows.length) {
-    els.actionSummaryTable.innerHTML = emptyRow(10, state.lang === "en" ? "No automatic action candidates." : "자동 Action 후보가 없습니다.");
+    els.actionSummaryTable.innerHTML = emptyRow(9, state.lang === "en" ? "No automatic action candidates." : "자동 Action 후보가 없습니다.");
     return;
   }
 
@@ -3952,7 +3952,6 @@ function renderActionSummary(monitor, analysis) {
       <td class="num ${!weekdayHasSamples || row.weekdayRatio == null ? "" : row.weekdayRatio >= .9 ? "pos" : row.weekdayRatio >= .6 ? "warn" : "neg"}">${weekdayHasSamples && row.weekdayRatio != null ? rpct(row.weekdayRatio) : "-"}</td>
       <td class="num">${fmt(Math.max(row.bsaGap, row.projectedGap))}</td>
       <td><span class="status-pill ${weekdayHasSamples ? row.weekdayStatus.tone : "neutral"}" title="${escapeAttr(weekdayHasSamples ? row.weekdayStatus.title : sampleNote)}">${weekdayHasSamples ? row.weekdayStatus.label : "-"}</span><div class="subline">${row.statusLabel} · ${actionTypeLabel(row.topIssue)}</div></td>
-      <td>${escapeHtml(row.topSales)}</td>
     </tr>
   `).join("");
 }
