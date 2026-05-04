@@ -5,7 +5,7 @@
 **목적**: 3주전(WOS-3) 기준 부킹 현황, 소석률, 수익성 분석 대시보드
 **배포**: GitHub Pages 정적 사이트 (https://jkpark-create.github.io/kmtc-3w-dashboard-web/)
 **데이터 소스**: Tableau Server (tableau.ekmtc.com) → Google Drive → GitHub Pages
-**자동화**: Windows Task Scheduler (평일 09:03 / 매일 09:00)
+**자동화**: Windows Task Scheduler (평일 10:00 / 매일 10:00)
 
 ---
 
@@ -357,8 +357,8 @@ WW = diff + 1
 
 | 작업명 | 스케줄 | 실행 대상 | 설명 |
 |--------|--------|-----------|------|
-| **3W_BKG_Dashboard** | 평일(월~금) 09:03 | `cmd /c run_daily.bat` | 주중 대시보드 자동 업데이트 (주력 작업) |
-| **3W_BKG_Dashboard_Daily** | 매일 09:00 | `run_daily.bat` | 일일 백업 작업 |
+| **3W_BKG_Dashboard** | 평일(월~금) 10:00 | `cmd /c run_daily.bat` | 주중 대시보드 자동 업데이트 (주력 작업) |
+| **3W_BKG_Dashboard_Daily** | 매일 10:00 | `run_daily.bat` | 일일 백업 작업 |
 | **OBT_Raw_Automation** | 매일 09:00 | `cmd /c obt raw automation\run.bat` | Tableau OBT Raw → Google Sheets 동기화 |
 | **RFQ_GDrive_Sync** | 매일 08:00 | `rfq_tool\gdrive_sync.py` | Google Drive 비딩 파일 동기화 |
 

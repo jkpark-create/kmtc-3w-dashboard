@@ -143,14 +143,22 @@ select {
 }
 
 .ghost-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   height: 30px;
   padding: 0 12px;
   color: #fff;
   font-weight: 700;
+  text-decoration: none;
   background: rgba(255, 255, 255, .1);
   border: 1px solid rgba(255, 255, 255, .35);
   border-radius: 5px;
   cursor: pointer;
+}
+
+.nav-link {
+  white-space: nowrap;
 }
 
 .lang-switch {

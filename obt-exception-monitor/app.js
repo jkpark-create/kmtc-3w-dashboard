@@ -277,6 +277,7 @@ const I18N = {
     loading: "OBT 데이터를 분석하는 중입니다.",
     refresh: "Refresh",
     guide: "Guide",
+    dashboard: "-3W Dashboard",
     langToggle: "EN",
     all: "전체",
     high: "High",
@@ -344,6 +345,7 @@ const I18N = {
     loading: "Analyzing OBT data.",
     refresh: "Refresh",
     guide: "Guide",
+    dashboard: "-3W Dashboard",
     langToggle: "KR",
     all: "All",
     high: "High",
@@ -453,10 +455,19 @@ function cacheElements() {
     "destFilter", "dstFilter", "salesFilter", "compareFilter", "searchInput", "kpiGrid",
     "routeTable", "salesTable", "shipperTable", "issueList", "loading",
     "routeSubtitle", "salesSubtitle", "shipperSubtitle", "issueSubtitle",
-    "refreshBtn", "langToggle", "guideBtn", "guideOverlay", "guideLangToggle", "guideClose", "guideTitle", "guideSubtitle", "guideBody"
+    "refreshBtn", "langToggle", "dashboardLink", "guideBtn", "guideOverlay", "guideLangToggle", "guideClose", "guideTitle", "guideSubtitle", "guideBody"
   ].forEach((id) => {
     els[id] = document.getElementById(id);
   });
+  if (els.dashboardLink) els.dashboardLink.href = dashboardHref();
+}
+
+function dashboardHref() {
+  const path = window.location.pathname.replace(/\\/g, "/");
+  if (path.includes("/dist/obt-exception-monitor/")) return "../";
+  if (path.includes("/kmtc-3w-dashboard-web/obt-exception-monitor/")) return "../";
+  if (path.includes("/obt-exception-monitor/")) return "../dist/";
+  return "../";
 }
 
 function bindEvents() {
@@ -538,6 +549,7 @@ function applyLanguage() {
   els.langToggle.setAttribute("aria-pressed", state.lang === "en" ? "true" : "false");
   if (els.guideLangToggle) els.guideLangToggle.textContent = t("langToggle");
   els.guideBtn.textContent = t("guide");
+  if (els.dashboardLink) els.dashboardLink.textContent = t("dashboard");
   els.refreshBtn.textContent = t("refresh");
   document.querySelector("#loading p").textContent = t("loading");
 
