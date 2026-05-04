@@ -517,8 +517,8 @@
           </div>
           <div class="quick-card">
             <strong class="ko">조치 기준</strong><strong class="en">Action Basis</strong>
-            <span class="ko">BSA/물량이 큰 구간, 도착포트별 p75 이상 영향 구간을 우선 노출합니다.</span>
-            <span class="en">Focus routes are selected by BSA/volume and destination-port p75 impact thresholds.</span>
+            <span class="ko">도착포트별 상위권 물량/BSA와 영향 TEU 기준을 넘어서는 구간을 우선 노출합니다.</span>
+            <span class="en">Focus routes are selected by destination-port volume, BSA, and impact thresholds.</span>
           </div>
           <div class="quick-card">
             <strong class="ko">담당 확인</strong><strong class="en">Owner Check</strong>
@@ -664,6 +664,19 @@
           </div>
 
           <div class="metric-block">
+            <h3>p75와 중요구간 기준</h3>
+            <p><code>p75</code>는 percentile 75, 즉 같은 도착포트 안의 Route 값을 작은 순서로 세웠을 때 하위 75%가 이 값 이하이고 상위 25%가 이 값 이상이라는 뜻입니다. 이 모니터에서는 모든 작은 변동을 문제로 보지 않고, 같은 도착포트 안에서 상대적으로 물량 또는 BSA가 큰 구간을 먼저 보이게 하기 위해 사용합니다.</p>
+            <table>
+              <tr><th>항목</th><th>계산 방식</th><th>의미</th><th>주의</th></tr>
+              <tr><td>물량 p75</td><td>도착포트별 Route의 <code>max(currentTeu, baseTeu, currentW3Teu, baseW3Teu)</code> 값을 모아 75번째 백분위값 계산</td><td>그 도착포트 안에서 상대적으로 큰 물량 구간을 찾는 기준입니다.</td><td>최소 기준 50 TEU와 함께 사용하므로 p75가 너무 낮아져도 작은 구간이 과도하게 노출되지 않습니다.</td></tr>
+              <tr><td>BSA p75</td><td>도착포트별 Route의 <code>bsaTeu</code> 값을 모아 75번째 백분위값 계산</td><td>그 도착포트 안에서 상대적으로 큰 선복/목표 구간을 찾는 기준입니다.</td><td>최소 기준 100 TEU와 함께 사용합니다.</td></tr>
+              <tr><td>영향 TEU 기준</td><td><code>max(30, impact p70, volumeThreshold * 35%)</code></td><td>감소/미달 영향이 충분히 큰 구간만 중요구간으로 올리기 위한 기준입니다.</td><td>영향 TEU는 p75가 아니라 p70과 물량 기준을 함께 씁니다. 너무 엄격하게 잡아 실제 회복 후보가 빠지는 것을 줄이기 위함입니다.</td></tr>
+              <tr><td>중요구간 여부</td><td><code>BSA >= BSA threshold</code> 또는 <code>max volume >= volume threshold</code> 또는 <code>impactSeed >= impact threshold</code></td><td>기본 화면에서 우선 노출할 Route인지 결정합니다.</td><td>중요구간은 “문제가 확정된 구간”이 아니라 “먼저 확인할 가치가 큰 구간”입니다.</td></tr>
+            </table>
+            <div class="formula">volumeThreshold = max(50, destination-port volume p75)<br>bsaThreshold = max(100, destination-port BSA p75)<br>impactThreshold = max(30, destination-port impact p70, volumeThreshold * 35%)<br>impactSeed = max(0, baseTeu - currentTeu, baseW3Teu - currentW3Teu, bsaTeu - currentTeu)</div>
+          </div>
+
+          <div class="metric-block">
             <h3>상단 KPI</h3>
             <table>
               <tr><th>KPI</th><th>목적</th><th>계산 수식</th><th>해석</th></tr>
@@ -744,7 +757,7 @@
             </table>
           </div>
 
-          <div class="note">중요구간 필터는 작은 구간의 잡음을 줄이기 위해 destination port별 p75 기준과 최소 기준을 함께 사용합니다. 기준값은 물량, BSA, 영향 TEU 분포에서 계산되며, 작은 포트라도 최소 volume 50 TEU, BSA 100 TEU, impact 30 TEU 기준이 함께 적용됩니다.</div>
+          <div class="note">중요구간 필터는 작은 구간의 잡음을 줄이기 위한 장치입니다. 물량과 BSA는 도착포트별 p75와 최소 기준을 함께 쓰고, 영향 TEU는 p70, 물량 기준의 35%, 최소 30 TEU 중 가장 큰 값을 사용합니다.</div>
         </div>
 
         <div class="en">
@@ -762,6 +775,19 @@
               <tr><td>Active Customers</td><td>Customers with actual volume in the period</td><td>Distinct customers where <code>fst &gt; 0</code></td><td>Fewer customers can signal dependency even when TEU is stable.</td></tr>
               <tr><td>Baseline</td><td>Reference used to judge shortage</td><td>Previous-month same slot, previous week, or same-slot 3-month average</td><td>Baseline BKG is aligned to the same W+ maturity stage.</td></tr>
             </table>
+          </div>
+
+          <div class="metric-block">
+            <h3>p75 And Focus-Route Thresholds</h3>
+            <p><code>p75</code> means the 75th percentile. Within the same destination port, 75% of route values are at or below this value and the top 25% are at or above it. The monitor uses it to surface relatively large lanes first instead of treating every small movement as an exception.</p>
+            <table>
+              <tr><th>Threshold</th><th>Calculation</th><th>Meaning</th><th>Caution</th></tr>
+              <tr><td>Volume p75</td><td>75th percentile of route <code>max(currentTeu, baseTeu, currentW3Teu, baseW3Teu)</code> within each destination port</td><td>Finds relatively large-volume routes for that destination port.</td><td>Combined with a 50 TEU minimum so very small ports do not create noisy focus routes.</td></tr>
+              <tr><td>BSA p75</td><td>75th percentile of route <code>bsaTeu</code> within each destination port</td><td>Finds relatively large capacity or target routes for that destination port.</td><td>Combined with a 100 TEU minimum.</td></tr>
+              <tr><td>Impact TEU Threshold</td><td><code>max(30, impact p70, volumeThreshold * 35%)</code></td><td>Ensures the route has a meaningful decline or shortfall before it is promoted as focus.</td><td>Impact uses p70, not p75, plus a volume-based floor so recoverable issues are not filtered too aggressively.</td></tr>
+              <tr><td>Focus Route</td><td><code>BSA >= BSA threshold</code> or <code>max volume >= volume threshold</code> or <code>impactSeed >= impact threshold</code></td><td>Determines whether a route appears in the default focus view.</td><td>A focus route is not a confirmed problem; it is a route worth checking first.</td></tr>
+            </table>
+            <div class="formula">volumeThreshold = max(50, destination-port volume p75)<br>bsaThreshold = max(100, destination-port BSA p75)<br>impactThreshold = max(30, destination-port impact p70, volumeThreshold * 35%)<br>impactSeed = max(0, baseTeu - currentTeu, baseW3Teu - currentW3Teu, bsaTeu - currentTeu)</div>
           </div>
 
           <div class="metric-block">
@@ -844,7 +870,7 @@
             </table>
           </div>
 
-          <div class="note">The focus-route filter reduces noise from small lanes by combining destination-port p75 thresholds with minimum thresholds. Volume, BSA, and impact distributions are used, with minimum thresholds of 50 TEU volume, 100 TEU BSA, and 30 TEU impact.</div>
+          <div class="note">The focus-route filter reduces noise from small lanes. Volume and BSA use destination-port p75 plus minimum thresholds; impact TEU uses the largest of impact p70, 35% of the volume threshold, and a 30 TEU minimum.</div>
         </div>
       </section>
 
@@ -892,8 +918,8 @@
           <tr class="ko"><td><span class="badge p3">P3</span></td><td>영향이 작거나 참고용 변동</td><td>추세 확인 대상입니다. 영업 시간 부족 시 후순위로 둡니다.</td></tr>
           <tr class="en"><td><span class="badge p3">P3</span></td><td>Lower-impact or reference signal</td><td>Monitor. Deprioritize when sales time is constrained.</td></tr>
         </table>
-        <div class="ko note">기본 조치범위는 “중요구간”입니다. 도착포트별 물량, BSA, 영향 TEU 분포의 p75 기준을 사용해 작은 구간의 잡음을 줄입니다.</div>
-        <div class="en note">Default scope is “Focus routes”. It uses destination-port p75 thresholds for volume, BSA, and impact TEU to reduce noise from small lanes.</div>
+        <div class="ko note">기본 조치범위는 “중요구간”입니다. 물량과 BSA는 도착포트별 p75 기준을 사용하고, 영향 TEU는 p70과 최소 기준을 함께 사용해 작은 구간의 잡음을 줄입니다. 자세한 산식은 “계산 상세”의 p75 설명을 참고합니다.</div>
+        <div class="en note">Default scope is “Focus routes”. Volume and BSA use destination-port p75 thresholds, while impact TEU uses p70 plus minimum thresholds. See the p75 explanation in the Metric Dictionary for the exact formulas.</div>
       </section>
 
       <section class="section" id="risks">
@@ -1007,7 +1033,7 @@
           <ul>
             <li>현재 W+2/W+1 비교는 실제 WOS-2/WOS-1 값이 아니라 보정값입니다.</li>
             <li>일별 속도는 <code>history.json</code>에 누적된 스냅샷이 많을수록 안정적으로 계산됩니다.</li>
-            <li>작은 포트는 p75 기준이 낮게 잡힐 수 있어 기본 최소 기준을 함께 사용합니다.</li>
+            <li>작은 포트는 p75 기준이 낮게 잡힐 수 있어 기본 최소 기준을 함께 사용합니다. 현재 최소 기준은 물량 50 TEU, BSA 100 TEU, 영향 30 TEU입니다.</li>
             <li>BSA 목표 Gap은 영업 부족만 의미하지 않습니다. 목표 선복 자체가 과도한지 함께 봐야 합니다.</li>
             <li>향후 개선 데이터: WOS-2/WOS-1 TEU, 운임/CM1, 장비 제약, 선박별 BSA 변경 이력, 경쟁사 전환 사유 코드.</li>
           </ul>
@@ -1016,7 +1042,7 @@
           <ul>
             <li>Current W+2/W+1 comparison uses maturity adjustment, not actual WOS-2/WOS-1 values.</li>
             <li>Daily pace becomes more stable as <code>history.json</code> accumulates more snapshots.</li>
-            <li>Small ports can produce low p75 thresholds, so minimum thresholds are also applied.</li>
+            <li>Small ports can produce low p75 thresholds, so minimum thresholds are also applied: 50 TEU volume, 100 TEU BSA, and 30 TEU impact.</li>
             <li>BSA target gap is not always a sales failure. Review whether the target capacity itself is realistic.</li>
             <li>Future data improvements: WOS-2/WOS-1 TEU, rate/CM1, equipment constraints, vessel-level BSA history, competitor-switch reason codes.</li>
           </ul>
