@@ -591,12 +591,12 @@ select {
 }
 
 .action-summary-table table {
-  min-width: 980px;
+  min-width: 820px;
   table-layout: fixed;
 }
 
 .action-summary-table th:nth-child(1) {
-  width: 16%;
+  width: 11%;
 }
 
 .action-summary-table th:nth-child(2),
@@ -606,15 +606,11 @@ select {
 .action-summary-table th:nth-child(6),
 .action-summary-table th:nth-child(7),
 .action-summary-table th:nth-child(8) {
-  width: 8%;
+  width: 10%;
 }
 
 .action-summary-table th:nth-child(9) {
-  width: 13%;
-}
-
-.action-summary-table th:nth-child(10) {
-  width: 18%;
+  width: 19%;
 }
 
 .action-detail-table table {
