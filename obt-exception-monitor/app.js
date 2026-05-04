@@ -646,7 +646,8 @@ function guideHtmlKo() {
       <ul>
         <li><strong>전체 BKG</strong>: 선택된 현재 기간의 <code>fst</code> 합계입니다.</li>
         <li><strong>BSA 대비 BKG</strong>: 현재 전체 BKG / 선택기간 BSA입니다. 낮을수록 선복 미소석 위험이 큽니다.</li>
-        <li><strong>트렌드/속도 부족</strong>: 리드타임 트렌드보다 늦거나 최근 부킹속도가 필요한 속도보다 낮은 구간 수입니다.</li>
+        <li><strong>확인 필요 구간</strong>: 리드타임 트렌드가 낮거나 최근 부킹속도로 예상 Gap을 채우기 어려운 Route 수입니다. 카드 보조문구에서 트렌드 원인, 속도 원인, 예상 Gap을 함께 확인합니다.</li>
+        <li><strong>P1 구간</strong>: 오늘 먼저 원인을 확인해야 하는 우선 Route 수입니다.</li>
         <li><strong>3W Booking TEU</strong>: <code>w3_fst</code> 기반 3주전 선행 부킹량입니다.</li>
         <li><strong>감소/이탈 화주</strong>: 회복 또는 재확보가 필요한 화주 단위 후보입니다.</li>
       </ul>
@@ -725,7 +726,8 @@ function guideHtmlEn() {
       <ul>
         <li><strong>Total BKG</strong>: selected-period <code>fst</code>.</li>
         <li><strong>BKG vs BSA</strong>: current total BKG divided by selected-period BSA. Lower values indicate space-utilization risk.</li>
-        <li><strong>Trend/Pace Risk</strong>: routes behind lead-time maturity or required daily pickup.</li>
+        <li><strong>Routes To Check</strong>: route count where lead-time maturity is behind benchmark or recent pickup pace is unlikely to close the projected gap. The card note splits trend cause, pace cause, and projected gap.</li>
+        <li><strong>P1 Routes</strong>: priority routes that should be checked first today.</li>
         <li><strong>3W Booking TEU</strong>: advance-booked TEU from <code>w3_fst</code>.</li>
         <li><strong>Declining/Lost Customers</strong>: customer-level candidates for recovery or win-back.</li>
       </ul>
@@ -1313,9 +1315,12 @@ function analyze(currentRows, baselineRows, currentBsaRows, baselineBsaRows, per
   const bsaImpactTeu = issueShippers
     .filter((row) => row.bsaTeu > 0)
     .reduce((sum, row) => sum + row.impactTeu, 0);
+  const trendRiskRoutes = routeExceptions.filter((row) => ["trend-short", "trend-slow"].includes(row.leadTrendStatus));
+  const paceRiskRoutes = routeExceptions.filter((row) => ["stalled", "slow", "short"].includes(row.paceStatus));
   const speedRiskRoutes = routeExceptions.filter((row) => ["stalled", "slow", "short"].includes(row.paceStatus) || ["trend-short", "trend-slow"].includes(row.leadTrendStatus));
-  const projectedGapTeu = routeExceptions.reduce((sum, row) => sum + (row.projectedGap || 0), 0);
+  const projectedGapTeu = speedRiskRoutes.reduce((sum, row) => sum + (row.projectedGap || 0), 0);
   const p1Actions = shipperExceptions.filter((row) => row.priority === "P1").length + routeExceptions.filter((row) => row.priority === "P1").length;
+  const p1RouteExceptions = routeExceptions.filter((row) => row.priority === "P1").length;
 
   return {
     periods,
@@ -1357,9 +1362,12 @@ function analyze(currentRows, baselineRows, currentBsaRows, baselineBsaRows, per
       issueShippers: issueShippers.length,
       impactTeu,
       bsaImpactTeu,
+      trendRiskRoutes: trendRiskRoutes.length,
+      paceRiskRoutes: paceRiskRoutes.length,
       speedRiskRoutes: speedRiskRoutes.length,
       projectedGapTeu,
       p1Actions,
+      p1RouteExceptions,
       topActionCount: Math.min(60, shipperExceptions.length),
       actionSales: salesActions.length,
       highRoutes: routeExceptions.filter((row) => row.level === "high").length,
@@ -2898,10 +2906,17 @@ function renderKpis(analysis) {
     },
     {
       key: "paceRisk",
-      label: state.lang === "en" ? "Trend/Pace Risk" : "트렌드/속도 부족",
+      label: state.lang === "en" ? "Routes To Check" : "확인 필요 구간",
       value: fmt(t.speedRiskRoutes),
-      note: state.lang === "en" ? `${historyLabel()} · projected gap ${fmt(t.projectedGapTeu)} TEU` : `${historyLabel()} · 예상미달 ${fmt(t.projectedGapTeu)} TEU`,
+      note: state.lang === "en" ? `trend ${fmt(t.trendRiskRoutes)} · pace ${fmt(t.paceRiskRoutes)} · gap ${fmt(t.projectedGapTeu)} TEU` : `트렌드 ${fmt(t.trendRiskRoutes)} · 속도 ${fmt(t.paceRiskRoutes)} · 예상 Gap ${fmt(t.projectedGapTeu)} TEU`,
       tone: t.speedRiskRoutes ? "neg" : "pos"
+    },
+    {
+      key: "p1Routes",
+      label: state.lang === "en" ? "P1 Routes" : "P1 구간",
+      value: fmt(t.p1RouteExceptions),
+      note: state.lang === "en" ? `P1 actions ${fmt(t.p1Actions)} · high routes ${fmt(t.highRoutes)}` : `P1 조치 ${fmt(t.p1Actions)}건 · High 구간 ${fmt(t.highRoutes)}개`,
+      tone: t.p1RouteExceptions ? "neg" : t.highRoutes ? "warn" : "pos"
     },
     {
       key: "topAction",
@@ -2930,13 +2945,6 @@ function renderKpis(analysis) {
       value: fmt(t.issueShippers),
       note: state.lang === "en" ? `actionable out of ${fmt(t.allIssueShippers)} total` : `전체 ${fmt(t.allIssueShippers)}건 중 조치대상`,
       tone: t.issueShippers ? "warn" : "pos"
-    },
-    {
-      key: "impactTeu",
-      label: state.lang === "en" ? "Risk Impact TEU" : "문제 영향 TEU",
-      value: fmt(t.impactTeu),
-      note: state.lang === "en" ? `BSA-route impact ${fmt(t.bsaImpactTeu)} TEU` : `BSA 구간 영향 ${fmt(t.bsaImpactTeu)} TEU`,
-      tone: t.impactTeu ? "neg" : "pos"
     },
     {
       key: "salesOwners",
@@ -3464,7 +3472,8 @@ function kpiHelp(key) {
   const ko = {
     totalTeu: "현재 선택 기간의 fst 합계입니다. 기존 -3W Dashboard의 전체BKG와 같은 기준입니다.",
     bsaUtil: "현재 선택된 주차/월 조건의 전체 BKG(fst)를 같은 기간 BSA TEU로 나눈 비율입니다.",
-    paceRisk: "리드타임 트렌드 부족 또는 최근 일별 부킹속도 부족 구간 수입니다.",
+    paceRisk: "현재 선택 조건에서 확인이 필요한 Route 수입니다. 리드타임 트렌드 부족은 같은 W+시점/도착포트 기준보다 현재 BKG 성숙도가 낮은 구간이고, 속도 부족은 최근 일별 증가속도로 남은 BSA Gap을 채우기 어려운 구간입니다. 숫자가 높으면 구간 테이블에서 P1/P2와 예상 Gap이 큰 Route를 먼저 확인하세요.",
+    p1Routes: "오늘 먼저 원인을 확인해야 하는 P1 Route 수입니다. P1 조치 건수에는 구간 이슈와 화주 Action 후보가 함께 포함됩니다.",
     topAction: "현재 필터에서 상위 조치 후보로 노출되는 건수입니다.",
     w3Teu: "shipper.w3_fst 기반 3주전 선행 부킹 TEU 합계입니다.",
     w3Bsa: "3W Booking TEU를 같은 선택기간 BSA로 나눈 비율입니다.",
@@ -3475,7 +3484,8 @@ function kpiHelp(key) {
   const en = {
     totalTeu: "Sum of fst for the selected current period, matching Total BKG in the existing -3W Dashboard.",
     bsaUtil: "Current total BKG (fst) divided by BSA TEU for the same selected week or month period.",
-    paceRisk: "Number of routes with lead-time trend shortfall or daily pickup shortfall.",
+    paceRisk: "Number of routes that need checking under the current filters. Lead-time trend means current BKG maturity is behind the same W+ stage and destination-port benchmark; pace means recent daily pickup is unlikely to close the remaining BSA gap. Start with P1/P2 routes and the largest projected gaps in the route table.",
+    p1Routes: "Number of priority routes to check first today. P1 actions include both route issues and customer action candidates.",
     topAction: "Number of top action candidates shown under the current filters.",
     w3Teu: "Sum of 3W advance-booked TEU from shipper.w3_fst.",
     w3Bsa: "3W booking TEU divided by BSA for the same selected period.",

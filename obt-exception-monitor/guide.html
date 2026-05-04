@@ -605,8 +605,10 @@
           <tr class="en"><td>Total BKG</td><td>Sum of <code>fst</code> in selected horizon</td><td>Total booking volume for the selected action horizon.</td></tr>
           <tr class="ko"><td>BSA 대비 BKG</td><td>선택기간 전체 BKG / 선택기간 총 BSA</td><td>선택한 주차/월/3주 합산 조건과 동일한 BSA 대비 부킹 비율입니다. 낮으면 BSA Gap 확인이 필요합니다.</td></tr>
           <tr class="en"><td>BKG vs BSA</td><td>Selected-period total BKG / selected-period total BSA</td><td>Current booking coverage against BSA for the same selected week, month, or multi-week period.</td></tr>
-          <tr class="ko"><td>트렌드/속도 부족</td><td>리드타임 트렌드 부족 또는 최근 속도 부족 구간 수</td><td>정상적으로 늦게 들어오는 구간과 실제 지연 구간을 구분합니다.</td></tr>
-          <tr class="en"><td>Trend/Pace Risk</td><td>Count of routes with lead-time trend or recent pace shortage</td><td>Separates naturally late lanes from truly delayed lanes.</td></tr>
+          <tr class="ko"><td>확인 필요 구간</td><td>리드타임 트렌드 부족 또는 최근 속도 부족 Route 수</td><td>먼저 원인을 확인해야 할 구간 수입니다. 카드 보조문구의 트렌드/속도/예상 Gap을 보고 구간 테이블의 P1/P2부터 확인합니다.</td></tr>
+          <tr class="en"><td>Routes To Check</td><td>Count of routes with lead-time trend or recent pace shortage</td><td>Routes that need review first. Use the card note's trend, pace, and projected gap split, then start with P1/P2 rows in the route table.</td></tr>
+          <tr class="ko"><td>P1 구간</td><td>오늘 우선 확인해야 하는 Route 수</td><td>당일 원인 확인이 필요한 구간입니다. P1 조치 건수는 구간 이슈와 화주 Action 후보를 함께 포함합니다.</td></tr>
+          <tr class="en"><td>P1 Routes</td><td>Priority routes to check today</td><td>Routes requiring same-day cause check. P1 actions include both route issues and customer action candidates.</td></tr>
           <tr class="ko"><td>오늘 Top 조치</td><td>우선순위 필터 이후 상위 Action 후보 수</td><td>영업사원이 처리할 수 있는 수준으로 문제를 압축합니다.</td></tr>
           <tr class="en"><td>Top Actions</td><td>Top action candidates after focus filtering</td><td>Compresses the issue list into a workable action set.</td></tr>
           <tr class="ko"><td>3W Booking TEU</td><td><code>w3_fst</code> 합계</td><td>출항 3주전 선행 부킹이 충분히 들어오는지 봅니다.</td></tr>
@@ -615,8 +617,6 @@
           <tr class="en"><td>3W/BSA</td><td>3W Booking TEU / selected-period BSA</td><td>Advance booking coverage against BSA for the same selected period.</td></tr>
           <tr class="ko"><td>감소/이탈 화주</td><td>화주 단위 특이사항 중 조치대상 수</td><td>실제 접촉해야 할 화주 후보입니다.</td></tr>
           <tr class="en"><td>Declining/Lost Customers</td><td>Actionable customer-level exception count</td><td>Candidate customers to contact.</td></tr>
-          <tr class="ko"><td>문제 영향 TEU</td><td>감소/이탈/3W 부족으로 설명되는 영향 TEU 합계</td><td>문제가 실제 물량에 미치는 크기입니다.</td></tr>
-          <tr class="en"><td>Risk Impact TEU</td><td>Impact TEU explained by decline, churn, or weak 3W signals</td><td>Estimated TEU affected by the exception set.</td></tr>
           <tr class="ko"><td>조치 영업사원</td><td>Action 후보를 가진 영업사원 수</td><td>조치 책임자를 빠르게 나누기 위한 지표입니다.</td></tr>
           <tr class="en"><td>Sales Owners</td><td>Count of owners with action candidates</td><td>Helps split ownership quickly.</td></tr>
         </table>
