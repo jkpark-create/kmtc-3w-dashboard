@@ -1044,21 +1044,76 @@ function getPeriods() {
     .sort((a, b) => parseKoreanDate(a) - parseKoreanDate(b));
   const weekIndex = weekList.indexOf(state.filters.week);
   const prevWeek = weekIndex > 0 ? weekList[weekIndex - 1] : "";
+  let baseline = {
+    mode: "custom",
+    month: prevMonth,
+    week: "ALL",
+    weeks: [],
+    weekSet: new Set(),
+    label: prevMonth ? formatMonth(prevMonth) : (state.lang === "en" ? "no baseline" : "baseline unavailable")
+  };
+
+  if (state.filters.compare === "avg3") {
+    if (state.filters.week !== "ALL") {
+      const weeks = previousMonthSameSlotWeeks(state.filters.week, 3);
+      const leadOffset = weekLeadOffset(state.filters.week, getCurrentWeekStartDate());
+      const scaleDivisorByWeek = Object.fromEntries(weeks.map((week) => [week, weeks.length]));
+      baseline = {
+        mode: "forced",
+        weeks,
+        weekSet: new Set(weeks),
+        months: uniqueSorted(weeks.map((week) => weekToMonth(week)).filter(Boolean)),
+        scaleDivisor: 0,
+        scaleDivisorByWeek,
+        leadOffsetByWeek: Object.fromEntries(weeks.map((week) => [week, leadOffset])),
+        leadAligned: true,
+        label: baselineLabel(prevMonth, prevWeek)
+      };
+    } else {
+      const months = state.months.slice(Math.max(0, monthIndex - 3), monthIndex);
+      baseline = {
+        mode: "custom",
+        month: "",
+        week: "ALL",
+        weeks: [],
+        weekSet: new Set(),
+        months,
+        scaleDivisor: months.length,
+        label: baselineLabel(prevMonth, prevWeek)
+      };
+    }
+  } else if (state.filters.compare === "prevWeek" && state.filters.week !== "ALL" && prevWeek) {
+    baseline = {
+      mode: "custom",
+      month: state.filters.month,
+      week: prevWeek,
+      weeks: [],
+      weekSet: new Set(),
+      label: weekLabelWithWW(prevWeek)
+    };
+  } else if (state.filters.compare === "prevMonth" && state.filters.week !== "ALL" && prevMonth) {
+    const weeks = previousMonthSameSlotWeeks(state.filters.week, 1);
+    if (weeks.length) {
+      const leadOffset = weekLeadOffset(state.filters.week, getCurrentWeekStartDate());
+      baseline = {
+        mode: "forced",
+        weeks,
+        weekSet: new Set(weeks),
+        months: uniqueSorted(weeks.map((week) => weekToMonth(week)).filter(Boolean)),
+        leadOffsetByWeek: Object.fromEntries(weeks.map((week) => [week, leadOffset])),
+        leadAligned: true,
+        label: weeks.map(weekLabelWithWW).join(", ")
+      };
+    }
+  }
 
   return {
     current,
-    baseline: {
-      mode: "custom",
-      month: prevMonth,
-      week: "ALL",
-      weeks: [],
-      weekSet: new Set(),
-      label: prevMonth ? formatMonth(prevMonth) : "비교 기준 없음"
-    },
     prevMonth,
     prevWeek,
     label: periodLabel(current),
-    baselineLabel: baselineLabel(prevMonth, prevWeek)
+    baseline,
+    baselineLabel: baseline.label || baselineLabel(prevMonth, prevWeek)
   };
 }
 
@@ -1097,7 +1152,10 @@ function buildBaselineRows(periods) {
   if (periods.baseline && periods.baseline.mode === "forced") {
     const rows = filterRowsForPeriod(periods.baseline);
     const aligned = alignBaselineRowsToLeadStage(rows, periods.baseline);
-    return periods.baseline.scaleDivisor ? aligned.map((row) => scaleRow(row, periods.baseline.scaleDivisor)) : aligned;
+    return aligned.map((row) => {
+      const divisor = baselineScaleDivisor(row, periods.baseline);
+      return divisor ? scaleRow(row, divisor) : row;
+    });
   }
 
   if (state.filters.compare === "avg3") {
@@ -1117,10 +1175,22 @@ function buildBaselineRows(periods) {
   return filterRowsForPeriod({ month: periods.prevMonth, week: "ALL" });
 }
 
+function baselineScaleDivisor(row, period) {
+  if (!period) return 0;
+  if (period.scaleDivisorByWeek && row && row.week) {
+    return period.scaleDivisorByWeek[row.week] || 0;
+  }
+  return period.scaleDivisor || 0;
+}
+
 function filterBsaForPeriod(period) {
   if (!period) return [];
   const wwSet = new Set((period.weeks || []).map((week) => weekToWW(week)).filter(Boolean));
   const monthSet = new Set(period.months || []);
+  const weekByMonthWw = new Map((period.weeks || [])
+    .map((week) => [weekToMonth(week), weekToWW(week), week])
+    .filter(([month, ww]) => month && ww)
+    .map(([month, ww, week]) => [`${month}|${ww}`, week]));
   const rows = state.bsaRows.filter((row) => {
     if (wwSet.size) {
       if (!wwSet.has(row.ww)) return false;
@@ -1140,7 +1210,11 @@ function filterBsaForPeriod(period) {
     if (state.filters.dst !== "ALL" && row.dst !== state.filters.dst) return false;
     return true;
   });
-  return period.scaleDivisor ? rows.map((row) => ({ ...row, bsaTeu: row.bsaTeu / period.scaleDivisor })) : rows;
+  return rows.map((row) => {
+    const week = weekByMonthWw.get(`${row.month}|${row.ww}`);
+    const divisor = period.scaleDivisorByWeek && week ? period.scaleDivisorByWeek[week] : period.scaleDivisor;
+    return divisor ? { ...row, bsaTeu: row.bsaTeu / divisor } : row;
+  });
 }
 
 function getForcedPeriod() {
@@ -1187,10 +1261,13 @@ function getForcedBaselinePeriod(current) {
   const monthBack = state.filters.compare === "avg3" ? 3 : 1;
   const weeks = [];
   const leadOffsetByWeek = {};
+  const scaleDivisorByWeek = {};
   current.weeks.forEach((week, index) => {
     const baselineWeeks = previousMonthSameSlotWeeks(week, monthBack);
+    const divisor = state.filters.compare === "avg3" ? baselineWeeks.length : 0;
     baselineWeeks.forEach((baselineWeek) => {
       leadOffsetByWeek[baselineWeek] = current.offsets ? current.offsets[index] : weekLeadOffset(week, getCurrentWeekStartDate());
+      if (divisor) scaleDivisorByWeek[baselineWeek] = divisor;
       weeks.push(baselineWeek);
     });
   });
@@ -1200,7 +1277,8 @@ function getForcedBaselinePeriod(current) {
     weeks: uniqWeeks,
     weekSet: new Set(uniqWeeks),
     months: uniqueSorted(uniqWeeks.map((week) => weekToMonth(week)).filter(Boolean)),
-    scaleDivisor: state.filters.compare === "avg3" ? 3 : 0,
+    scaleDivisor: 0,
+    scaleDivisorByWeek,
     leadOffsetByWeek,
     leadAligned: true,
     label: state.filters.compare === "avg3"
@@ -1614,13 +1692,14 @@ function buildPaceMap(periods, routeContext) {
   const snapshots = (state.history && state.history.snapshots || []).slice().sort((a, b) => String(a.data_date).localeCompare(String(b.data_date)));
   if (snapshots.length < 2) return new Map();
 
-  const latestDate = String(state.raw && state.raw.data_date || snapshots[snapshots.length - 1].data_date);
-  const latest = snapshots.find((snapshot) => String(snapshot.data_date) === latestDate) || snapshots[snapshots.length - 1];
-  const currentDate = parseDataDate(latest.data_date);
+  const rawLatestDate = String(state.raw && state.raw.data_date || snapshots[snapshots.length - 1].data_date);
+  const latest = snapshots.find((snapshot) => String(snapshot.data_date) === rawLatestDate) || null;
+  const latestDate = latest ? String(latest.data_date) : rawLatestDate;
+  const currentDate = parseDataDate(latestDate) || new Date();
   const selectedWeeks = periodWeeks(periods.current);
-  const latestAgg = aggregateHistoryRoutes(latest, selectedWeeks);
-  const prior3 = pickPriorSnapshot(snapshots, latest.data_date, 3);
-  const prior7 = pickPriorSnapshot(snapshots, latest.data_date, 7);
+  const latestAgg = latest ? aggregateHistoryRoutes(latest, selectedWeeks) : new Map();
+  const prior3 = pickPriorSnapshot(snapshots, latestDate, 3);
+  const prior7 = pickPriorSnapshot(snapshots, latestDate, 7);
   const prior3Agg = prior3 ? aggregateHistoryRoutes(prior3, selectedWeeks) : new Map();
   const prior7Agg = prior7 ? aggregateHistoryRoutes(prior7, selectedWeeks) : new Map();
   const daysRemaining = daysUntilPeriodEnd(periods.current, currentDate);
@@ -1628,13 +1707,16 @@ function buildPaceMap(periods, routeContext) {
 
   routeContext.forEach((context, routeKey) => {
     const latestRow = latestAgg.get(routeKey) || {};
+    const hasLatestRow = latestAgg.has(routeKey);
+    const latestTeu = hasLatestRow ? (latestRow.teu || 0) : (context.currentTeu || 0);
+    const latestW3Teu = hasLatestRow ? (latestRow.w3Teu || 0) : (context.currentW3Teu || 0);
     const p3 = prior3Agg.get(routeKey) || {};
     const p7 = prior7Agg.get(routeKey) || {};
     const days3 = prior3 ? Math.max(1, diffDays(parseDataDate(prior3.data_date), currentDate)) : 0;
     const days7 = prior7 ? Math.max(1, diffDays(parseDataDate(prior7.data_date), currentDate)) : 0;
-    const pace3 = days3 ? ((latestRow.teu || 0) - (p3.teu || 0)) / days3 : null;
-    const pace7 = days7 ? ((latestRow.teu || 0) - (p7.teu || 0)) / days7 : null;
-    const w3Pace3 = days3 ? ((latestRow.w3Teu || 0) - (p3.w3Teu || 0)) / days3 : null;
+    const pace3 = days3 ? (latestTeu - (p3.teu || 0)) / days3 : null;
+    const pace7 = days7 ? (latestTeu - (p7.teu || 0)) / days7 : null;
+    const w3Pace3 = days3 ? (latestW3Teu - (p3.w3Teu || 0)) / days3 : null;
     const gap = Math.max(0, (context.bsaTeu || 0) - (context.currentTeu || 0));
     const requiredDaily = gap > 0 ? gap / Math.max(1, daysRemaining) : 0;
     const usablePace = Math.max(0, pace3 == null ? 0 : pace3);
@@ -1654,9 +1736,10 @@ function buildPaceMap(periods, routeContext) {
       projectedTeu,
       projectedGap,
       status,
-      latestTeu: latestRow.teu || 0,
-      latestW3Teu: latestRow.w3Teu || 0,
-      historyPoints: snapshots.length
+      latestTeu,
+      latestW3Teu,
+      historyPoints: snapshots.length,
+      historyCurrent: Boolean(latest)
     });
   });
 

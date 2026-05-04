@@ -12,7 +12,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
-OUT = ROOT / "obt-exception-monitor" / "history.json"
+SOURCE_OUT = ROOT / "obt-exception-monitor" / "history.json"
+DEPLOY_OUT = DIST / "obt-exception-monitor" / "history.json"
 
 
 def git(args: list[str]) -> bytes:
@@ -63,6 +64,19 @@ def route_snapshot(data: dict) -> list[list]:
     return rows
 
 
+def existing_generated_at(snapshots: list[dict]) -> str | None:
+    for path in (DEPLOY_OUT, SOURCE_OUT):
+        if not path.exists():
+            continue
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if existing.get("snapshots") == snapshots:
+            return existing.get("generated_at")
+    return None
+
+
 def main() -> None:
     seen_dates = set()
     snapshots = []
@@ -82,12 +96,15 @@ def main() -> None:
 
     snapshots.sort(key=lambda item: item["data_date"])
     history = {
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "generated_at": existing_generated_at(snapshots) or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "source": "dist/data.json git history",
         "snapshots": snapshots,
     }
-    OUT.write_text(json.dumps(history, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    print(f"Wrote {OUT} with {len(snapshots)} snapshots")
+    payload = json.dumps(history, ensure_ascii=False, separators=(",", ":"))
+    for out in (SOURCE_OUT, DEPLOY_OUT):
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(payload, encoding="utf-8")
+        print(f"Wrote {out} with {len(snapshots)} snapshots")
 
 
 if __name__ == "__main__":
