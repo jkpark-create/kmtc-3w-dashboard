@@ -34,4 +34,4 @@
 ## 배포
 
 - Web repo: `86ba6b7` (`kmtc-3w-dashboard-web/master`)
-- Main repo: 예정
+- Main repo: `2c7e120` (`kmtc-3w-dashboard/codex/obt-exception-monitor-guide-auth`)
