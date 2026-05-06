@@ -1478,6 +1478,7 @@ def upload_to_gdrive():
 
     summary = {
         'data_date': DATASET_ID,
+        'metric_keys': sorted(metric_keys),
         'wpm': wpm,
         'months': sorted(bkg['YYYYMM'].dropna().unique().tolist()),
         'monthly': compact_records(monthly.round(1).to_dict('records')),
