@@ -37,7 +37,7 @@
 ## 배포/커밋
 
 - GitHub Pages 배포 완료: `kmtc-3w-dashboard-web` `fcfb0db`
-- Main repo 커밋 예정
+- Main repo 커밋 완료
 
 ## 후속 확인사항
 
