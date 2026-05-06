@@ -120,7 +120,7 @@
 | Tab2 영업사원×도착국가 | shipper | Salesman_POR + dest | 도착포트(dst_port)가 아닌 도착국가/그룹(dest) 기준 |
 
 - `영업사원×도착국가`는 `dist/index.html`의 `buildSalesDestRows(month)`에서 생성한다.
-- 글로벌 필터(팀/선적지/선적포트/도착국가/도착포트/월/주차/화주구분/등급/영업사원)는 `filterShipper(month)`를 통해 먼저 적용된다.
+- 글로벌 필터(팀/선적지/선적포트/도착국가/도착포트/월/주차/구간수익/등급/영업사원)는 `filterShipper(month)`를 통해 먼저 적용된다.
 - 매트릭스와 상세 테이블은 같은 파생 rows를 공유한다. 매트릭스는 WOS-3 BKG 규모를 빠르게 보기 위한 요약이고, 상세 테이블은 실선적률/캔슬률/구간별고수익/CM1 확인용이다.
 - BSA는 영업사원 단위로 배분되지 않으므로 `영업사원×도착국가`에는 소석률을 표시하지 않는다. 소석률은 지역별/도착국가별 전체 관점에서만 해석한다.
 
@@ -132,6 +132,9 @@
 | norm_lst | 실선적 — 전체 Normal (LST_TEU 기준, 소석률 계산용) |
 | hi_fst | 고수익화주 BKG (`고수익태그` 기준, FST_TEU) |
 | hi_norm_lst | 고수익화주 실선적 (`고수익태그` 기준, LST_TEU) |
+| route_hi_fst | 구간별 고수익 BKG (`고/저` 기준, FST_TEU) |
+| route_hi_norm_lst | 구간별 고수익 실선적 (`고/저` 기준, LST_TEU) |
+| route_hi_cm1_norm / route_hi_norm_lst | 구간별 고수익 CM1/TEU 계산용 CM1/LST_TEU |
 | w3_fst | WOS-3 BKG |
 | w3_norm_lst | WOS-3 실선적 (LST_TEU 기준) |
 | w3_canc_fst | WOS-3 캔슬 |
@@ -185,7 +188,7 @@ w3Bkg    = profitSum(fd, 'w3_fst')
 w3Ship   = profitSum(fd, 'w3_norm_lst')
 ```
 
-`fd`는 월 전체 선택 시 `filterMonthly(month)`, 주차 선택 시 `filterWeekly(month)` 결과다. 팀/선적지/선적포트/도착지/도착포트/월/주차 필터가 적용된다. `화주구분` 필터는 `profitSum()`에서 고수익/저수익 필드로 수치를 조정한다. 단, Tab 1의 monthly/weekly 집계에는 화주/영업사원 차원이 없으므로 `등급`과 `영업사원` 필터는 shipper 기반 화면에서 주로 반영된다.
+`fd`는 월 전체 선택 시 `filterMonthly(month)`, 주차 선택 시 `filterWeekly(month)` 결과다. 팀/선적지/선적포트/도착지/도착포트/월/주차 필터가 적용된다. `구간수익` 필터는 `profitSum()`에서 `route_hi_*` 메트릭을 기준으로 고수익/저수익 수치를 조정한다. 단, Tab 1의 monthly/weekly 집계에는 화주/영업사원 차원이 없으므로 `등급`과 `영업사원` 필터는 shipper 기반 화면에서 주로 반영된다.
 
 **소석률 계산 기준**:
 - 소석률 = norm_lst(전체 Normal 실선적) / BSA
@@ -261,7 +264,7 @@ BKG와 BSA 모두 대시보드의 `dest`를 국가 코드 단위로 유지한다
 | 보기 | fView | (dest/origin 전환) | (dest/origin 전환) |
 | 월 | fMonth | YYYYMM | YYYYMM |
 | 주차 | fWeek | week_start_date | WW (weekToWW 변환) |
-| 화주구분 | fProfit | 고수익태그 | N/A |
+| 구간수익 | fProfit | `route_hi_*` 기준 고/저 | N/A |
 | 등급 | fGrade | grade | N/A |
 | 영업사원 | fSales | Salesman_POR | N/A |
 
@@ -286,7 +289,7 @@ BKG와 BSA 모두 대시보드의 `dest`를 국가 코드 단위로 유지한다
 |------|------|----------|
 | filterMonthly(month) | 월간 집계 데이터 | 월 필터만 |
 | filterWeekly(month) | 주간 집계 데이터 | 월+주차 필터 |
-| filterShipper(month) | 화주별 데이터 | 월+주차+영업사원+화주구분+등급 |
+| filterShipper(month) | 화주별 데이터 | 월+주차+영업사원+구간수익+등급 |
 | filterBSA(month, week) | BSA 데이터 | 월+WW (week=null→전체, undefined→gv사용) |
 | buildSalesDestRows(month) | 영업사원×도착국가 파생 데이터 | `filterShipper` 결과를 Salesman_POR+dest로 재집계 |
 | renderSalesDestMatrix(rows, month) | 영업사원×도착국가 매트릭스 | 상위 도착국가 12개 + 기타, 셀 색상은 WOS-3 BKG 규모 |

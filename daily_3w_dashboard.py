@@ -1381,6 +1381,9 @@ def upload_to_gdrive():
     bkg['hi_norm_lst'] = bkg['lst'] * bkg['is_hi'] * bkg['is_normal']
     bkg['cm1_norm'] = bkg['cm1v'] * bkg['is_normal'] * (bkg['cm1v'] != 0).astype(int)
     bkg['lst_norm'] = bkg['lst'] * bkg['is_normal'] * (bkg['cm1v'] != 0).astype(int)
+    bkg['route_hi_fst'] = bkg['fst'] * bkg['is_route_hi']
+    bkg['route_hi_norm_lst'] = bkg['lst'] * bkg['is_route_hi'] * bkg['is_normal']
+    bkg['route_hi_cm1_norm'] = bkg['cm1v'] * bkg['is_normal'] * bkg['is_route_hi'] * (bkg['cm1v'] != 0).astype(int)
     # 고수익화주 Normal CM1 / LST_TEU (고수익화주 CM1/TEU 계산용)
     bkg['hi_cm1_norm'] = bkg['cm1v'] * bkg['is_normal'] * bkg['is_hi'] * (bkg['cm1v'] != 0).astype(int)
     bkg['hi_lst_norm'] = bkg['lst'] * bkg['is_normal'] * bkg['is_hi'] * (bkg['cm1v'] != 0).astype(int)
@@ -1390,11 +1393,12 @@ def upload_to_gdrive():
         mask = (lt == wos).astype(int)
         bkg[f'{label}_fst'] = bkg['fst'] * mask
         bkg[f'{label}_norm_lst'] = bkg['lst'] * mask * bkg['is_normal']
+        bkg[f'{label}_route_hi_fst'] = bkg['fst'] * mask * bkg['is_route_hi']
+    bkg['w3_route_hi_norm_lst'] = bkg['lst'] * (lt == 'WOS-3').astype(int) * bkg['is_route_hi'] * bkg['is_normal']
     bkg['w3_canc_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_cancel']
+    bkg['w3_route_hi_canc_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_cancel'] * bkg['is_route_hi']
     bkg['w3_hi_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi']
     bkg['w3_hi_norm_lst'] = bkg['lst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi'] * bkg['is_normal']
-    bkg['w3_route_hi_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_route_hi']
-    bkg['w3_route_hi_norm_lst'] = bkg['lst'] * (lt == 'WOS-3').astype(int) * bkg['is_route_hi'] * bkg['is_normal']
     # WOS-3 CM1 columns (3주전 BKG 맥락에서 CM1/TEU 계산용)
     w3_mask = (lt == 'WOS-3').astype(int)
     cm1_nz = (bkg['cm1v'] != 0).astype(int)
@@ -1413,11 +1417,16 @@ def upload_to_gdrive():
     # Monthly aggregation with ports
     gk = ['team','origin','ori_port','dest','dst_port','YYYYMM']
     agg_cols = {'fst':'sum','norm_lst':'sum','hi_fst':'sum','hi_norm_lst':'sum',
-                'w3_fst':'sum','w3_norm_lst':'sum','w3_canc_fst':'sum','w3_hi_fst':'sum','w3_hi_norm_lst':'sum',
+                'route_hi_fst':'sum','route_hi_norm_lst':'sum',
+                'w3_fst':'sum','w3_norm_lst':'sum','w3_canc_fst':'sum','w3_route_hi_canc_fst':'sum',
+                'w3_hi_fst':'sum','w3_hi_norm_lst':'sum',
                 'w3_route_hi_fst':'sum','w3_route_hi_norm_lst':'sum',
                 'w3_ab_fst':'sum','w3_ab_norm_lst':'sum','w3_cd_fst':'sum','w3_cd_norm_lst':'sum',
-                'w2_fst':'sum','w2_norm_lst':'sum','w1_fst':'sum','w1_norm_lst':'sum','wos_fst':'sum','wos_norm_lst':'sum',
+                'w2_fst':'sum','w2_norm_lst':'sum','w2_route_hi_fst':'sum',
+                'w1_fst':'sum','w1_norm_lst':'sum','w1_route_hi_fst':'sum',
+                'wos_fst':'sum','wos_norm_lst':'sum','wos_route_hi_fst':'sum',
                 'cm1_norm':'sum','lst_norm':'sum',
+                'route_hi_cm1_norm':'sum',
                 'w3_cm1_norm':'sum','w3_hi_cm1_norm':'sum','w3_route_hi_cm1_norm':'sum'}
     monthly = bkg.groupby(gk).agg(agg_cols).reset_index()
 
@@ -1430,9 +1439,15 @@ def upload_to_gdrive():
     _shpr_excl = ('w3_ab_fst','w3_ab_norm_lst','w3_cd_fst','w3_cd_norm_lst',
                   'w2_fst','w2_norm_lst','w1_fst','w1_norm_lst','wos_fst','wos_norm_lst',
                   'cm1_norm','lst_norm','hi_cm1_norm','hi_lst_norm',
-                  'hi_fst','hi_norm_lst','w3_hi_cm1_norm')
+                  'hi_fst','hi_norm_lst','route_hi_norm_lst','route_hi_cm1_norm',
+                  'w3_route_hi_norm_lst','w3_route_hi_canc_fst','w3_route_hi_cm1_norm',
+                  'w2_route_hi_fst','w1_route_hi_fst','wos_route_hi_fst',
+                  'w3_hi_cm1_norm')
     shpr_agg_cols = {k:v for k,v in agg_cols.items() if k not in _shpr_excl}
     shipper = bkg.groupby(shpr_keys).agg(shpr_agg_cols).reset_index()
+    if 'route_hi_fst' in shipper.columns:
+        shipper['rh'] = [1 if v > 0 else '' for v in shipper['route_hi_fst'].fillna(0)]
+        shipper = shipper.drop(columns=['route_hi_fst'])
     shipper_all = shipper[shipper['fst'] > 0]
     print(f"    shipper: {len(shipper):,} → active: {len(shipper_all):,} rows")
 
