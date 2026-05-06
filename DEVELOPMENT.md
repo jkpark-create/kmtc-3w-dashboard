@@ -138,6 +138,8 @@
 | w3_hi_fst | WOS-3 고수익화주 BKG (`고수익태그` 기준) |
 | w3_hi_norm_lst | WOS-3 고수익화주 실선적 (LST_TEU 기준) |
 | w3_route_hi_fst | WOS-3 구간별 고수익 BKG (`고/저` 기준) |
+| w3_route_hi_norm_lst | WOS-3 구간별 고수익 실선적 (LST_TEU 기준) |
+| w3_route_hi_cm1_norm | WOS-3 구간별 고수익 CM1 (Normal + CM1!=0) |
 | w3_ab_fst / w3_cd_fst | WOS-3 A+B / C+D 등급 BKG |
 | w2_fst, w1_fst, wos_fst | WOS-2, WOS-1, WOS 각 단계 BKG |
 | cm1_norm | CM1 합계 (Normal + CM1!=0) |
@@ -188,7 +190,7 @@ w3Ship   = profitSum(fd, 'w3_norm_lst')
 **소석률 계산 기준**:
 - 소석률 = norm_lst(전체 Normal 실선적) / BSA
 - norm_lst는 Lead_time 무관하게 **모든 Normal 부킹**의 LST_TEU 합계
-- 고수익화주부킹비중 = w3_hi_fst / w3_fst
+- 구간별고수익비중 = w3_route_hi_fst / w3_fst
 - WOS 단계별 실선적률 = LST_TEU / FST_TEU. 최종 선적 TEU가 최초 부킹 TEU보다 커지면 100%를 넘을 수 있음
 
 **BSA 집계**: teu_bsa=0인 레코드는 JSON 생성 전 제거 (0값 필드 누락 방지)
@@ -317,7 +319,7 @@ WW = diff + 1
 
 ### Tab 1: 소석률 현황
 - KPI 카드: 전체BKG, 실선적, 3주전BKG, 3주전실선적, BSA, 소석률, 실선적률, CM1/TEU
-- 월별 바차트: 실선적 vs BSA + 소석률/3주전BKG/BSA 라인
+- 월별 바차트: 실선적 vs BSA + 소석률/3주전BKG/BSA/구간별고수익비중 라인
 - 도착지별 소석률 수평 바
 - Image-8 요약 테이블 (최근 3개월 × 도착지별)
 
