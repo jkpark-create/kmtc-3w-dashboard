@@ -121,6 +121,7 @@
 
 - `영업사원×도착국가`는 `dist/index.html`의 `buildSalesDestRows(month)`에서 생성한다.
 - 글로벌 필터(팀/선적지/선적포트/도착국가/도착포트/월/주차/구간수익/등급/영업사원)는 `filterShipper(month)`를 통해 먼저 적용된다.
+- Tab2/shipper 기반 화면에서 `구간수익=구간별고수익/구간별저수익`은 해당 구간수익을 가진 화주를 선별하는 용도다. BKG/실선적 컬럼은 선별된 화주의 전체 `w3_fst`/`w3_norm_lst`를 보여주고, `구간별고수익` 컬럼은 `w3_route_hi_fst`, CM1/TEU는 구간수익 필터에 맞춘 `rhc/rhn`(또는 route-high/total 차감값)을 사용한다.
 - 매트릭스와 상세 테이블은 같은 파생 rows를 공유한다. 매트릭스는 WOS-3 BKG 규모를 빠르게 보기 위한 요약이고, 상세 테이블은 실선적률/캔슬률/구간별고수익/CM1 확인용이다.
 - BSA는 영업사원 단위로 배분되지 않으므로 `영업사원×도착국가`에는 소석률을 표시하지 않는다. 소석률은 지역별/도착국가별 전체 관점에서만 해석한다.
 
@@ -143,6 +144,7 @@
 | w3_route_hi_fst | WOS-3 구간별 고수익 BKG (`고/저` 기준) |
 | w3_route_hi_norm_lst | WOS-3 구간별 고수익 실선적 (LST_TEU 기준) |
 | w3_route_hi_cm1_norm | WOS-3 구간별 고수익 CM1 (Normal + CM1!=0) |
+| rhn / rhc | shipper JSON의 `w3_route_hi_norm_lst` / `w3_route_hi_cm1_norm` 축약 키 |
 | w3_ab_fst / w3_cd_fst | WOS-3 A+B / C+D 등급 BKG |
 | w2_fst, w1_fst, wos_fst | WOS-2, WOS-1, WOS 각 단계 BKG |
 | cm1_norm | CM1 합계 (Normal + CM1!=0) |
@@ -198,7 +200,7 @@ w3Ship   = profitSum(fd, 'w3_norm_lst')
 
 **BSA 집계**: teu_bsa=0인 레코드는 JSON 생성 전 제거 (0값 필드 누락 방지)
 
-**shipper 메트릭**: monthly/weekly와 동일하되 AB/CD 컬럼 제외
+**shipper 메트릭**: monthly/weekly와 동일하되 AB/CD 컬럼 제외. JSON 용량 절감을 위해 WOS-3 route-high 실선적/CM1은 `rhn`/`rhc` 축약 키로 저장한다.
 
 **JSON 최적화**:
 - 0값 키 제거 (현재 약 81MB, 약 190만 개 0 엔트리 삭제)

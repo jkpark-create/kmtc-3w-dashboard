@@ -1440,14 +1440,17 @@ def upload_to_gdrive():
                   'w2_fst','w2_norm_lst','w1_fst','w1_norm_lst','wos_fst','wos_norm_lst',
                   'cm1_norm','lst_norm','hi_cm1_norm','hi_lst_norm',
                   'hi_fst','hi_norm_lst','route_hi_norm_lst','route_hi_cm1_norm',
-                  'w3_route_hi_norm_lst','w3_route_hi_canc_fst','w3_route_hi_cm1_norm',
+                  'w3_route_hi_canc_fst',
                   'w2_route_hi_fst','w1_route_hi_fst','wos_route_hi_fst',
                   'w3_hi_cm1_norm')
     shpr_agg_cols = {k:v for k,v in agg_cols.items() if k not in _shpr_excl}
     shipper = bkg.groupby(shpr_keys).agg(shpr_agg_cols).reset_index()
     if 'route_hi_fst' in shipper.columns:
-        shipper['rh'] = [1 if v > 0 else '' for v in shipper['route_hi_fst'].fillna(0)]
         shipper = shipper.drop(columns=['route_hi_fst'])
+    shipper = shipper.rename(columns={
+        'w3_route_hi_norm_lst': 'rhn',
+        'w3_route_hi_cm1_norm': 'rhc',
+    })
     shipper_all = shipper[shipper['fst'] > 0]
     print(f"    shipper: {len(shipper):,} → active: {len(shipper_all):,} rows")
 
@@ -1471,7 +1474,7 @@ def upload_to_gdrive():
         bsa_agg = bsa_agg[bsa_agg['teu_bsa'] > 0]  # teu_bsa=0 records contribute nothing; drop to avoid field-missing issue in JSON
         bsa_data = bsa_agg.to_dict('records')
 
-    metric_keys = set(agg_cols) | {'teu_bsa'}
+    metric_keys = set(agg_cols) | {'teu_bsa', 'rhn', 'rhc'}
 
     def compact_records(records):
         compacted = []
