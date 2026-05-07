@@ -409,6 +409,39 @@ def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_nam
     return actual_content_url
 
 
+def login_tableau_browser(page, attempts=3):
+    """Login to Tableau in a Playwright page with retry-friendly waits."""
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            if attempt > 1:
+                print(f"  Tableau login retry {attempt}/{attempts}...")
+            page.goto(f'{TABLEAU_SERVER}/#/signin',
+                      wait_until='domcontentloaded', timeout=60000)
+            page.wait_for_selector('input[name="username"]', timeout=60000)
+            page.fill('input[name="username"]', TABLEAU_USER)
+            page.fill('input[name="password"]', TABLEAU_PASS)
+            page.click('button[type="submit"]')
+            try:
+                page.wait_for_url('**/#/home**', timeout=30000)
+            except Exception:
+                # Some Tableau versions stay on an embedded/session route after
+                # successful auth; let the next view navigation validate it.
+                pass
+            time.sleep(3)
+            return
+        except Exception as exc:
+            last_error = exc
+            print(f"  Tableau login attempt {attempt}/{attempts} failed: {exc}")
+            if attempt < attempts:
+                try:
+                    page.goto('about:blank', timeout=10000)
+                except Exception:
+                    pass
+                time.sleep(5 * attempt)
+    raise last_error
+
+
 def download_csv_from_tableau(content_url, view_name, save_path, vf_params=None):
     """Download CSV from Tableau view using Playwright JS navigation."""
     from playwright.sync_api import sync_playwright
@@ -423,16 +456,7 @@ def download_csv_from_tableau(content_url, view_name, save_path, vf_params=None)
         page = ctx.new_page()
 
         # Login
-        page.goto(f'{TABLEAU_SERVER}/#/signin', wait_until='networkidle', timeout=30000)
-        time.sleep(3)
-        page.fill('input[name="username"]', TABLEAU_USER)
-        page.fill('input[name="password"]', TABLEAU_PASS)
-        page.click('button[type="submit"]')
-        try:
-            page.wait_for_url('**/#/home**', timeout=15000)
-        except Exception:
-            pass
-        time.sleep(3)
+        login_tableau_browser(page)
 
         # Load embed view to establish Tableau session
         page.goto(f'{TABLEAU_SERVER}/views/{content_url}/{view_name}?:embed=y&:showVizHome=n',
@@ -604,16 +628,7 @@ def download_bsa():
         ctx = browser.new_context(viewport={'width': 1920, 'height': 1080},
                                   ignore_https_errors=True, accept_downloads=True)
         page = ctx.new_page()
-        page.goto(f'{TABLEAU_SERVER}/#/signin', wait_until='networkidle', timeout=30000)
-        time.sleep(3)
-        page.fill('input[name="username"]', TABLEAU_USER)
-        page.fill('input[name="password"]', TABLEAU_PASS)
-        page.click('button[type="submit"]')
-        try:
-            page.wait_for_url('**/#/home**', timeout=15000)
-        except Exception:
-            pass
-        time.sleep(3)
+        login_tableau_browser(page)
 
         page.goto(f'{TABLEAU_SERVER}/views/{BSA_VIEW_URL}?:embed=y&:showVizHome=n',
                   timeout=120000)
@@ -1448,6 +1463,7 @@ def upload_to_gdrive():
     if 'route_hi_fst' in shipper.columns:
         shipper = shipper.drop(columns=['route_hi_fst'])
     shipper = shipper.rename(columns={
+        '고수익태그': 'tag',
         'w3_route_hi_norm_lst': 'rhn',
         'w3_route_hi_cm1_norm': 'rhc',
     })
