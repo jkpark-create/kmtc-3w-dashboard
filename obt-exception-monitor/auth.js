@@ -3,7 +3,8 @@
 (function () {
   const GOOGLE_CLIENT_ID = "409330651463-giie223egsskdq10etn642gjtron1hq5.apps.googleusercontent.com";
   const ALLOWED_DOMAINS = ["ekmtc.com"];
-  const SCOPES = "email profile openid";
+  const DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+  const SCOPES = `email profile openid ${DRIVE_READONLY_SCOPE}`;
   const DASHBOARD_ROOT = "/kmtc-3w-dashboard-web/";
   const RETURN_PATH_KEY = "obtReturnPath";
   const LOCAL_AUTH_BYPASS = ["localhost", "127.0.0.1"].includes(location.hostname);
