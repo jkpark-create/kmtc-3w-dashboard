@@ -952,7 +952,7 @@ function normalizeRows(rows) {
       const dest = clean(row.dest);
       const dst = clean(row.dst_port);
       const month = clean(row.YYYYMM);
-      const week = clean(row.week_start_date);
+      const week = clean(row.week_start_date ?? row.week);
       const teu = toNumber(row.fst);
       const normTeu = toNumber(row.norm_lst);
       const w3Teu = toNumber(row.w3_fst);

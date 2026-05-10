@@ -1508,7 +1508,7 @@ def upload_to_gdrive():
                         continue
                     out[key] = int(num) if float(num).is_integer() else num
                 elif val != '':
-                    out[key] = val
+                    out['week' if key == 'week_start_date' else key] = val
             compacted.append(out)
         return compacted
 
