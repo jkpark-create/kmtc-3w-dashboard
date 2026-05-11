@@ -3609,7 +3609,7 @@ function renderOriginPaceHeadlines(analysis) {
     "no-bsa": en ? "No BSA reference" : "BSA 기준 없음"
   };
   const tones = { fast: "pos", slow: "neg", "normal-low": "warn", normal: "pos", "no-bsa": "neutral" };
-  const headerTitle = en ? "Origin W+3 Pace vs Same-Weekday Average" : "원산지별 W+3 페이스 (같은 요일 평균 대비)";
+  const headerTitle = en ? "Origin W+3 Pace vs Same-Weekday Average" : "선적지별 W+3 페이스 (같은 요일 평균 대비)";
   const sampleNote = headline.sampleCount
     ? (en
       ? `samples ${headline.sampleCount} same-weekday snapshots${headline.weekday ? ` (${headline.weekday})` : ""}`
