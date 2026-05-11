@@ -2226,16 +2226,27 @@ const ORIGIN_POL_OUT_LABEL = {
 const ORIGIN_BUCKET_ORDER = [
   "CN SHA", "CN NBO", "CN TAO", "CN SHK+DCB", "CN NNS", "CN XMN", "CN XGG", "CN DLC",
   "MY PKG+PKW", "MY PEN", "MY PGU",
-  "ID JKT", "ID SUB", "ID_out",
+  "ID JKT", "ID SUB",
   "VN SGN+CMP", "VN HPH"
 ];
+
+const ORIGIN_BUCKET_EXCLUDE = new Set([
+  "ID_out", "TZ", "OM", "SA", "EG", "LK", "MX"
+]);
 
 function originPaceBucketLabel(origin, pol) {
   if (!origin) return null;
   const map = ORIGIN_POL_BUCKETS[origin];
-  if (!map) return origin;
-  if (map[pol]) return map[pol];
-  return ORIGIN_POL_OUT_LABEL[origin] || null;
+  let label = null;
+  if (!map) {
+    label = origin;
+  } else if (map[pol]) {
+    label = map[pol];
+  } else {
+    label = ORIGIN_POL_OUT_LABEL[origin] || null;
+  }
+  if (!label || ORIGIN_BUCKET_EXCLUDE.has(label)) return null;
+  return label;
 }
 
 function buildOriginPaceHeadlines(routeContext, weekdayBenchmarks) {

@@ -962,11 +962,11 @@
             <tr><th>선적국가</th><th>버킷</th></tr>
             <tr><td>CN</td><td>CN SHA, CN NBO, CN TAO, CN SHK+DCB, CN NNS, CN XMN, CN XGG, CN DLC</td></tr>
             <tr><td>MY</td><td>MY PKG+PKW, MY PEN, MY PGU</td></tr>
-            <tr><td>ID</td><td>ID JKT, ID SUB, ID_out</td></tr>
+            <tr><td>ID</td><td>ID JKT, ID SUB</td></tr>
             <tr><td>VN</td><td>VN SGN+CMP, VN HPH</td></tr>
             <tr><td>그 외 (KR, TH, SG, AE, IN, HK 등)</td><td>선적국가 단위 단일 카드</td></tr>
           </table>
-          <div class="note">CN은 지정된 8개 버킷에 해당하는 항구만 헤드라인에 보입니다. 그 외 CN 항구(CKG, FQG, WUH, BJO 등)는 본 헤드라인에서는 표시되지 않고, 라우트 테이블/화주 Action List에서 별도로 확인합니다. ID는 JKT/SUB 외 다른 ID 항구(BAN, BDJ, BLW, BTM, DJB, PDG, PJG, PLM, PNK, SRG)를 모두 <code>ID_out</code> 한 버킷으로 합산해 보여줍니다.</div>
+          <div class="note">CN은 지정된 8개 버킷에 해당하는 항구만 헤드라인에 보입니다. 그 외 CN 항구(CKG, FQG, WUH, BJO 등)는 본 헤드라인에서는 표시되지 않고, 라우트 테이블/화주 Action List에서 별도로 확인합니다. ID도 JKT/SUB 외 다른 ID 항구(BAN, BDJ, BLW 등)는 헤드라인에 표시되지 않습니다. 또한 <strong>TZ, OM, SA, EG, LK, MX</strong>는 헤드라인 카드에서 제외됩니다(라우트 테이블 등 다른 화면에는 그대로 노출됩니다).</div>
 
           <h3>샘플 구성</h3>
           <ul>
@@ -1020,11 +1020,11 @@
             <tr><th>Origin</th><th>Buckets</th></tr>
             <tr><td>CN</td><td>CN SHA, CN NBO, CN TAO, CN SHK+DCB, CN NNS, CN XMN, CN XGG, CN DLC</td></tr>
             <tr><td>MY</td><td>MY PKG+PKW, MY PEN, MY PGU</td></tr>
-            <tr><td>ID</td><td>ID JKT, ID SUB, ID_out</td></tr>
+            <tr><td>ID</td><td>ID JKT, ID SUB</td></tr>
             <tr><td>VN</td><td>VN SGN+CMP, VN HPH</td></tr>
             <tr><td>Others (KR, TH, SG, AE, IN, HK, etc.)</td><td>Single card per origin country</td></tr>
           </table>
-          <div class="note">For CN, only the eight listed buckets appear in the headline. Other CN ports (CKG, FQG, WUH, BJO, etc.) are not shown here — check them in the route table or customer action list instead. For ID, ports outside JKT/SUB (BAN, BDJ, BLW, BTM, DJB, PDG, PJG, PLM, PNK, SRG) roll up into a single <code>ID_out</code> bucket.</div>
+          <div class="note">For CN, only the eight listed buckets appear in the headline. Other CN ports (CKG, FQG, WUH, BJO, etc.) are not shown here — check them in the route table or customer action list instead. ID ports outside JKT/SUB (BAN, BDJ, BLW, etc.) are also hidden from the headline. <strong>TZ, OM, SA, EG, LK, MX</strong> are excluded from the headline cards as well (other views such as the route table still show them).</div>
 
           <h3>Sample Composition</h3>
           <ul>
