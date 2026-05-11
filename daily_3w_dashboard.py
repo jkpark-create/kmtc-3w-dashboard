@@ -1449,10 +1449,12 @@ def upload_to_gdrive():
                 'route_hi_cm1_norm':'sum',
                 'w3_cm1_norm':'sum','w3_hi_cm1_norm':'sum','w3_route_hi_cm1_norm':'sum'}
     monthly = bkg.groupby(gk).agg(agg_cols).reset_index()
+    monthly = monthly.rename(columns={'w3_lst': 'w3l', 'w3_canc_lst': 'w3cl'})
 
     # Weekly aggregation (with port detail for port filter support)
     wk_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','week_start_date']
     weekly = bkg.groupby(wk_keys).agg(agg_cols).reset_index()
+    weekly = weekly.rename(columns={'w3_lst': 'w3l', 'w3_canc_lst': 'w3cl'})
 
     # Shipper aggregation (화주별, 주차별) — BKG > 0인 전체 화주
     shpr_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','week_start_date','BKG_SHPR_CST_NO','BKG_SHPR_CST_ENM','Salesman_POR','고수익태그','grade']
@@ -1471,6 +1473,8 @@ def upload_to_gdrive():
         '고수익태그': 'tag',
         'w3_route_hi_norm_lst': 'rhn',
         'w3_route_hi_cm1_norm': 'rhc',
+        'w3_lst': 'w3l',
+        'w3_canc_lst': 'w3cl',
     })
     shipper_all = shipper[shipper['fst'] > 0]
     print(f"    shipper: {len(shipper):,} → active: {len(shipper_all):,} rows")
@@ -1495,7 +1499,7 @@ def upload_to_gdrive():
         bsa_agg = bsa_agg[bsa_agg['teu_bsa'] > 0]  # teu_bsa=0 records contribute nothing; drop to avoid field-missing issue in JSON
         bsa_data = bsa_agg.to_dict('records')
 
-    metric_keys = set(agg_cols) | {'teu_bsa', 'rhn', 'rhc'}
+    metric_keys = set(agg_cols) | {'teu_bsa', 'rhn', 'rhc', 'w3l', 'w3cl'}
 
     def compact_records(records):
         compacted = []

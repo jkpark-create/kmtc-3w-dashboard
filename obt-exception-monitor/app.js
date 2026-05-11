@@ -958,8 +958,8 @@ function normalizeRows(rows) {
       const w3Teu = toNumber(row.w3_fst);
       const w3NormTeu = toNumber(row.w3_norm_lst);
       const w3CancelTeu = toNumber(row.w3_canc_fst);
-      const w3LstTeu = toNumber(row.w3_lst);
-      const w3CancelLstTeu = toNumber(row.w3_canc_lst);
+      const w3LstTeu = toNumber(row.w3l ?? row.w3_lst);
+      const w3CancelLstTeu = toNumber(row.w3cl ?? row.w3_canc_lst);
       const w3HiTeu = toNumber(row.w3_hi_fst);
       const w3HiNormTeu = toNumber(row.w3_hi_norm_lst);
       const w3RouteHiTeu = toNumber(row.w3_route_hi_fst);
