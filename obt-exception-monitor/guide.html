@@ -933,6 +933,126 @@
         </div>
       </section>
 
+      <section class="section" id="pace-headline">
+        <h2 class="ko">5-1. 선적지별 W+3 페이스 헤드라인</h2>
+        <h2 class="en">5-1. Origin W+3 Pace Headlines</h2>
+        <div class="ko">
+          <p>상단 KPI 바로 아래의 카드 스트립은 <strong>같은 요일 과거 스냅샷 평균</strong>과 비교한 W+3 부킹 페이스를 한눈에 보기 위한 영역입니다. 절대 TEU가 아니라 <code>W+3 부킹 TEU / BSA</code> <strong>비율</strong>을 비교하므로, 라우트별 BSA가 분기마다 바뀌어도 페이스 판단이 왜곡되지 않습니다.</p>
+          <table>
+            <tr><th>항목</th><th>계산</th><th>해석</th></tr>
+            <tr><td>현재 비율</td><td><code>sum(currentW3Teu) / sum(currentBsaTeu) * 100</code></td><td>버킷 안 모든 라우트를 합쳐 오늘 시점의 W+3/BSA 비율을 구합니다.</td></tr>
+            <tr><td>평균 비율</td><td><code>sum(sampleW3) / sum(sampleBsa) * 100</code></td><td>같은 요일 과거 스냅샷에서 동일 리드타임 offset(W+1/W+2/W+3)에 해당하는 주차 합산 비율입니다.</td></tr>
+            <tr><td>차이 (%p)</td><td><code>현재 비율 − 평균 비율</code></td><td>+면 평소보다 빠름, −면 평소보다 느림입니다.</td></tr>
+          </table>
+
+          <h3>상태 판정 기준</h3>
+          <table>
+            <tr><th>상태</th><th>조건</th><th>의미와 권장 액션</th></tr>
+            <tr><td>빠름</td><td>차이 ≥ +10%p</td><td>같은 요일 평균보다 W+3가 빠르게 채워졌습니다. 과집중/과소석 가능성을 같이 봅니다. 고수익 화주 선별이나 운임 방어 검토 시점입니다.</td></tr>
+            <tr><td>평균권</td><td>−10%p &lt; 차이 &lt; +10%p, 그리고 현재 비율 ≥ 60%</td><td>같은 요일 평균과 유사한 정상 페이스입니다.</td></tr>
+            <tr><td>평균권 · 절대낮음</td><td>−10%p &lt; 차이 &lt; +10%p, 그리고 <strong>현재 비율 &lt; 60%</strong></td><td>평균과 비슷한 페이스라도 W+3가 BSA의 60%를 못 채우는 상태입니다. 평균이 원래 낮은 구간일 수 있으므로 “평균권”이라는 표현이 안심 신호로 해석되지 않도록 보조 경고가 붙습니다.</td></tr>
+            <tr><td>느림</td><td>차이 ≤ −10%p</td><td>같은 요일 평균보다 W+3 흐름이 약합니다. 회복/스팟/BSA 조정 후보입니다.</td></tr>
+            <tr><td>BSA 기준 없음</td><td>현재 BSA 또는 샘플 BSA가 0</td><td>BSA가 없거나 같은 요일 샘플이 없어 비율을 계산할 수 없습니다.</td></tr>
+          </table>
+          <div class="formula">절대낮음 임계 = 60%<br>±10%p band = weekly_report의 같은 요일 W+3 페이스 판단 임계와 동일</div>
+
+          <h3>버킷 분할</h3>
+          <p>선적국가 단위가 너무 굵어서 한 라우트의 페이스 변화가 묻히는 것을 막기 위해 다음 선적지 단위로 나눠 표시합니다.</p>
+          <table>
+            <tr><th>선적국가</th><th>버킷</th></tr>
+            <tr><td>CN</td><td>CN SHA, CN NBO, CN TAO, CN SHK+DCB, CN NNS, CN XMN, CN XGG, CN DLC</td></tr>
+            <tr><td>MY</td><td>MY PKG+PKW, MY PEN, MY PGU</td></tr>
+            <tr><td>ID</td><td>ID JKT, ID SUB, ID_out</td></tr>
+            <tr><td>VN</td><td>VN SGN+CMP, VN HPH</td></tr>
+            <tr><td>그 외 (KR, TH, SG, AE, IN, HK 등)</td><td>선적국가 단위 단일 카드</td></tr>
+          </table>
+          <div class="note">CN은 지정된 8개 버킷에 해당하는 항구만 헤드라인에 보입니다. 그 외 CN 항구(CKG, FQG, WUH, BJO 등)는 본 헤드라인에서는 표시되지 않고, 라우트 테이블/화주 Action List에서 별도로 확인합니다. ID는 JKT/SUB 외 다른 ID 항구(BAN, BDJ, BLW, BTM, DJB, PDG, PJG, PLM, PNK, SRG)를 모두 <code>ID_out</code> 한 버킷으로 합산해 보여줍니다.</div>
+
+          <h3>샘플 구성</h3>
+          <ul>
+            <li><strong>같은 요일</strong>: 오늘이 월요일이면 과거 월요일 스냅샷만 샘플로 사용합니다. 매일이 아닌 같은 요일만 평균을 내는 이유는 “주중 어느 시점인지”에 따른 부킹 성숙도 차이를 보정하기 위함입니다.</li>
+            <li><strong>같은 리드타임</strong>: 단순히 같은 달력 주차가 아니라, 각 과거 스냅샷의 <em>그 시점 기준 W+3</em>(또는 선택된 W+1/W+2/W+3) 주차를 잡아 비교합니다.</li>
+            <li><strong>샘플 윈도우는 상단 "비교" 필터와 함께 움직입니다</strong>. 카드 상단의 "샘플 N개 · 같은 요일 · OOO 기준" 표기를 통해 어느 기간이 적용됐는지 확인할 수 있습니다.
+              <table>
+                <tr><th>비교 필터</th><th>샘플 윈도우</th><th>대략 샘플 수</th></tr>
+                <tr><td>전주차</td><td>최근 7일 안의 같은 요일</td><td>1개</td></tr>
+                <tr><td>전월 (기본값)</td><td>최근 35일 안의 같은 요일</td><td>4~5개</td></tr>
+                <tr><td>최근 3개월 평균</td><td>최근 100일 안의 같은 요일</td><td>12~14개</td></tr>
+              </table>
+            </li>
+            <li><strong>샘플 수</strong>: 1~2개면 평균 기준이 아직 안정적이지 않으므로 보조 신호로만 사용합니다. 안정적인 평균을 원하면 "최근 3개월 평균"을 선택하세요.</li>
+          </ul>
+
+          <h3>정렬 순서</h3>
+          <ol>
+            <li>상태 우선: 느림 → 평균권 · 절대낮음 → 평균권 → 빠름 → BSA 기준 없음</li>
+            <li>같은 상태 내에서는 위 버킷 표 순서대로(CN SHA부터)</li>
+            <li>그 다음 BSA 큰 순</li>
+          </ol>
+
+          <h3>라우트 테이블 트렌드/속도 셀의 BSA-ratio 라인</h3>
+          <p>같은 판단 로직이 라우트 단위로도 표시됩니다. 트렌드/속도 컬럼 마지막 줄에 "페이스 빠름/느림/평균권 · 절대낮음/평균권 평균권" 라벨과 함께 <code>현재 X% · 평균 Y% · ±Z%p</code> 가 출력됩니다. 같은 요일 샘플이 있고 BSA가 있는 라우트에만 표시됩니다.</p>
+        </div>
+
+        <div class="en">
+          <p>The card strip below the top KPIs compares the current W+3 booking pace against the <strong>same-weekday historical average</strong>. It uses the <code>W+3 booked TEU / BSA</code> <strong>ratio</strong> instead of absolute TEU so that pace judgment stays correct even when route-level BSA changes between quarters.</p>
+          <table>
+            <tr><th>Metric</th><th>Calculation</th><th>How To Read</th></tr>
+            <tr><td>Current Ratio</td><td><code>sum(currentW3Teu) / sum(currentBsaTeu) * 100</code></td><td>Today's W+3/BSA percentage rolled up across all routes in the bucket.</td></tr>
+            <tr><td>Average Ratio</td><td><code>sum(sampleW3) / sum(sampleBsa) * 100</code></td><td>Same-weekday historical snapshots aggregated for the same lead-time offset (W+1/W+2/W+3).</td></tr>
+            <tr><td>Gap (%p)</td><td><code>Current − Average</code></td><td>Positive means faster than usual; negative means slower than usual.</td></tr>
+          </table>
+
+          <h3>Status Thresholds</h3>
+          <table>
+            <tr><th>Status</th><th>Condition</th><th>Meaning / Recommended Action</th></tr>
+            <tr><td>Faster than usual</td><td>Gap ≥ +10%p</td><td>W+3 booked faster than the same-weekday average. Check possible over-concentration / underspace; consider high-profit cargo selection or rate defense timing.</td></tr>
+            <tr><td>Usual range</td><td>−10%p &lt; gap &lt; +10%p and current ratio ≥ 60%</td><td>Pace close to the same-weekday average.</td></tr>
+            <tr><td>Usual range · absolute low</td><td>−10%p &lt; gap &lt; +10%p and <strong>current ratio &lt; 60%</strong></td><td>Average-like pace, yet W+3 still covers less than 60% of BSA. Adds a secondary warning so that "usual range" is not misread as reassurance when the average itself is low.</td></tr>
+            <tr><td>Slower than usual</td><td>Gap ≤ −10%p</td><td>W+3 lagging same-weekday average. Recovery, spot, or BSA adjustment candidate.</td></tr>
+            <tr><td>No BSA reference</td><td>Current BSA or sample BSA is 0</td><td>Ratio cannot be calculated when BSA is missing or no same-weekday samples are available.</td></tr>
+          </table>
+          <div class="formula">Absolute-low threshold = 60%<br>±10%p band = same threshold used by the weekly report's same-weekday W+3 pace judgment</div>
+
+          <h3>Bucket Split</h3>
+          <p>Country-level grouping is too coarse to surface pace changes on a single lane. These origin-port buckets are shown instead.</p>
+          <table>
+            <tr><th>Origin</th><th>Buckets</th></tr>
+            <tr><td>CN</td><td>CN SHA, CN NBO, CN TAO, CN SHK+DCB, CN NNS, CN XMN, CN XGG, CN DLC</td></tr>
+            <tr><td>MY</td><td>MY PKG+PKW, MY PEN, MY PGU</td></tr>
+            <tr><td>ID</td><td>ID JKT, ID SUB, ID_out</td></tr>
+            <tr><td>VN</td><td>VN SGN+CMP, VN HPH</td></tr>
+            <tr><td>Others (KR, TH, SG, AE, IN, HK, etc.)</td><td>Single card per origin country</td></tr>
+          </table>
+          <div class="note">For CN, only the eight listed buckets appear in the headline. Other CN ports (CKG, FQG, WUH, BJO, etc.) are not shown here — check them in the route table or customer action list instead. For ID, ports outside JKT/SUB (BAN, BDJ, BLW, BTM, DJB, PDG, PJG, PLM, PNK, SRG) roll up into a single <code>ID_out</code> bucket.</div>
+
+          <h3>Sample Composition</h3>
+          <ul>
+            <li><strong>Same weekday</strong>: when today is Monday, only past-Monday snapshots are used. Sampling by weekday corrects for weekly booking-maturity rhythm.</li>
+            <li><strong>Same lead-time stage</strong>: not the same calendar week — each historical snapshot's own W+3 (or selected W+1/W+2/W+3) week is used so the comparison is lead-time aligned.</li>
+            <li><strong>The sample window follows the top "Compare" filter.</strong> The card header shows "samples N same-weekday · OOO window" so you can confirm which range was applied.
+              <table>
+                <tr><th>Compare filter</th><th>Sample window</th><th>Approx. sample count</th></tr>
+                <tr><td>Previous week</td><td>Same weekday within last 7 days</td><td>1</td></tr>
+                <tr><td>Previous month (default)</td><td>Same weekday within last 35 days</td><td>4~5</td></tr>
+                <tr><td>3-month average</td><td>Same weekday within last 100 days</td><td>12~14</td></tr>
+              </table>
+            </li>
+            <li><strong>Sample count</strong>: with one or two samples the baseline is still unstable; treat it as supplementary signal. Use "3-month average" when a stable baseline is needed.</li>
+          </ul>
+
+          <h3>Sort Order</h3>
+          <ol>
+            <li>Status first: slower → usual + absolute low → usual → faster → no BSA</li>
+            <li>Within the same status, follow the bucket order above (CN SHA first)</li>
+            <li>Then by current BSA descending</li>
+          </ol>
+
+          <h3>BSA-Ratio Line In The Route Table Pace Cell</h3>
+          <p>The same judgment is applied per route. The last line of the Trend / Pace column reads "Pace fast / slow / usual · absolute low / usual" together with <code>now X% · avg Y% · ±Z%p</code>. It appears only for routes that have same-weekday samples and a valid BSA.</p>
+        </div>
+      </section>
+
       <section class="section" id="action-monitor">
         <h2 class="ko">6. Action Monitor 탭 읽는 법</h2>
         <h2 class="en">6. How To Read The Action Monitor Tab</h2>

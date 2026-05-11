@@ -1965,9 +1965,13 @@ function buildWeekdayBenchmarks(periods) {
 
   const offsets = scope.offsets;
   const weekday = latest.getDay();
+  const window = weekdaySampleWindow(state.filters.compare, latest);
   const samples = snapshots.filter((snapshot) => {
     const date = parseDataDate(snapshot.data_date);
-    return date && String(snapshot.data_date) < latestDate && date.getDay() === weekday;
+    if (!date || String(snapshot.data_date) >= latestDate) return false;
+    if (date.getDay() !== weekday) return false;
+    if (window.startMs != null && date.getTime() < window.startMs) return false;
+    return true;
   });
   const route = new Map();
   const shipper = new Map();
@@ -1996,8 +2000,43 @@ function buildWeekdayBenchmarks(periods) {
     weekday: weekdayLabel(latest),
     offsets,
     enabled: true,
-    reason: samples.length ? "" : "no-samples"
+    reason: samples.length ? "" : "no-samples",
+    windowKey: window.key,
+    windowDays: window.days,
+    windowLabelKo: window.labelKo,
+    windowLabelEn: window.labelEn
   };
+}
+
+function weekdaySampleWindow(compare, latest) {
+  if (compare === "prevWeek") {
+    return {
+      key: "prevWeek",
+      days: 7,
+      startMs: latest.getTime() - 7 * 86400000,
+      labelKo: "전주차",
+      labelEn: "previous week"
+    };
+  }
+  if (compare === "avg3") {
+    return {
+      key: "avg3",
+      days: 100,
+      startMs: latest.getTime() - 100 * 86400000,
+      labelKo: "최근 3개월",
+      labelEn: "last 3 months"
+    };
+  }
+  if (compare === "prevMonth") {
+    return {
+      key: "prevMonth",
+      days: 35,
+      startMs: latest.getTime() - 35 * 86400000,
+      labelKo: "전월",
+      labelEn: "previous month"
+    };
+  }
+  return { key: "all", days: null, startMs: null, labelKo: "", labelEn: "" };
 }
 
 function weekdayBenchmarkScope(periods) {
@@ -3669,11 +3708,18 @@ function renderOriginPaceHeadlines(analysis) {
   };
   const tones = { fast: "pos", slow: "neg", "normal-low": "warn", normal: "pos", "no-bsa": "neutral" };
   const headerTitle = en ? "Origin W+3 Pace vs Same-Weekday Average" : "선적지별 W+3 페이스 (같은 요일 평균 대비)";
+  const benchmarks = analysis.weekdayBenchmarks || {};
+  const windowKo = benchmarks.windowLabelKo || "";
+  const windowEn = benchmarks.windowLabelEn || "";
+  const compareWindowKo = windowKo ? ` · ${windowKo} 기준` : "";
+  const compareWindowEn = windowEn ? ` · ${windowEn} window` : "";
   const sampleNote = headline.sampleCount
     ? (en
-      ? `samples ${headline.sampleCount} same-weekday snapshots${headline.weekday ? ` (${headline.weekday})` : ""}`
-      : `샘플 ${headline.sampleCount}개 · 같은 요일${headline.weekday ? ` (${headline.weekday})` : ""}`)
-    : (en ? "no same-weekday samples yet" : "같은 요일 샘플 없음");
+      ? `samples ${headline.sampleCount} same-weekday snapshots${headline.weekday ? ` (${headline.weekday})` : ""}${compareWindowEn}`
+      : `샘플 ${headline.sampleCount}개 · 같은 요일${headline.weekday ? ` (${headline.weekday})` : ""}${compareWindowKo}`)
+    : (en
+      ? `no same-weekday samples${compareWindowEn}`
+      : `같은 요일 샘플 없음${compareWindowKo}`);
 
   const cards = rows.map((row) => {
     const tone = tones[row.status] || "neutral";
