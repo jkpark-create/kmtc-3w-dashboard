@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 
@@ -25,8 +26,49 @@ def commits(limit: int = 12) -> list[str]:
     return [line.strip() for line in raw.decode("utf-8").splitlines() if line.strip()]
 
 
+def parse_week_date(value: str):
+    match = re.search(r"(\d{4})\D+(\d{1,2})\D+(\d{1,2})", str(value or ""))
+    if not match:
+        return None
+    year, month, day = (int(v) for v in match.groups())
+    return date(year, month, day)
+
+
+def business_week(day: date) -> int:
+    return ((day - date(day.year, 1, 1)).days // 7) + 1
+
+
 def route_snapshot(data: dict) -> list[list]:
     routes = {}
+    bsa_map = defaultdict(float)
+    week_label_by_no = {}
+
+    for section in ("weekly", "shipper"):
+        for row in data.get(section, []):
+            week = str(row.get("week_start_date") or row.get("week") or "").strip()
+            week_day = parse_week_date(week)
+            if week_day and week not in week_label_by_no.values():
+                week_label_by_no.setdefault(business_week(week_day), week)
+
+    for row in data.get("bsa", []):
+        if row.get("team") != "OBT":
+            continue
+
+        origin = str(row.get("origin") or "").strip()
+        pol = str(row.get("POR_PORT") or row.get("ori_port") or "").strip()
+        dest = str(row.get("dest") or "").strip()
+        dst = str(row.get("DLY_PORT") or row.get("dst_port") or "").strip()
+        ww = str(row.get("WW") or "").strip()
+        yyyymm = str(row.get("YYYYMM") or "").strip()
+        if not (origin and pol and dest and dst and ww.isdigit() and len(yyyymm) >= 4):
+            continue
+
+        week = week_label_by_no.get(int(ww))
+        if not week:
+            year = int(yyyymm[:4])
+            week_start = datetime.strptime(f"{year}-01-01", "%Y-%m-%d").date() + timedelta(days=(int(ww) - 1) * 7)
+            week = f"{week_start.year}년 {week_start.month:02d}월 {week_start.day:02d}일"
+        bsa_map[(f"{origin}|{pol}|{dest}|{dst}", week)] += float(row.get("teu_bsa") or 0)
 
     for row in data.get("shipper", []):
         if row.get("team") != "OBT":
@@ -36,7 +78,7 @@ def route_snapshot(data: dict) -> list[list]:
         pol = str(row.get("ori_port") or "").strip()
         dest = str(row.get("dest") or "").strip()
         dst = str(row.get("dst_port") or "").strip()
-        week = str(row.get("week_start_date") or "").strip()
+        week = str(row.get("week_start_date") or row.get("week") or "").strip()
         if not (origin and pol and dest and dst and week):
             continue
 
@@ -57,9 +99,10 @@ def route_snapshot(data: dict) -> list[list]:
     for (route_key, week), values in routes.items():
         teu = round(values["teu"], 2)
         w3 = round(values["w3"], 2)
+        bsa = round(bsa_map.get((route_key, week), 0.0), 2)
         if teu <= 0 and w3 <= 0:
             continue
-        rows.append([route_key, week, teu, w3, len(values["active"]), len(values["w3_active"])])
+        rows.append([route_key, week, teu, w3, len(values["active"]), len(values["w3_active"]), bsa])
     rows.sort(key=lambda item: (item[1], item[0]))
     return rows
 
@@ -87,7 +130,7 @@ def shipper_snapshot(data: dict, target_weeks: set[str]) -> list[list]:
         pol = str(row.get("ori_port") or "").strip()
         dest = str(row.get("dest") or "").strip()
         dst = str(row.get("dst_port") or "").strip()
-        week = str(row.get("week_start_date") or "").strip()
+        week = str(row.get("week_start_date") or row.get("week") or "").strip()
         if target_weeks and week not in target_weeks:
             continue
         sales = str(row.get("Salesman_POR") or "미지정").strip()

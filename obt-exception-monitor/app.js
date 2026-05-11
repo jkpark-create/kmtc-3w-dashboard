@@ -487,7 +487,7 @@ document.addEventListener("DOMContentLoaded", () => {
 function cacheElements() {
   [
     "dataMeta", "horizonFilter", "priorityFilter", "monthFilter", "weekFilter", "originFilter", "polFilter",
-    "destFilter", "dstFilter", "salesFilter", "compareFilter", "searchInput", "kpiGrid",
+    "destFilter", "dstFilter", "salesFilter", "compareFilter", "searchInput", "kpiGrid", "originPaceHeadline",
     "routeTable", "salesTable", "shipperTable", "issueList", "loading",
     "routeSubtitle", "salesSubtitle", "shipperSubtitle", "issueSubtitle",
     "refreshBtn", "langToggle", "dashboardLink", "guideBtn", "guideOverlay", "guideLangToggle", "guideClose", "guideTitle", "guideSubtitle", "guideBody",
@@ -1146,6 +1146,7 @@ function render() {
   const analysis = analyze(currentRows, baselineRows, currentBsaRows, baselineBsaRows, periods);
 
   renderKpis(analysis);
+  renderOriginPaceHeadlines(analysis);
   renderRoutes(analysis);
   renderSales(analysis);
   renderShippers(analysis);
@@ -1504,6 +1505,7 @@ function analyze(currentRows, baselineRows, currentBsaRows, baselineBsaRows, per
   mergePaceIntoContext(routeContext, paceMap);
   const weekdayBenchmarks = buildWeekdayBenchmarks(periods);
   mergeWeekdayBenchmarkIntoContext(routeContext, weekdayBenchmarks);
+  const originPaceHeadlines = buildOriginPaceHeadlines(routeContext, weekdayBenchmarks);
   const leadTrendScope = leadTimeTrendScope(periods);
   const leadTrendMap = buildLeadTrendMap(periods, currentRows, baselineRows, currentBsaRows, routeContext, leadTrendScope);
   mergeLeadTrendIntoContext(routeContext, leadTrendMap, leadTrendScope);
@@ -1553,6 +1555,7 @@ function analyze(currentRows, baselineRows, currentBsaRows, baselineBsaRows, per
     routeContext,
     paceMap,
     weekdayBenchmarks,
+    originPaceHeadlines,
     leadTrendScope,
     leadTrendMap,
     allRouteExceptions,
@@ -1907,11 +1910,12 @@ function aggregateHistoryRoutes(snapshot, selectedWeeks) {
     const routeKey = item[0];
     const week = item[1];
     if (weekSet.size && !weekSet.has(week)) return;
-    const found = map.get(routeKey) || { teu: 0, w3Teu: 0, active: 0, w3Active: 0 };
+    const found = map.get(routeKey) || { teu: 0, w3Teu: 0, active: 0, w3Active: 0, bsaTeu: 0 };
     found.teu += Number(item[2] || 0);
     found.w3Teu += Number(item[3] || 0);
     found.active += Number(item[4] || 0);
     found.w3Active += Number(item[5] || 0);
+    found.bsaTeu += Number(item[6] || 0);
     map.set(routeKey, found);
   });
   return map;
@@ -1971,9 +1975,10 @@ function buildWeekdayBenchmarks(periods) {
   samples.forEach((snapshot) => {
     const weeks = weeksForSnapshotOffsets(snapshot.data_date, offsets);
     aggregateHistoryRoutes(snapshot, weeks).forEach((row, routeKey) => {
-      const found = route.get(routeKey) || { teu: 0, w3Teu: 0 };
+      const found = route.get(routeKey) || { teu: 0, w3Teu: 0, bsaTeu: 0 };
       found.teu += row.teu || 0;
       found.w3Teu += row.w3Teu || 0;
+      found.bsaTeu += row.bsaTeu || 0;
       route.set(routeKey, found);
     });
     aggregateHistoryShippers(snapshot, weeks).forEach((row, key) => {
@@ -2104,20 +2109,102 @@ function mergeWeekdayBenchmarkIntoContext(routeContext, benchmarks) {
     const expected = weekdayExpected(benchmarks && benchmarks.route, routeKey, sampleCount);
     const gap = Math.max(0, expected.w3Teu - (context.currentW3Teu || 0));
     const ratio = expected.w3Teu ? (context.currentW3Teu || 0) / expected.w3Teu : null;
+    const sample = (benchmarks && benchmarks.route && benchmarks.route.get(routeKey)) || null;
+    const sampleBsaTotal = sample ? sample.bsaTeu || 0 : 0;
+    const sampleW3Total = sample ? sample.w3Teu || 0 : 0;
+    const currentBsaTeu = context.bsaTeu || 0;
+    const currentW3Teu = context.currentW3Teu || 0;
+    const bsaRatioCurrent = currentBsaTeu ? (currentW3Teu / currentBsaTeu) * 100 : null;
+    const bsaRatioAvg = sampleBsaTotal ? (sampleW3Total / sampleBsaTotal) * 100 : null;
+    const bsaRatioGap = bsaRatioCurrent != null && bsaRatioAvg != null ? bsaRatioCurrent - bsaRatioAvg : null;
+    const bsaPaceStatus = weekdayBsaPaceStatus(bsaRatioCurrent, bsaRatioAvg, bsaRatioGap);
     Object.assign(context, {
       weekdayExpectedW3: expected.w3Teu,
       weekdayExpectedTeu: expected.teu,
       weekdayW3Gap: gap,
-      weekdayW3Delta: (context.currentW3Teu || 0) - expected.w3Teu,
+      weekdayW3Delta: currentW3Teu - expected.w3Teu,
       weekdayW3Ratio: ratio,
       weekdaySamples: sampleCount,
       weekdayLabel: benchmarks && benchmarks.weekday || "",
-      weekdayStatus: weekdayStatus(ratio, expected.w3Teu, gap).code
+      weekdayStatus: weekdayStatus(ratio, expected.w3Teu, gap).code,
+      weekdayBsaRatioCurrent: bsaRatioCurrent,
+      weekdayBsaRatioAvg: bsaRatioAvg,
+      weekdayBsaRatioGap: bsaRatioGap,
+      weekdayBsaSampleBsa: sampleBsaTotal,
+      weekdayBsaSampleW3: sampleW3Total,
+      weekdayBsaPaceStatus: bsaPaceStatus
     });
     if (sampleCount >= 1 && gap >= Math.max(30, context.portImpactThreshold || 30) && ratio != null && ratio < .65) {
       context.isImportant = true;
     }
+    if (sampleCount >= 1 && bsaPaceStatus === "slow" && currentBsaTeu >= (context.portBsaThreshold || 100)) {
+      context.isImportant = true;
+    }
   });
+}
+
+function weekdayBsaPaceStatus(currentPct, avgPct, gap) {
+  if (currentPct == null || avgPct == null || gap == null) return "no-bsa";
+  if (gap >= 10) return "fast";
+  if (gap <= -10) return "slow";
+  if (currentPct < 60) return "normal-low";
+  return "normal";
+}
+
+function buildOriginPaceHeadlines(routeContext, weekdayBenchmarks) {
+  const sampleCount = weekdayBenchmarks && weekdayBenchmarks.sampleCount || 0;
+  const enabled = Boolean(weekdayBenchmarks && weekdayBenchmarks.enabled && sampleCount > 0);
+  const totals = new Map();
+  routeContext.forEach((context) => {
+    const origin = context.origin || "";
+    if (!origin) return;
+    const found = totals.get(origin) || {
+      origin,
+      currentBsa: 0,
+      currentW3: 0,
+      currentTeu: 0,
+      sampleBsa: 0,
+      sampleW3: 0,
+      sampleTeu: 0,
+      routeCount: 0
+    };
+    found.currentBsa += context.bsaTeu || 0;
+    found.currentW3 += context.currentW3Teu || 0;
+    found.currentTeu += context.currentTeu || 0;
+    found.sampleBsa += context.weekdayBsaSampleBsa || 0;
+    found.sampleW3 += context.weekdayBsaSampleW3 || 0;
+    found.sampleTeu += (context.weekdayExpectedTeu || 0) * sampleCount;
+    found.routeCount += 1;
+    totals.set(origin, found);
+  });
+  const headlines = [];
+  totals.forEach((row) => {
+    const currentPct = row.currentBsa ? (row.currentW3 / row.currentBsa) * 100 : null;
+    const avgPct = row.sampleBsa ? (row.sampleW3 / row.sampleBsa) * 100 : null;
+    const gap = currentPct != null && avgPct != null ? currentPct - avgPct : null;
+    const status = weekdayBsaPaceStatus(currentPct, avgPct, gap);
+    headlines.push({
+      origin: row.origin,
+      currentBsa: row.currentBsa,
+      currentW3: row.currentW3,
+      currentTeu: row.currentTeu,
+      currentPct,
+      avgPct,
+      gap,
+      status,
+      sampleCount,
+      enabled,
+      sampleAvgW3: sampleCount ? row.sampleW3 / sampleCount : 0
+    });
+  });
+  headlines.sort((a, b) => {
+    const order = { slow: 0, "normal-low": 1, normal: 2, fast: 3, "no-bsa": 4 };
+    const da = order[a.status] ?? 5;
+    const db = order[b.status] ?? 5;
+    if (da !== db) return da - db;
+    return (b.currentBsa || 0) - (a.currentBsa || 0);
+  });
+  return { enabled, sampleCount, weekday: weekdayBenchmarks && weekdayBenchmarks.weekday || "", reason: weekdayBenchmarks && weekdayBenchmarks.reason || "", rows: headlines };
 }
 
 function periodLeadOffsets(period) {
@@ -2873,6 +2960,10 @@ function buildRouteExceptions(currentRoutes, baselineRoutes, shipperExceptions, 
       weekdaySamples: context.weekdaySamples || 0,
       weekdayLabel: context.weekdayLabel || "",
       weekdayStatus: context.weekdayStatus || "no-benchmark",
+      weekdayBsaRatioCurrent: context.weekdayBsaRatioCurrent ?? null,
+      weekdayBsaRatioAvg: context.weekdayBsaRatioAvg ?? null,
+      weekdayBsaRatioGap: context.weekdayBsaRatioGap ?? null,
+      weekdayBsaPaceStatus: context.weekdayBsaPaceStatus || "no-bsa",
       leadTrendStatus: context.leadTrendStatus || "no-trend",
       leadTrendGap: context.leadTrendGap || 0,
       leadTrendLabel: context.leadTrendLabel || "",
@@ -3496,6 +3587,71 @@ function renderKpis(analysis) {
       <div class="note">${item.note}</div>
     </article>
   `).join("");
+}
+
+function renderOriginPaceHeadlines(analysis) {
+  if (!els.originPaceHeadline) return;
+  const headline = analysis.originPaceHeadlines || { rows: [], enabled: false, sampleCount: 0 };
+  const en = state.lang === "en";
+  const rows = (headline.rows || []).filter((row) => (row.currentBsa || 0) > 0 || (row.currentW3 || 0) > 0);
+  if (!rows.length) {
+    els.originPaceHeadline.innerHTML = "";
+    els.originPaceHeadline.classList.add("hidden");
+    return;
+  }
+  els.originPaceHeadline.classList.remove("hidden");
+
+  const labels = {
+    fast: en ? "Faster than usual" : "월요일 W+3 빠름",
+    slow: en ? "Slower than usual" : "월요일 W+3 느림",
+    "normal-low": en ? "Usual range · absolute low" : "평균권 · 절대수준 낮음",
+    normal: en ? "Usual range" : "월요일 W+3 평균권",
+    "no-bsa": en ? "No BSA reference" : "BSA 기준 없음"
+  };
+  const tones = { fast: "pos", slow: "neg", "normal-low": "warn", normal: "pos", "no-bsa": "neutral" };
+  const headerTitle = en ? "Origin W+3 Pace vs Same-Weekday Average" : "원산지별 W+3 페이스 (같은 요일 평균 대비)";
+  const sampleNote = headline.sampleCount
+    ? (en
+      ? `samples ${headline.sampleCount} same-weekday snapshots${headline.weekday ? ` (${headline.weekday})` : ""}`
+      : `샘플 ${headline.sampleCount}개 · 같은 요일${headline.weekday ? ` (${headline.weekday})` : ""}`)
+    : (en ? "no same-weekday samples yet" : "같은 요일 샘플 없음");
+
+  const cards = rows.map((row) => {
+    const tone = tones[row.status] || "neutral";
+    const labelText = labels[row.status] || row.status;
+    const currentText = row.currentPct == null
+      ? "-"
+      : `${row.currentPct.toFixed(1)}%`;
+    const avgText = row.avgPct == null
+      ? (en ? "no BSA avg" : "평균 BSA 없음")
+      : `${en ? "avg" : "평균"} ${row.avgPct.toFixed(1)}%`;
+    const gapText = row.gap == null
+      ? "-"
+      : `${row.gap >= 0 ? "+" : ""}${row.gap.toFixed(1)}%p`;
+    const teuLine = `W+3 ${fmt(row.currentW3)} TEU · BSA ${fmt(row.currentBsa)} TEU`;
+    return `
+      <article class="origin-card tone-${tone}" title="${escapeAttr(`${row.origin} · ${labelText} · ${currentText} vs ${avgText}`)}">
+        <div class="origin-head">
+          <span class="origin-name">${escapeHtml(row.origin)}</span>
+          <span class="origin-status ${tone}">${escapeHtml(labelText)}</span>
+        </div>
+        <div class="origin-metric">
+          <span class="origin-now">${currentText}</span>
+          <span class="origin-gap ${tone}">${gapText}</span>
+        </div>
+        <div class="origin-sub">${escapeHtml(avgText)}</div>
+        <div class="origin-sub">${teuLine}</div>
+      </article>
+    `;
+  }).join("");
+
+  els.originPaceHeadline.innerHTML = `
+    <div class="origin-pace-head">
+      <h3>${escapeHtml(headerTitle)}</h3>
+      <span class="origin-pace-note">${escapeHtml(sampleNote)}</span>
+    </div>
+    <div class="origin-pace-grid">${cards}</div>
+  `;
 }
 
 function renderRoutes(analysis) {
@@ -4843,11 +4999,27 @@ function paceCell(row) {
         ${state.lang === "en" ? "Weekday" : "요일"} ${row.weekdayW3Ratio == null ? "-" : rpct(row.weekdayW3Ratio)} · ${state.lang === "en" ? "exp" : "기대"} ${fmt(row.weekdayExpectedW3 || 0)} · Gap ${fmt(row.weekdayW3Gap || 0)}
       </span>
     ` : "";
+  const bsaPaceBlock = row.weekdaySamples && row.weekdayBsaRatioAvg != null && row.weekdayBsaRatioCurrent != null ? (() => {
+    const status = row.weekdayBsaPaceStatus || "no-bsa";
+    const labelsMap = state.lang === "en"
+      ? { fast: "Pace fast", slow: "Pace slow", "normal-low": "Usual · low level", normal: "Pace usual", "no-bsa": "No BSA ratio" }
+      : { fast: "페이스 빠름", slow: "페이스 느림", "normal-low": "평균권 · 절대낮음", normal: "페이스 평균권", "no-bsa": "BSA 기준 없음" };
+    const toneMap = { fast: "pos", slow: "neg", "normal-low": "warn", normal: "pos", "no-bsa": "neutral" };
+    const sign = row.weekdayBsaRatioGap >= 0 ? "+" : "";
+    const gapText = `${sign}${row.weekdayBsaRatioGap.toFixed(1)}%p`;
+    return `
+      <span class="${toneMap[status] || "neutral"}" title="${escapeAttr(state.lang === "en" ? "Current W+3/BSA vs same-weekday W+3/BSA average (±10%p band)." : "현재 W+3/BSA와 같은 요일 평균 W+3/BSA를 비교 (±10%p 기준)")}">${labelsMap[status]}</span>
+      <span class="subline">
+        ${state.lang === "en" ? "now" : "현재"} ${row.weekdayBsaRatioCurrent.toFixed(1)}% · ${state.lang === "en" ? "avg" : "평균"} ${row.weekdayBsaRatioAvg.toFixed(1)}% · ${gapText}
+      </span>
+    `;
+  })() : "";
   return `
     <div class="metric-pair">
       ${trendBlock || disabledTrendBlock || `<span class="${tone}">${labels[row.paceStatus] || "확인"}</span>`}
       ${paceBlock}
       ${weekdayBlock ? `<span class="${weekday.tone}">${weekday.label}</span>${weekdayBlock}` : ""}
+      ${bsaPaceBlock}
     </div>
   `;
 }
