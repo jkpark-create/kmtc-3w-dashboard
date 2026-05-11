@@ -2151,6 +2151,54 @@ function weekdayBsaPaceStatus(currentPct, avgPct, gap) {
   return "normal";
 }
 
+const ORIGIN_POL_BUCKETS = {
+  CN: {
+    SHA: "CN SHA",
+    NBO: "CN NBO",
+    TAO: "CN TAO",
+    SHK: "CN SHK+DCB",
+    DCB: "CN SHK+DCB",
+    NNS: "CN NNS",
+    XMN: "CN XMN",
+    XGG: "CN XGG",
+    DLC: "CN DLC"
+  },
+  MY: {
+    PKG: "MY PKG+PKW",
+    PKW: "MY PKG+PKW",
+    PEN: "MY PEN",
+    PGU: "MY PGU"
+  },
+  ID: {
+    JKT: "ID JKT",
+    SUB: "ID SUB"
+  },
+  VN: {
+    SGN: "VN SGN+CMP",
+    CMP: "VN SGN+CMP",
+    HPH: "VN HPH"
+  }
+};
+
+const ORIGIN_POL_OUT_LABEL = {
+  ID: "ID_out"
+};
+
+const ORIGIN_BUCKET_ORDER = [
+  "CN SHA", "CN NBO", "CN TAO", "CN SHK+DCB", "CN NNS", "CN XMN", "CN XGG", "CN DLC",
+  "MY PKG+PKW", "MY PEN", "MY PGU",
+  "ID JKT", "ID SUB", "ID_out",
+  "VN SGN+CMP", "VN HPH"
+];
+
+function originPaceBucketLabel(origin, pol) {
+  if (!origin) return null;
+  const map = ORIGIN_POL_BUCKETS[origin];
+  if (!map) return origin;
+  if (map[pol]) return map[pol];
+  return ORIGIN_POL_OUT_LABEL[origin] || null;
+}
+
 function buildOriginPaceHeadlines(routeContext, weekdayBenchmarks) {
   const sampleCount = weekdayBenchmarks && weekdayBenchmarks.sampleCount || 0;
   const enabled = Boolean(weekdayBenchmarks && weekdayBenchmarks.enabled && sampleCount > 0);
@@ -2158,7 +2206,10 @@ function buildOriginPaceHeadlines(routeContext, weekdayBenchmarks) {
   routeContext.forEach((context) => {
     const origin = context.origin || "";
     if (!origin) return;
-    const found = totals.get(origin) || {
+    const label = originPaceBucketLabel(origin, context.pol || "");
+    if (!label) return;
+    const found = totals.get(label) || {
+      label,
       origin,
       currentBsa: 0,
       currentW3: 0,
@@ -2175,7 +2226,7 @@ function buildOriginPaceHeadlines(routeContext, weekdayBenchmarks) {
     found.sampleW3 += context.weekdayBsaSampleW3 || 0;
     found.sampleTeu += (context.weekdayExpectedTeu || 0) * sampleCount;
     found.routeCount += 1;
-    totals.set(origin, found);
+    totals.set(label, found);
   });
   const headlines = [];
   totals.forEach((row) => {
@@ -2184,6 +2235,7 @@ function buildOriginPaceHeadlines(routeContext, weekdayBenchmarks) {
     const gap = currentPct != null && avgPct != null ? currentPct - avgPct : null;
     const status = weekdayBsaPaceStatus(currentPct, avgPct, gap);
     headlines.push({
+      label: row.label,
       origin: row.origin,
       currentBsa: row.currentBsa,
       currentW3: row.currentW3,
@@ -2197,11 +2249,18 @@ function buildOriginPaceHeadlines(routeContext, weekdayBenchmarks) {
       sampleAvgW3: sampleCount ? row.sampleW3 / sampleCount : 0
     });
   });
+  const statusOrder = { slow: 0, "normal-low": 1, normal: 2, fast: 3, "no-bsa": 4 };
+  const indexOf = (label) => {
+    const idx = ORIGIN_BUCKET_ORDER.indexOf(label);
+    return idx === -1 ? ORIGIN_BUCKET_ORDER.length : idx;
+  };
   headlines.sort((a, b) => {
-    const order = { slow: 0, "normal-low": 1, normal: 2, fast: 3, "no-bsa": 4 };
-    const da = order[a.status] ?? 5;
-    const db = order[b.status] ?? 5;
+    const da = statusOrder[a.status] ?? 5;
+    const db = statusOrder[b.status] ?? 5;
     if (da !== db) return da - db;
+    const ia = indexOf(a.label);
+    const ib = indexOf(b.label);
+    if (ia !== ib) return ia - ib;
     return (b.currentBsa || 0) - (a.currentBsa || 0);
   });
   return { enabled, sampleCount, weekday: weekdayBenchmarks && weekdayBenchmarks.weekday || "", reason: weekdayBenchmarks && weekdayBenchmarks.reason || "", rows: headlines };
@@ -3629,10 +3688,11 @@ function renderOriginPaceHeadlines(analysis) {
       ? "-"
       : `${row.gap >= 0 ? "+" : ""}${row.gap.toFixed(1)}%p`;
     const teuLine = `W+3 ${fmt(row.currentW3)} TEU · BSA ${fmt(row.currentBsa)} TEU`;
+    const displayLabel = row.label || row.origin;
     return `
-      <article class="origin-card tone-${tone}" title="${escapeAttr(`${row.origin} · ${labelText} · ${currentText} vs ${avgText}`)}">
+      <article class="origin-card tone-${tone}" title="${escapeAttr(`${displayLabel} · ${labelText} · ${currentText} vs ${avgText}`)}">
         <div class="origin-head">
-          <span class="origin-name">${escapeHtml(row.origin)}</span>
+          <span class="origin-name">${escapeHtml(displayLabel)}</span>
           <span class="origin-status ${tone}">${escapeHtml(labelText)}</span>
         </div>
         <div class="origin-metric">
