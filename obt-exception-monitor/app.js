@@ -1528,6 +1528,8 @@ function analyze(currentRows, baselineRows, currentBsaRows, baselineBsaRows, per
   const totalBaseNormTeu = sumMap(baselineRoutes, "normTeu");
   const totalCurrentW3NormTeu = sumMap(currentRoutes, "w3NormTeu");
   const totalBaseW3NormTeu = sumMap(baselineRoutes, "w3NormTeu");
+  const totalCurrentW3CancelTeu = sumMap(currentRoutes, "w3CancelTeu");
+  const totalBaseW3CancelTeu = sumMap(baselineRoutes, "w3CancelTeu");
   const activeCurrent = distinctCountWhen(currentRows, shipperId, (row) => row.teu > 0);
   const activeBase = distinctCountWhen(baselineRows, shipperId, (row) => row.teu > 0);
   const w3ActiveCurrent = distinctCountWhen(currentRows, shipperId, (row) => row.w3Teu > 0);
@@ -1576,6 +1578,10 @@ function analyze(currentRows, baselineRows, currentBsaRows, baselineBsaRows, per
       totalBaseNormTeu,
       totalCurrentW3NormTeu,
       totalBaseW3NormTeu,
+      totalCurrentW3CancelTeu,
+      totalBaseW3CancelTeu,
+      totalCurrentW3NotCancelTeu: totalCurrentW3Teu - totalCurrentW3CancelTeu,
+      totalBaseW3NotCancelTeu: totalBaseW3Teu - totalBaseW3CancelTeu,
       w3SecuredRate: totalCurrentW3Teu ? totalCurrentW3NormTeu / totalCurrentW3Teu : 0,
       baseW3SecuredRate: totalBaseW3Teu ? totalBaseW3NormTeu / totalBaseW3Teu : 0,
       activeCurrent,
@@ -3667,6 +3673,15 @@ function renderKpis(analysis) {
       tone: t.deltaW3Teu < 0 ? "neg" : "pos"
     },
     {
+      key: "w3TeuNotCancel",
+      label: state.lang === "en" ? "3W BKG (not cancel)" : "3주전 BKG (not cancel)",
+      value: fmt(t.totalCurrentW3NotCancelTeu),
+      note: state.lang === "en"
+        ? `cancel ${fmt(t.totalCurrentW3CancelTeu)} TEU removed`
+        : `cancel ${fmt(t.totalCurrentW3CancelTeu)} TEU 제외`,
+      tone: t.totalCurrentW3CancelTeu > 0 ? "warn" : "pos"
+    },
+    {
       key: "w3Bsa",
       label: "3W/BSA",
       value: t.totalBsaTeu ? rpct(w3BsaUtil) : "-",
@@ -5022,6 +5037,7 @@ function kpiHelp(key) {
     p1Routes: "오늘 먼저 원인을 확인해야 하는 P1 Route 수입니다. P1 조치 건수에는 구간 이슈와 화주 Action 후보가 함께 포함됩니다.",
     topAction: "현재 필터에서 상위 조치 후보로 노출되는 건수입니다.",
     w3Teu: "shipper.w3_fst 기반 3주전 선행 부킹 TEU 합계입니다.",
+    w3TeuNotCancel: "3주전 BKG에서 Cancel 상태로 전환된 TEU(w3_canc_fst)를 제외한 값입니다. 실선적 가능성이 높은 선행 부킹 규모를 보여줍니다.",
     w3Bsa: "3W Booking TEU를 같은 선택기간 BSA로 나눈 비율입니다.",
     issueCustomers: "감소, 급감, 이탈 등 화주 단위 조치 대상 수입니다.",
     impactTeu: "기준 대비 회복이 필요한 영향 TEU 합계입니다.",
@@ -5034,6 +5050,7 @@ function kpiHelp(key) {
     p1Routes: "Number of priority routes to check first today. P1 actions include both route issues and customer action candidates.",
     topAction: "Number of top action candidates shown under the current filters.",
     w3Teu: "Sum of 3W advance-booked TEU from shipper.w3_fst.",
+    w3TeuNotCancel: "3W booking TEU after removing w3_canc_fst (cancelled W-3 bookings). Represents advance bookings that are most likely to convert to actual loading.",
     w3Bsa: "3W booking TEU divided by BSA for the same selected period.",
     issueCustomers: "Customer-level action targets such as decline, sharp decline, or churn.",
     impactTeu: "Recoverable impact TEU compared with the baseline.",

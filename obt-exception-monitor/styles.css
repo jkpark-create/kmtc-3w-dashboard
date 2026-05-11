@@ -428,7 +428,7 @@ select {
 
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(9, minmax(118px, 1fr));
+  grid-template-columns: repeat(10, minmax(112px, 1fr));
   gap: 10px;
   margin-bottom: 12px;
 }
