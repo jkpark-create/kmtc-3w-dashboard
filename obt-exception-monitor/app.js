@@ -958,6 +958,8 @@ function normalizeRows(rows) {
       const w3Teu = toNumber(row.w3_fst);
       const w3NormTeu = toNumber(row.w3_norm_lst);
       const w3CancelTeu = toNumber(row.w3_canc_fst);
+      const w3LstTeu = toNumber(row.w3_lst);
+      const w3CancelLstTeu = toNumber(row.w3_canc_lst);
       const w3HiTeu = toNumber(row.w3_hi_fst);
       const w3HiNormTeu = toNumber(row.w3_hi_norm_lst);
       const w3RouteHiTeu = toNumber(row.w3_route_hi_fst);
@@ -981,6 +983,8 @@ function normalizeRows(rows) {
         w3Teu,
         w3NormTeu,
         w3CancelTeu,
+        w3LstTeu,
+        w3CancelLstTeu,
         w3HiTeu,
         w3HiNormTeu,
         w3RouteHiTeu,
@@ -1530,6 +1534,10 @@ function analyze(currentRows, baselineRows, currentBsaRows, baselineBsaRows, per
   const totalBaseW3NormTeu = sumMap(baselineRoutes, "w3NormTeu");
   const totalCurrentW3CancelTeu = sumMap(currentRoutes, "w3CancelTeu");
   const totalBaseW3CancelTeu = sumMap(baselineRoutes, "w3CancelTeu");
+  const totalCurrentW3LstTeu = sumMap(currentRoutes, "w3LstTeu");
+  const totalBaseW3LstTeu = sumMap(baselineRoutes, "w3LstTeu");
+  const totalCurrentW3CancelLstTeu = sumMap(currentRoutes, "w3CancelLstTeu");
+  const totalBaseW3CancelLstTeu = sumMap(baselineRoutes, "w3CancelLstTeu");
   const activeCurrent = distinctCountWhen(currentRows, shipperId, (row) => row.teu > 0);
   const activeBase = distinctCountWhen(baselineRows, shipperId, (row) => row.teu > 0);
   const w3ActiveCurrent = distinctCountWhen(currentRows, shipperId, (row) => row.w3Teu > 0);
@@ -1582,6 +1590,12 @@ function analyze(currentRows, baselineRows, currentBsaRows, baselineBsaRows, per
       totalBaseW3CancelTeu,
       totalCurrentW3NotCancelTeu: totalCurrentW3Teu - totalCurrentW3CancelTeu,
       totalBaseW3NotCancelTeu: totalBaseW3Teu - totalBaseW3CancelTeu,
+      totalCurrentW3LstTeu,
+      totalBaseW3LstTeu,
+      totalCurrentW3CancelLstTeu,
+      totalBaseW3CancelLstTeu,
+      totalCurrentW3NotCancelLstTeu: totalCurrentW3LstTeu - totalCurrentW3CancelLstTeu,
+      totalBaseW3NotCancelLstTeu: totalBaseW3LstTeu - totalBaseW3CancelLstTeu,
       w3SecuredRate: totalCurrentW3Teu ? totalCurrentW3NormTeu / totalCurrentW3Teu : 0,
       baseW3SecuredRate: totalBaseW3Teu ? totalBaseW3NormTeu / totalBaseW3Teu : 0,
       activeCurrent,
@@ -1664,6 +1678,8 @@ function aggregateByRoute(rows) {
       w3NormTeu: 0,
       normTeu: 0,
       w3CancelTeu: 0,
+      w3LstTeu: 0,
+      w3CancelLstTeu: 0,
       w3HiTeu: 0,
       w3HiNormTeu: 0,
       w3RouteHiTeu: 0,
@@ -1685,6 +1701,8 @@ function aggregateByRoute(rows) {
     found.w3Teu += row.w3Teu;
     found.w3NormTeu += row.w3NormTeu;
     found.w3CancelTeu += row.w3CancelTeu;
+    found.w3LstTeu += row.w3LstTeu;
+    found.w3CancelLstTeu += row.w3CancelLstTeu;
     found.w3HiTeu += row.w3HiTeu;
     found.w3HiNormTeu += row.w3HiNormTeu;
     found.w3RouteHiTeu += row.w3RouteHiTeu;
@@ -3675,11 +3693,11 @@ function renderKpis(analysis) {
     {
       key: "w3TeuNotCancel",
       label: state.lang === "en" ? "3W BKG (not cancel)" : "3주전 BKG (not cancel)",
-      value: fmt(t.totalCurrentW3NotCancelTeu),
+      value: fmt(t.totalCurrentW3NotCancelLstTeu),
       note: state.lang === "en"
-        ? `cancel ${fmt(t.totalCurrentW3CancelTeu)} TEU removed`
-        : `cancel ${fmt(t.totalCurrentW3CancelTeu)} TEU 제외`,
-      tone: t.totalCurrentW3CancelTeu > 0 ? "warn" : "pos"
+        ? `LST basis · cancel ${fmt(t.totalCurrentW3CancelLstTeu)} TEU removed`
+        : `LST 기준 · cancel ${fmt(t.totalCurrentW3CancelLstTeu)} TEU 제외`,
+      tone: t.totalCurrentW3CancelLstTeu > 0 ? "warn" : "pos"
     },
     {
       key: "w3Bsa",
@@ -5037,7 +5055,7 @@ function kpiHelp(key) {
     p1Routes: "오늘 먼저 원인을 확인해야 하는 P1 Route 수입니다. P1 조치 건수에는 구간 이슈와 화주 Action 후보가 함께 포함됩니다.",
     topAction: "현재 필터에서 상위 조치 후보로 노출되는 건수입니다.",
     w3Teu: "shipper.w3_fst 기반 3주전 선행 부킹 TEU 합계입니다.",
-    w3TeuNotCancel: "3주전 BKG에서 Cancel 상태로 전환된 TEU(w3_canc_fst)를 제외한 값입니다. 실선적 가능성이 높은 선행 부킹 규모를 보여줍니다.",
+    w3TeuNotCancel: "LST 기준으로 본 3주전 BKG에서 Cancel 상태로 전환된 부분(w3_canc_lst)을 제외한 값입니다. 계산식: w3_lst − w3_canc_lst. 실제 선적된 LST_TEU 기반이라 FST 기준 대비 정밀합니다.",
     w3Bsa: "3W Booking TEU를 같은 선택기간 BSA로 나눈 비율입니다.",
     issueCustomers: "감소, 급감, 이탈 등 화주 단위 조치 대상 수입니다.",
     impactTeu: "기준 대비 회복이 필요한 영향 TEU 합계입니다.",
@@ -5050,7 +5068,7 @@ function kpiHelp(key) {
     p1Routes: "Number of priority routes to check first today. P1 actions include both route issues and customer action candidates.",
     topAction: "Number of top action candidates shown under the current filters.",
     w3Teu: "Sum of 3W advance-booked TEU from shipper.w3_fst.",
-    w3TeuNotCancel: "3W booking TEU after removing w3_canc_fst (cancelled W-3 bookings). Represents advance bookings that are most likely to convert to actual loading.",
+    w3TeuNotCancel: "LST-basis W-3 booking volume after removing the cancelled portion (w3_canc_lst). Formula: w3_lst − w3_canc_lst. Uses actual LST_TEU values, so it tracks loaded volume more precisely than the FST view.",
     w3Bsa: "3W booking TEU divided by BSA for the same selected period.",
     issueCustomers: "Customer-level action targets such as decline, sharp decline, or churn.",
     impactTeu: "Recoverable impact TEU compared with the baseline.",

@@ -1412,6 +1412,10 @@ def upload_to_gdrive():
     bkg['w3_route_hi_norm_lst'] = bkg['lst'] * (lt == 'WOS-3').astype(int) * bkg['is_route_hi'] * bkg['is_normal']
     bkg['w3_canc_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_cancel']
     bkg['w3_route_hi_canc_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_cancel'] * bkg['is_route_hi']
+    # W-3 LST: total LST at WOS-3 and LST of those that became Cancel. Used to derive
+    # "3주전 BKG (not cancel)" in LST units = w3_lst - w3_canc_lst.
+    bkg['w3_lst'] = bkg['lst'] * (lt == 'WOS-3').astype(int)
+    bkg['w3_canc_lst'] = bkg['lst'] * (lt == 'WOS-3').astype(int) * bkg['is_cancel']
     bkg['w3_hi_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi']
     bkg['w3_hi_norm_lst'] = bkg['lst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi'] * bkg['is_normal']
     # WOS-3 CM1 columns (3주전 BKG 맥락에서 CM1/TEU 계산용)
@@ -1434,6 +1438,7 @@ def upload_to_gdrive():
     agg_cols = {'fst':'sum','norm_lst':'sum','hi_fst':'sum','hi_norm_lst':'sum',
                 'route_hi_fst':'sum','route_hi_norm_lst':'sum',
                 'w3_fst':'sum','w3_norm_lst':'sum','w3_canc_fst':'sum','w3_route_hi_canc_fst':'sum',
+                'w3_lst':'sum','w3_canc_lst':'sum',
                 'w3_hi_fst':'sum','w3_hi_norm_lst':'sum',
                 'w3_route_hi_fst':'sum','w3_route_hi_norm_lst':'sum',
                 'w3_ab_fst':'sum','w3_ab_norm_lst':'sum','w3_cd_fst':'sum','w3_cd_norm_lst':'sum',
