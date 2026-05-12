@@ -3821,11 +3821,13 @@ function renderOriginPaceHeadlines(analysis) {
   }
   els.originPaceHeadline.classList.remove("hidden");
 
+  const weekdayKo = headline.weekday ? `${headline.weekday}요일` : "같은 요일";
+  const weekdayEn = headline.weekday ? `${headline.weekday} W+3` : "Same-weekday W+3";
   const labels = {
-    fast: en ? "Faster than usual" : "월요일 W+3 빠름",
-    slow: en ? "Slower than usual" : "월요일 W+3 느림",
-    "normal-low": en ? "Usual range · absolute low" : "평균권 · 절대수준 낮음",
-    normal: en ? "Usual range" : "월요일 W+3 평균권",
+    fast: en ? `${weekdayEn} faster` : `${weekdayKo} W+3 빠름`,
+    slow: en ? `${weekdayEn} slower` : `${weekdayKo} W+3 느림`,
+    "normal-low": en ? `${weekdayEn} usual range · absolute low` : `${weekdayKo} W+3 평균권 · 절대수준 낮음`,
+    normal: en ? `${weekdayEn} usual range` : `${weekdayKo} W+3 평균권`,
     "no-bsa": en ? "No BSA reference" : "BSA 기준 없음"
   };
   const tones = { fast: "pos", slow: "neg", "normal-low": "warn", normal: "pos", "no-bsa": "neutral" };
