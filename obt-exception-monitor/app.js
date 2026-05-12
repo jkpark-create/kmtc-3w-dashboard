@@ -905,8 +905,8 @@ async function loadData(force = false) {
 
     state.raw = data;
     state.loadedPath = loadedPath;
-    state.rows = normalizeRows(data.shipper || []);
-    state.bsaRows = normalizeBsaRows(data.bsa || []);
+    state.rows = normalizeRows(toRecordArray(data.shipper));
+    state.bsaRows = normalizeBsaRows(toRecordArray(data.bsa));
     state.history = await loadHistory(force);
     state.months = Array.from(new Set(state.rows.map((row) => row.month))).sort();
 
@@ -938,6 +938,84 @@ async function loadHistory(force = false) {
     }
   }
   return null;
+}
+
+function toRecordArray(value) {
+  if (Array.isArray(value)) {
+    return value.filter(isRecord);
+  }
+  if (!value || typeof value !== "object") return [];
+
+  const schemaColumns = Array.isArray(value.schema?.fields)
+    ? value.schema.fields.map((field) => typeof field === "string" ? field : field?.name).filter(Boolean)
+    : null;
+  const columns = Array.isArray(value.columns) ? value.columns : schemaColumns;
+
+  if (Array.isArray(value.c) && Array.isArray(value.r)) return rowsToRecords(value.r, value.c);
+  if (Array.isArray(value.records)) return toRecordArray(value.records);
+  if (Array.isArray(value.rows)) return columns ? rowsToRecords(value.rows, columns) : toRecordArray(value.rows);
+  if (Array.isArray(value.data)) {
+    return columns && value.data.some(Array.isArray)
+      ? rowsToRecords(value.data, columns)
+      : toRecordArray(value.data);
+  }
+  if (Array.isArray(value.values) && columns) return rowsToRecords(value.values, columns);
+
+  const values = Object.values(value);
+  if (values.length && values.every(isRecord) && values.some(hasKnownRowField)) {
+    return values;
+  }
+  return columnsToRecords(value);
+}
+
+function isRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasKnownRowField(row) {
+  return ["team", "origin", "YYYYMM", "week", "week_start_date", "fst", "teu_bsa"].some((field) => Object.prototype.hasOwnProperty.call(row, field));
+}
+
+function rowsToRecords(rows, columns) {
+  const cleanColumns = columns.map((column) => String(column || "").trim());
+  return rows.map((row) => {
+    if (isRecord(row)) return row;
+    if (!Array.isArray(row)) return null;
+    return cleanColumns.reduce((record, column, index) => {
+      if (column) record[column] = row[index];
+      return record;
+    }, {});
+  }).filter(isRecord);
+}
+
+function columnsToRecords(table) {
+  const columns = Object.keys(table || {}).filter((column) => Array.isArray(table[column]) || isRecord(table[column]));
+  if (!columns.length) return [];
+  const columnValues = columns.map((column) => columnToArray(table[column]));
+  const length = Math.max(...columnValues.map((values) => values.length));
+  if (!Number.isFinite(length) || length <= 0) return [];
+
+  return Array.from({ length }, (_, rowIndex) => {
+    const row = {};
+    columns.forEach((column, columnIndex) => {
+      const value = columnValues[columnIndex][rowIndex];
+      if (value !== undefined) row[column] = value;
+    });
+    return row;
+  });
+}
+
+function columnToArray(value) {
+  if (Array.isArray(value)) return value;
+  if (!isRecord(value)) return [];
+  return Object.keys(value)
+    .sort((a, b) => {
+      const numA = Number(a);
+      const numB = Number(b);
+      if (Number.isFinite(numA) && Number.isFinite(numB)) return numA - numB;
+      return a.localeCompare(b);
+    })
+    .map((key) => value[key]);
 }
 
 function normalizeRows(rows) {
