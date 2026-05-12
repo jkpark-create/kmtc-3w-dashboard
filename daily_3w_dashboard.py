@@ -1300,6 +1300,7 @@ def process_snapshot():
 # ═══════════════════════════════════════════════════════════
 GDRIVE_FOLDER_ID = '1JIxg6Y-_gRfI1HueXZ1Q9j4-Z5bxvNgv'
 GDRIVE_CREDS_DIR = Path(r'C:\Users\JKPARK\OneDrive\Documents\Claude\.gdrive-mcp')
+DASHBOARD_JSON_SAFE_LIMIT_BYTES = 95_000_000
 
 def upload_to_gdrive():
     """Upload parquet cache + BSA CSV to Google Drive for web dashboard."""
@@ -1521,22 +1522,57 @@ def upload_to_gdrive():
             compacted.append(out)
         return compacted
 
+    def pack_records(records):
+        """Store sparse record objects as columns + trimmed rows to keep Pages JSON small."""
+        counts = {}
+        first_seen = {}
+        for pos, rec in enumerate(records):
+            for key in rec:
+                counts[key] = counts.get(key, 0) + 1
+                first_seen.setdefault(key, pos)
+        columns = sorted(counts, key=lambda key: (-counts[key], first_seen[key], key))
+        col_index = {key: idx for idx, key in enumerate(columns)}
+        rows = []
+        for rec in records:
+            row = [None] * len(columns)
+            last_idx = -1
+            for key, val in rec.items():
+                idx = col_index[key]
+                row[idx] = val
+                if idx > last_idx:
+                    last_idx = idx
+            rows.append(row[:last_idx + 1])
+        return {'c': columns, 'r': rows}
+
+    monthly_records = compact_records(monthly.round(1).to_dict('records'))
+    weekly_records = compact_records(weekly.round(1).to_dict('records'))
+    shipper_records = compact_records(shipper_all.round(1).to_dict('records'))
+    bsa_records = compact_records(bsa_data)
+
     summary = {
+        '_format': 'columns-v1',
         'data_date': DATASET_ID,
         'metric_keys': sorted(metric_keys),
         'wpm': wpm,
         'months': sorted(bkg['YYYYMM'].dropna().unique().tolist()),
-        'monthly': compact_records(monthly.round(1).to_dict('records')),
-        'weekly': compact_records(weekly.round(1).to_dict('records')),
-        'shipper': compact_records(shipper_all.round(1).to_dict('records')),
-        'bsa': compact_records(bsa_data),
+        'monthly': pack_records(monthly_records),
+        'weekly': pack_records(weekly_records),
+        'shipper': pack_records(shipper_records),
+        'bsa': pack_records(bsa_records),
     }
 
     json_path = out_dir / f'dashboard_summary_{DATASET_ID}.json'
     with open(json_path, 'w', encoding='utf-8') as f:
         _json.dump(summary, f, ensure_ascii=False, separators=(',',':'))
-    print(f"  Summary JSON: {json_path.name} ({os.path.getsize(json_path):,} bytes)")
-    print(f"    monthly: {len(monthly):,} rows, weekly: {len(weekly):,} rows, bsa: {len(bsa_data):,} rows")
+    json_size = os.path.getsize(json_path)
+    print(f"  Summary JSON: {json_path.name} ({json_size:,} bytes)")
+    print(f"    monthly: {len(monthly_records):,} rows, weekly: {len(weekly_records):,} rows, "
+          f"shipper: {len(shipper_records):,} rows, bsa: {len(bsa_records):,} rows")
+    if json_size >= DASHBOARD_JSON_SAFE_LIMIT_BYTES:
+        raise RuntimeError(
+            f"{json_path.name} is {json_size:,} bytes; safe limit is "
+            f"{DASHBOARD_JSON_SAFE_LIMIT_BYTES:,} bytes to avoid GitHub's 100 MB file limit."
+        )
 
     # Copy to dist/data.json only for the current/latest dataset.
     if PUBLISH_LATEST:
