@@ -169,12 +169,20 @@ def load_booking() -> pd.DataFrame:
         "LST_Status",
         "LST_TEU",
         "YYYYMM",
+        "Booking_date",
         "Lead_time (BKG_Sche)",
         "Salesman_POR",
         "고/저",
     ]
-    frames = [pd.read_parquet(cache_2025), pd.read_parquet(cache_current)]
-    df = pd.concat([frame[columns] for frame in frames], ignore_index=True)
+    frames = []
+    for path in (cache_2025, cache_current):
+        frame = pd.read_parquet(path)
+        # Booking_date may be absent in older caches; provide an empty fallback.
+        missing = [c for c in columns if c not in frame.columns]
+        for c in missing:
+            frame[c] = ""
+        frames.append(frame[columns])
+    df = pd.concat(frames, ignore_index=True)
     df = df.rename(
         columns={
             "BKG_SHPR_CST_NO": "shipper_code",
@@ -187,6 +195,7 @@ def load_booking() -> pd.DataFrame:
             "LST_Status": "status",
             "LST_TEU": "lst",
             "YYYYMM": "yyyymm",
+            "Booking_date": "booking_date",
             "Lead_time (BKG_Sche)": "lead_time",
             "Salesman_POR": "sales",
             "고/저": "profit_type",
@@ -211,7 +220,40 @@ def load_booking() -> pd.DataFrame:
     df["lst"] = to_number(df["lst"])
     df["team"] = [classify_team(o, d) for o, d in zip(df["origin"], df["dest"])]
     df["tab"] = [tab_key(o, p) for o, p in zip(df["origin"], df["ori_port"])]
-    return df.loc[df["yyyymm"].isin(MONTHS) & df["team"].eq(TEAM_FILTER)].copy()
+    df = df.loc[df["yyyymm"].isin(MONTHS) & df["team"].eq(TEAM_FILTER)].copy()
+    df = _remap_2025_sales_to_current_owner(df)
+    return df
+
+
+# 1Q 2026 booking 중 가장 최근 booking_date의 Salesman_POR을 화주별 "현재 담당자"로 채택하고,
+# 2025 booking 레코드의 sales를 그 매핑 값으로 덮어씁니다. 1Q 2026에 booking이 없는 화주는
+# 2025 담당자를 그대로 유지합니다 (사용자 정책).
+Q1_2026_MONTHS = frozenset({"202601", "202602", "202603"})
+
+
+def _remap_2025_sales_to_current_owner(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    q1 = df.loc[df["yyyymm"].isin(Q1_2026_MONTHS) & df["shipper_code"].ne("")].copy()
+    if q1.empty:
+        return df
+    q1["_bdate"] = pd.to_datetime(q1["booking_date"], errors="coerce")
+    # If booking_date is missing for all Q1 rows, fall back to yyyymm-only ordering so the
+    # mapping still resolves to *some* deterministic Salesman_POR per shipper.
+    if q1["_bdate"].isna().all():
+        q1 = q1.sort_values(["yyyymm"], ascending=False)
+    else:
+        # Latest booking_date first; rows with no parseable date sink to the bottom.
+        q1["_bdate_filled"] = q1["_bdate"].fillna(pd.Timestamp.min)
+        q1 = q1.sort_values(["_bdate_filled"], ascending=False)
+    # The MISSING placeholder shouldn't claim ownership unless it's all we have for the shipper.
+    q1 = q1.assign(_priority=q1["sales"].eq(MISSING).astype(int))
+    q1 = q1.sort_values(["_priority"], ascending=True, kind="stable")
+    current_owner = q1.drop_duplicates("shipper_code", keep="first").set_index("shipper_code")["sales"]
+    is_2025 = df["yyyymm"].str.startswith("2025") & df["shipper_code"].ne("")
+    mapped = df.loc[is_2025, "shipper_code"].map(current_owner)
+    df.loc[is_2025, "sales"] = mapped.fillna(df.loc[is_2025, "sales"])
+    return df
 
 
 def load_bsa() -> pd.DataFrame:
