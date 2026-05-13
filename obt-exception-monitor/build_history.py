@@ -38,19 +38,36 @@ def business_week(day: date) -> int:
     return ((day - date(day.year, 1, 1)).days // 7) + 1
 
 
+def iter_section(data: dict, section: str):
+    """Yield dict rows, supporting legacy list-of-dicts and compact columns-v1 (`{c, r}`) layouts."""
+    raw = data.get(section)
+    if isinstance(raw, list):
+        for row in raw:
+            if isinstance(row, dict):
+                yield row
+        return
+    if isinstance(raw, dict):
+        columns = raw.get("c") or []
+        for row in raw.get("r") or []:
+            if isinstance(row, list):
+                yield dict(zip(columns, row))
+            elif isinstance(row, dict):
+                yield row
+
+
 def route_snapshot(data: dict) -> list[list]:
     routes = {}
     bsa_map = defaultdict(float)
     week_label_by_no = {}
 
     for section in ("weekly", "shipper"):
-        for row in data.get(section, []):
+        for row in iter_section(data, section):
             week = str(row.get("week_start_date") or row.get("week") or "").strip()
             week_day = parse_week_date(week)
             if week_day and week not in week_label_by_no.values():
                 week_label_by_no.setdefault(business_week(week_day), week)
 
-    for row in data.get("bsa", []):
+    for row in iter_section(data, "bsa"):
         if row.get("team") != "OBT":
             continue
 
@@ -70,7 +87,7 @@ def route_snapshot(data: dict) -> list[list]:
             week = f"{week_start.year}년 {week_start.month:02d}월 {week_start.day:02d}일"
         bsa_map[(f"{origin}|{pol}|{dest}|{dst}", week)] += float(row.get("teu_bsa") or 0)
 
-    for row in data.get("shipper", []):
+    for row in iter_section(data, "shipper"):
         if row.get("team") != "OBT":
             continue
 
@@ -122,7 +139,7 @@ def target_action_weeks(data_date: str) -> set[str]:
 def shipper_snapshot(data: dict, target_weeks: set[str]) -> list[list]:
     shippers = {}
 
-    for row in data.get("shipper", []):
+    for row in iter_section(data, "shipper"):
         if row.get("team") != "OBT":
             continue
 
