@@ -702,25 +702,35 @@ def _round_half_pp(value: float) -> float:
     return round(value * 200) / 200
 
 
-def suggest_pp(base: float | None, perform: float | None, *, is_hp: bool) -> float:
-    """Suggest a target +%p based on 2025 baseline and Q1 2026 actual.
+def suggest_pp(base: float | None, perform: float | None, *, is_hp: bool) -> tuple[float, str]:
+    """Suggest a target +%p and a one-word reason explaining how it was chosen.
 
     - Booking / Lifting: match the Q1 momentum (Q1 perform − 2025 base), clamped [5%p, 20%p].
     - High-profit: same idea but clamped [2%p, 10%p] (relative metric, conservative).
     - If base + suggestion would exceed 100 %, the suggestion is reduced to fit.
     - If base is None (no 2025 measurement), default to 5%p.
+
+    Returns (suggestion_fraction, reason). Reasons: "no_base", "low_clamp",
+    "high_clamp", "cap_100", "match".
     """
     if base is None:
-        return 0.05
+        return 0.05, "no_base"
     delta = (perform - base) if perform is not None else 0.0
-    suggestion = _round_half_pp(delta)
+    raw = _round_half_pp(delta)
     if is_hp:
-        suggestion = max(0.02, min(0.10, suggestion))
+        lo, hi = 0.02, 0.10
     else:
-        suggestion = max(0.05, min(0.20, suggestion))
+        lo, hi = 0.05, 0.20
+    if raw < lo:
+        suggestion, reason = lo, "low_clamp"
+    elif raw > hi:
+        suggestion, reason = hi, "high_clamp"
+    else:
+        suggestion, reason = raw, "match"
     if base + suggestion > 1.0:
         suggestion = max(0.0, _round_half_pp(1.0 - base))
-    return suggestion
+        reason = "cap_100"
+    return suggestion, reason
 
 
 def compute_team_total_raw(
@@ -754,9 +764,11 @@ def compute_suggestions(
     report_tabs: dict[str, list[list[Any]]],
     account_counts: dict[tuple[str, str], tuple[int, int, float | None]] | None,
     origins: list[str],
-) -> dict[str, dict[str, float | None]]:
-    """For every origin, recommend a +%p for booking / lifting / high-profit based on Team Total Q1 momentum."""
-    out: dict[str, dict[str, float | None]] = {}
+) -> dict[str, dict[str, Any]]:
+    """For every origin, recommend a +%p for booking / lifting / high-profit and capture
+    the per-metric base, performance and reason so a rationale can be written into Memo.
+    """
+    out: dict[str, dict[str, Any]] = {}
     for origin in origins:
         if origin not in report_tabs:
             continue
@@ -770,12 +782,55 @@ def compute_suggestions(
         booking_perf = safe_ratio(team["w3_q1"], team["bsa_q1"])
         lifting_perf = safe_ratio(team["w3_norm_lst_q1"], team["w3_q1"])
         hp_perf = safe_ratio(team["hi_w3_q1"], team["w3_q1"])
+        booking_pp, booking_why = suggest_pp(booking_base, booking_perf, is_hp=False)
+        lifting_pp, lifting_why = suggest_pp(lifting_base, lifting_perf, is_hp=False)
+        hp_pp, hp_why = suggest_pp(hp_base, hp_perf, is_hp=True)
         out[origin] = {
-            "booking_pp": suggest_pp(booking_base, booking_perf, is_hp=False),
-            "lifting_pp": suggest_pp(lifting_base, lifting_perf, is_hp=False),
-            "hp_pp": suggest_pp(hp_base, hp_perf, is_hp=True),
+            "booking_pp": booking_pp,
+            "lifting_pp": lifting_pp,
+            "hp_pp": hp_pp,
+            "metrics": {
+                "booking": {"base": booking_base, "perf": booking_perf, "pp": booking_pp, "why": booking_why},
+                "lifting": {"base": lifting_base, "perf": lifting_perf, "pp": lifting_pp, "why": lifting_why},
+                "hp": {"base": hp_base, "perf": hp_perf, "pp": hp_pp, "why": hp_why},
+            },
         }
     return out
+
+
+def _format_rationale(label: str, metric: dict[str, Any]) -> str:
+    base = metric["base"]
+    perf = metric["perf"]
+    pp = metric["pp"]
+    why = metric["why"]
+    if base is None:
+        return f"{label}: 2025 측정 불가 → 기본 {pp*100:.0f}%p"
+    base_s = f"{base*100:.1f}%"
+    if perf is None:
+        return f"{label}: 2025 {base_s}, 1Q 측정 불가 → 기본 {pp*100:.0f}%p"
+    perf_s = f"{perf*100:.1f}%"
+    delta = (perf - base) * 100
+    delta_s = f"{delta:+.1f}%p"
+    suffix_map = {
+        "low_clamp": f"하한 {pp*100:.0f}%p",
+        "high_clamp": f"상한 {pp*100:.0f}%p",
+        "cap_100": f"100% 한도 {pp*100:.1f}%p",
+        "match": f"{pp*100:.1f}%p",
+    }
+    return f"{label}: {base_s}→{perf_s} ({delta_s}) → {suffix_map.get(why, f'{pp*100:.1f}%p')}"
+
+
+def build_rationale_memo(suggestion: dict[str, Any]) -> str:
+    metrics = suggestion.get("metrics") if isinstance(suggestion, dict) else None
+    if not metrics:
+        return ""
+    return "\n".join(
+        [
+            _format_rationale("부킹", metrics["booking"]),
+            _format_rationale("실선적", metrics["lifting"]),
+            _format_rationale("고수익", metrics["hp"]),
+        ]
+    )
 
 
 def build_input_values(
@@ -807,6 +862,9 @@ def build_input_values(
             origin, (DEFAULT_INCREASE, DEFAULT_INCREASE, DEFAULT_INCREASE, "")
         )
         s = suggestions.get(origin, {})
+        # Memo gets the analytical rationale for each metric's suggestion. It rebuilds
+        # on every run, so user-typed memo content is intentionally not preserved here.
+        memo_text = build_rationale_memo(s) or memo
         values.append(
             [
                 origin,
@@ -816,7 +874,7 @@ def build_input_values(
                 s.get("lifting_pp", DEFAULT_INCREASE),
                 hp,
                 s.get("hp_pp", DEFAULT_INCREASE),
-                memo,
+                memo_text,
             ]
         )
     return values
@@ -836,6 +894,7 @@ def build_readme_values() -> list[list[Any]]:
         ["• 부킹 / 실선적: [5%p, 20%p] 범위 클램프"],
         ["• 고수익화주: [2%p, 10%p] (상대평가 지표라 보수적)"],
         ["• base + 추천 > 100% 면 100% 이내로 자동 축소"],
+        ["• Memo(H)에 각 항목별 base→perform (Δ%p) + 적용 룰이 자동 기재됨"],
         [""],
         ["■ Target 산식"],
         ["• 1Q Target = 2Q Target = 2025 전체 실적(%) + Target_Input 증대율(%p)"],
@@ -1428,6 +1487,14 @@ def input_format_requests(sheet_id: int, row_count: int) -> list[dict[str, Any]]
             }
         },
         {
+            # Memo column (H) wraps and top-aligns so the multi-line rationale is readable.
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 3, "endRowIndex": last_row, "startColumnIndex": 7, "endColumnIndex": 8},
+                "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP", "verticalAlignment": "TOP"}},
+                "fields": "userEnteredFormat(wrapStrategy,verticalAlignment)",
+            }
+        },
+        {
             "setBasicFilter": {
                 "filter": {
                     "range": {"sheetId": sheet_id, "startRowIndex": 2, "endRowIndex": last_row, "startColumnIndex": 0, "endColumnIndex": 8}
@@ -1435,7 +1502,7 @@ def input_format_requests(sheet_id: int, row_count: int) -> list[dict[str, Any]]
             }
         },
     ]
-    widths = [110, 115, 115, 115, 115, 115, 115, 240]
+    widths = [110, 115, 115, 115, 115, 115, 115, 360]
     for idx, width in enumerate(widths):
         requests.append(
             {
@@ -1783,7 +1850,23 @@ def main() -> None:
                     }
                 }
             )
-        widths = [110, 115, 115, 115, 115, 115, 115, 240]
+        # Memo wrap + top-align so multi-line rationale text is readable in place.
+        reqs.append(
+            {
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_ids[INPUT_SHEET],
+                        "startRowIndex": 3,
+                        "endRowIndex": input_last_row,
+                        "startColumnIndex": 7,
+                        "endColumnIndex": 8,
+                    },
+                    "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP", "verticalAlignment": "TOP"}},
+                    "fields": "userEnteredFormat(wrapStrategy,verticalAlignment)",
+                }
+            }
+        )
+        widths = [110, 115, 115, 115, 115, 115, 115, 360]
         for idx, width in enumerate(widths):
             reqs.append(
                 {
