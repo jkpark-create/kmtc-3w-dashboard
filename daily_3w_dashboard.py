@@ -5,6 +5,7 @@
 - output/ 폴더에 날짜별 결과 저장
 """
 import sys, re, os, io, csv, json, time, warnings
+import urllib.parse
 import pandas as pd
 import openpyxl
 import requests, urllib3
@@ -145,6 +146,8 @@ TEMP_WB_NAME = os.environ.get(
     'temp_bkg_snapshot_v2' if PUBLISH_LATEST else f'temp_bkg_snapshot_v2_{DATASET_ID}'
 )
 TEMP_WB_PROJECT_ID = '3d94d4a3-1b23-4e39-8c9c-4a3b765c140d'  # OBT AI AGENT
+TABLEAU_CSV_DOWNLOAD_TIMEOUT_MS = int(os.environ.get('TABLEAU_CSV_DOWNLOAD_TIMEOUT_MS', '1800000'))
+TABLEAU_CSV_DOWNLOAD_RETRIES = max(1, int(os.environ.get('TABLEAU_CSV_DOWNLOAD_RETRIES', '2')))
 
 
 # ═══════════════════════════════════════════════════════════
@@ -442,40 +445,130 @@ def login_tableau_browser(page, attempts=3):
     raise last_error
 
 
+def build_tableau_csv_url(content_url, view_name, vf_params=None):
+    csv_url = f'{TABLEAU_SERVER}/views/{content_url}/{view_name}.csv'
+    if vf_params:
+        params = urllib.parse.urlencode(
+            {f'vf_{k}': v for k, v in vf_params.items()},
+            safe=','
+        )
+        csv_url += '?' + params
+    return csv_url
+
+
+def download_csv_via_authenticated_http(ctx, csv_url, tmp_path):
+    """Stream a Tableau CSV with cookies copied from the logged-in browser."""
+    session = requests.Session()
+    session.verify = False
+    for cookie in ctx.cookies():
+        session.cookies.set(
+            cookie['name'],
+            cookie['value'],
+            domain=cookie.get('domain'),
+            path=cookie.get('path', '/'),
+        )
+
+    headers = {
+        'Accept': 'text/csv,application/octet-stream,*/*',
+        'Referer': TABLEAU_SERVER,
+        'User-Agent': (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
+        ),
+    }
+    timeout_seconds = max(60, TABLEAU_CSV_DOWNLOAD_TIMEOUT_MS // 1000)
+    bytes_written = 0
+    first_chunk = b''
+    with session.get(
+        csv_url,
+        headers=headers,
+        stream=True,
+        timeout=(30, timeout_seconds),
+        allow_redirects=True,
+    ) as resp:
+        resp.raise_for_status()
+        with tmp_path.open('wb') as f:
+            for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                if not chunk:
+                    continue
+                if not first_chunk:
+                    first_chunk = chunk[:512]
+                f.write(chunk)
+                bytes_written += len(chunk)
+
+    if bytes_written <= 0:
+        tmp_path.unlink(missing_ok=True)
+        raise RuntimeError('CSV download returned an empty response')
+
+    first_lower = first_chunk.lstrip().lower()
+    if first_lower.startswith(b'<!doctype') or first_lower.startswith(b'<html') or b'<html' in first_lower:
+        tmp_path.unlink(missing_ok=True)
+        raise RuntimeError('CSV endpoint returned HTML instead of CSV')
+
+    return bytes_written
+
+
+def download_csv_via_browser_event(page, csv_url, tmp_path):
+    with page.expect_download(timeout=TABLEAU_CSV_DOWNLOAD_TIMEOUT_MS) as dl_info:
+        page.evaluate('url => { window.location.href = url; }', csv_url)
+    download = dl_info.value
+    download.save_as(str(tmp_path))
+    return os.path.getsize(tmp_path)
+
+
 def download_csv_from_tableau(content_url, view_name, save_path, vf_params=None):
-    """Download CSV from Tableau view using Playwright JS navigation."""
+    """Download CSV from Tableau with retry and HTTP fallback protection."""
     from playwright.sync_api import sync_playwright
     save_path = Path(save_path)
     tmp_path = save_path.with_name(f'{save_path.name}.download')
-    tmp_path.unlink(missing_ok=True)
+    csv_url = build_tableau_csv_url(content_url, view_name, vf_params)
+    last_error = None
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        ctx = browser.new_context(viewport={'width': 1920, 'height': 1080},
-                                  ignore_https_errors=True, accept_downloads=True)
-        page = ctx.new_page()
+    for attempt in range(1, TABLEAU_CSV_DOWNLOAD_RETRIES + 1):
+        tmp_path.unlink(missing_ok=True)
+        with sync_playwright() as p:
+            browser = None
+            try:
+                browser = p.chromium.launch(headless=True)
+                ctx = browser.new_context(viewport={'width': 1920, 'height': 1080},
+                                          ignore_https_errors=True, accept_downloads=True)
+                page = ctx.new_page()
 
-        # Login
-        login_tableau_browser(page)
+                # Login
+                login_tableau_browser(page)
 
-        # Load embed view to establish Tableau session
-        page.goto(f'{TABLEAU_SERVER}/views/{content_url}/{view_name}?:embed=y&:showVizHome=n',
-                  timeout=120000)
-        time.sleep(15)
+                # Load embed view to establish Tableau session/filter context.
+                page.goto(f'{TABLEAU_SERVER}/views/{content_url}/{view_name}?:embed=y&:showVizHome=n',
+                          timeout=120000)
+                time.sleep(15)
 
-        # Download CSV via JS navigation (avoids redirect issues)
-        csv_url = f'{TABLEAU_SERVER}/views/{content_url}/{view_name}.csv'
-        if vf_params:
-            csv_url += '?' + '&'.join(f'vf_{k}={v}' for k, v in vf_params.items())
+                print(f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} (HTTP stream)...")
+                try:
+                    size = download_csv_via_authenticated_http(ctx, csv_url, tmp_path)
+                except Exception as http_exc:
+                    print(f"  HTTP stream failed: {http_exc}")
+                    print(f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} (browser event)...")
+                    size = download_csv_via_browser_event(page, csv_url, tmp_path)
 
-        with page.expect_download(timeout=1800000) as dl_info:
-            page.evaluate(f'window.location.href = "{csv_url}"')
-        download = dl_info.value
-        download.save_as(str(tmp_path))
-        os.replace(tmp_path, save_path)
+                if size <= 0:
+                    raise RuntimeError('CSV download produced an empty file')
 
-        browser.close()
-    return os.path.getsize(save_path)
+                os.replace(tmp_path, save_path)
+                return os.path.getsize(save_path)
+            except Exception as exc:
+                last_error = exc
+                tmp_path.unlink(missing_ok=True)
+                print(f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} failed: {exc}")
+                if attempt < TABLEAU_CSV_DOWNLOAD_RETRIES:
+                    time.sleep(30 * attempt)
+            finally:
+                if browser is not None:
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
+
+    raise last_error
 
 
 def count_csv_rows(path):
@@ -634,10 +727,13 @@ def download_bsa():
                   timeout=120000)
         time.sleep(15)
 
-        # Download BSA per team via Playwright JS navigation
+        # Download BSA per team using the same authenticated HTTP path, with
+        # the browser download event kept as a fallback.
         import urllib.parse
         import pandas as pd
         all_dfs = []
+        out_dir = WORK_DIR / 'output'
+        out_dir.mkdir(exist_ok=True)
         for team in BSA_TEAMS:
             params = urllib.parse.urlencode({
                 # BSArawBKGpattern CSV export honors the visible filter captions
@@ -649,11 +745,18 @@ def download_bsa():
             }, safe=',')
             csv_url = f'{TABLEAU_SERVER}/views/{BSA_VIEW_URL}.csv?{params}'
             print(f"  Downloading BSA: {team}...", end=' ', flush=True)
-            with page.expect_download(timeout=600000) as dl_info:
-                page.evaluate(f'window.location.href = "{csv_url}"')
-            download = dl_info.value
-            tmp_path = download.path()
+            tmp_path = out_dir / f'BSA_raw_{team}_{DATASET_ID}.csv.download'
+            tmp_path.unlink(missing_ok=True)
+            try:
+                download_csv_via_authenticated_http(ctx, csv_url, tmp_path)
+            except Exception as http_exc:
+                print(f"HTTP stream failed ({http_exc}); browser event...", end=' ', flush=True)
+                with page.expect_download(timeout=min(TABLEAU_CSV_DOWNLOAD_TIMEOUT_MS, 600000)) as dl_info:
+                    page.evaluate('url => { window.location.href = url; }', csv_url)
+                download = dl_info.value
+                download.save_as(str(tmp_path))
             df = normalize_bsa_team(read_tableau_csv(tmp_path))
+            tmp_path.unlink(missing_ok=True)
             df = df[df['team'] == team]
             print(f"{len(df)} rows")
             all_dfs.append(df)
@@ -667,8 +770,6 @@ def download_bsa():
             if combined.empty:
                 print(f"  WARNING: no BSA rows found for {DATASET_YEAR} in Tableau CSV export")
 
-        out_dir = WORK_DIR / 'output'
-        out_dir.mkdir(exist_ok=True)
         out_path = out_dir / f'BSA_raw_monthly3W_{DATASET_ID}.csv'
         combined.to_csv(out_path, index=False)
 
