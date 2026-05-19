@@ -386,11 +386,23 @@ def aggregate_chunks(df: pd.DataFrame, out_dir: Path) -> dict[str, Any]:
         "origins": sorted(scoped["tab"].dropna().unique().tolist()),
         "months": sorted(scoped["YYYYMM"].dropna().unique().tolist()),
         "salespeople_by_origin": {},
+        "dest_countries": [],
+        "dest_ports_by_country": {},
     }
 
     grouped_origin_sales = scoped.groupby("tab", dropna=False)["Salesman_POR"].apply(lambda s: sorted(set(s)))
     for origin, names in grouped_origin_sales.items():
         manifest["salespeople_by_origin"][origin] = list(names)
+
+    # Build the destination catalogue used by the new "도착국가 / 도착포트" filters.
+    dest = scoped[["POD_CTR_CD", "POD_PORT_CD"]].copy()
+    dest = dest.loc[dest["POD_CTR_CD"].ne("")]
+    manifest["dest_countries"] = sorted(dest["POD_CTR_CD"].dropna().unique().tolist())
+    by_country: dict[str, list[str]] = {}
+    for ctr, group in dest.groupby("POD_CTR_CD", dropna=False):
+        ports = sorted({p for p in group["POD_PORT_CD"].dropna().unique().tolist() if p})
+        by_country[ctr] = ports
+    manifest["dest_ports_by_country"] = by_country
 
     chunk_count = 0
     bkg_total = 0
@@ -578,6 +590,8 @@ def main() -> int:
         "origins": manifest["origins"],
         "months": manifest["months"],
         "salespeople_by_origin": manifest["salespeople_by_origin"],
+        "dest_countries": manifest["dest_countries"],
+        "dest_ports_by_country": manifest["dest_ports_by_country"],
         "chunks": manifest["chunks"],
     }
     (out_dir / "manifest.json").write_text(
