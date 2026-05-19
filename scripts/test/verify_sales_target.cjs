@@ -68,11 +68,24 @@ async function main() {
   step(`KPI cards: ${JSON.stringify(counts)}`);
   step(`data info: ${dataInfo}`);
 
-  // ── 3) Apply an origin filter (CN_SHA) ──────────────────────────────────
-  step('apply filter: origin = CN_SHA');
-  await page.selectOption('#fOrigin', 'CN_SHA');
+  // ── 3) Apply country=CN via multi-select; observe ports/sales narrow ────
+  step('open country multi-select, pick CN');
+  await page.locator('#msCountry .ms-toggle').click();
+  await page.waitForTimeout(200);
+  await page.locator('#msCountry .ms-opt input[value="CN"]').click();
+  await page.waitForTimeout(200);
+  await page.locator('body').click({ position: { x: 5, y: 5 } });
   await page.waitForTimeout(500);
-  await shot(page, '02_filter_origin_CN_SHA');
+  await shot(page, '02_filter_country_CN');
+
+  step('pick port CN_SHA');
+  await page.locator('#msPort .ms-toggle').click();
+  await page.waitForTimeout(200);
+  await page.locator('#msPort .ms-opt input[value="CN_SHA"]').click();
+  await page.waitForTimeout(200);
+  await page.locator('body').click({ position: { x: 5, y: 5 } });
+  await page.waitForTimeout(600);
+  await shot(page, '02b_filter_port_CN_SHA');
 
   const rowCount = await page.locator('table.dt tbody tr.row-clickable').count();
   step(`CN_SHA → ${rowCount} salesperson rows visible`);
