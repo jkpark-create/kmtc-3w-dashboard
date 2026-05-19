@@ -51,6 +51,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WORKBOOK = "1YxZkwvoMaQXIEw07qUDZtCPDFZBf8GOZyr5knkxnLxo"
 SUMMARY_SHEET = "Summary_All"
 MISSING_SALES = "(미지정)"
+SALESMAN_CSV_CANDIDATES = ("salesman.csv", "saleman.csv")
 
 
 def clean_text(value: Any, fallback: str = "") -> str:
@@ -176,6 +177,36 @@ def get_creds() -> Credentials:
     if not creds.valid:
         creds.refresh(Request())
     return creds
+
+
+def find_salesman_csv() -> Path | None:
+    for name in SALESMAN_CSV_CANDIDATES:
+        p = ROOT / name
+        if p.exists():
+            return p
+    return None
+
+
+def load_active_salesman_mapping(path: Path, as_of: str | None = None) -> dict[str, str]:
+    """salesman.csv → {CUSTOMER_NO_UPPER: SALESMAN_NO} for rows active on `as_of` (YYYYMMDD).
+
+    Default `as_of` is today. SALES_END_DATE is treated as 99991231 when missing
+    so that "current owner" rows (typical end date 99991231) are kept.
+    """
+    if as_of is None:
+        as_of = datetime.now().strftime("%Y%m%d")
+    as_of_int = int(as_of)
+    df = pd.read_csv(path, dtype=str, encoding="utf-8-sig", low_memory=False)
+    for col in ["COUNTRY", "PORT", "SALESMAN_NO", "CUSTOMER_NO", "SALES_START_DATE", "SALES_END_DATE"]:
+        if col in df.columns:
+            df[col] = df[col].fillna("").astype(str).str.strip()
+    start = pd.to_numeric(df["SALES_START_DATE"].str.replace(".0", "", regex=False), errors="coerce")
+    end = pd.to_numeric(df["SALES_END_DATE"].str.replace(".0", "", regex=False), errors="coerce")
+    active = df.loc[(start <= as_of_int) & (end >= as_of_int)].copy()
+    active = active.loc[active["CUSTOMER_NO"].ne("") & active["SALESMAN_NO"].ne("")]
+    active["CUSTOMER_NO_KEY"] = active["CUSTOMER_NO"].str.upper()
+    active = active.drop_duplicates("CUSTOMER_NO_KEY", keep="first")
+    return active.set_index("CUSTOMER_NO_KEY")["SALESMAN_NO"].to_dict()
 
 
 def latest_snapshot() -> Path:
@@ -309,7 +340,7 @@ SNAPSHOT_COLUMNS = [
 ]
 
 
-def load_snapshot(path: Path) -> pd.DataFrame:
+def load_snapshot(path: Path, salesman_map: dict[str, str] | None = None) -> pd.DataFrame:
     df = pd.read_csv(
         path,
         usecols=SNAPSHOT_COLUMNS,
@@ -320,6 +351,10 @@ def load_snapshot(path: Path) -> pd.DataFrame:
     for col in SNAPSHOT_COLUMNS:
         df[col] = df[col].fillna("").astype(str).str.strip()
 
+    # Override Salesman_POR using salesman.csv (current customer-owner mapping) when provided.
+    if salesman_map:
+        keys = df["BKG_SHPR_CST_NO"].str.upper()
+        df["Salesman_POR"] = keys.map(salesman_map).fillna("").astype(str).str.strip()
     df["Salesman_POR"] = df["Salesman_POR"].replace("", MISSING_SALES)
     df["team"] = [classify_team(o, d) for o, d in zip(df["POR_CTR_CD"], df["DLY_CTR_CD"])]
     df["tab"] = [tab_key(o, p) for o, p in zip(df["POR_CTR_CD"], df["POR_PLC_CD"])]
@@ -478,6 +513,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workbook", default=DEFAULT_WORKBOOK)
     parser.add_argument("--snapshot", default=None, help="Path to booking_snapshot_result_YYYYMMDD.csv (default: latest)")
+    parser.add_argument("--salesman-csv", default=None, help="Path to salesman.csv (default: project root)")
+    parser.add_argument("--as-of", default=None, help="YYYYMMDD for active-row filter (default: today)")
+    parser.add_argument("--no-remap", action="store_true", help="Skip salesman.csv override (use raw Salesman_POR)")
     parser.add_argument("--out", default=str(ROOT / "dist" / "sales-target"))
     args = parser.parse_args()
 
@@ -492,9 +530,22 @@ def main() -> int:
     parsed_summary = parse_summary(summary_rows)
     print(f"      Parsed {len(parsed_summary)} target rows.", flush=True)
 
+    salesman_map: dict[str, str] | None = None
+    salesman_csv_path: Path | None = None
+    if not args.no_remap:
+        salesman_csv_path = Path(args.salesman_csv) if args.salesman_csv else find_salesman_csv()
+        if salesman_csv_path and salesman_csv_path.exists():
+            salesman_map = load_active_salesman_mapping(salesman_csv_path, args.as_of)
+            print(f"      Salesman map loaded from {salesman_csv_path.name}: {len(salesman_map):,} active CUSTOMER_NO entries.", flush=True)
+        else:
+            print("      WARN: salesman.csv not found; Salesman_POR will use the raw snapshot values.", flush=True)
+
     snapshot_path = Path(args.snapshot) if args.snapshot else latest_snapshot()
     print(f"[2/3] Reading snapshot {snapshot_path.name} ...", flush=True)
-    df = load_snapshot(snapshot_path)
+    df = load_snapshot(snapshot_path, salesman_map=salesman_map)
+    if salesman_map:
+        matched = int((df["Salesman_POR"] != MISSING_SALES).sum())
+        print(f"      Remap coverage: {matched:,} / {len(df):,} rows matched (others → {MISSING_SALES}).", flush=True)
     print(f"      Loaded {len(df):,} booking rows.", flush=True)
 
     print("[3/3] Writing chunk JSONs ...", flush=True)
