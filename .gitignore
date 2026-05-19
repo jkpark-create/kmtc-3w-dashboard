@@ -24,3 +24,8 @@ booking snapshot.xlsx
 run_daily.bat
 send_notification.py
 obt-exception-monitor/history.json
+node_modules/
+verification-output/
+salesman.csv
+package.json
+package-lock.json

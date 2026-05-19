@@ -475,14 +475,14 @@ def per_origin_target_formula(row: int, base_col: str, origin_literal: str, inpu
     # F=HP입력, G=HP제안, H=Memo. Targets reference the 입력 columns (B/D/F).
     return (
         f'=IF(${base_col}{row}="","",'
-        f'${base_col}{row}+IFERROR(VLOOKUP("{origin_literal}",{INPUT_SHEET}!$A$4:$H,{input_col},FALSE),0))'
+        f'${base_col}{row}+IFERROR(VLOOKUP("{origin_literal}",{INPUT_SHEET}!$A:$H,{input_col},FALSE),0))'
     )
 
 
 def summary_target_formula(row: int, base_col: str, input_col: int) -> str:
     return (
         f'=IF(${base_col}{row}="","",'
-        f'${base_col}{row}+IFERROR(VLOOKUP($A{row},{INPUT_SHEET}!$A$4:$H,{input_col},FALSE),0))'
+        f'${base_col}{row}+IFERROR(VLOOKUP($A{row},{INPUT_SHEET}!$A:$H,{input_col},FALSE),0))'
     )
 
 
@@ -558,19 +558,19 @@ def make_data_row(
         blank_none(item["booking_q1_perform"]),
         diff_formula(sheet_row, target_cols[0], perform_cols[0]),
         booking_target_2q,
-        "",
+        blank_none(item.get("booking_q2_progress")),
         diff_formula(sheet_row, target_cols[1], perform_cols[1]),
         lifting_target_1q,
         blank_none(item["lifting_q1_perform"]),
         diff_formula(sheet_row, target_cols[2], perform_cols[2]),
         lifting_target_2q,
-        "",
+        blank_none(item.get("lifting_q2_progress")),
         diff_formula(sheet_row, target_cols[3], perform_cols[3]),
         hp_target_1q,
         blank_none(item["high_profit_q1_perform"]),
         diff_formula(sheet_row, target_cols[4], perform_cols[4]),
         hp_target_2q,
-        "",
+        blank_none(item.get("high_profit_q2_progress")),
         diff_formula(sheet_row, target_cols[5], perform_cols[5]),
         "" if counts[0] is None else counts[0],
         "" if counts[1] is None else counts[1],
