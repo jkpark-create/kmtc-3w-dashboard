@@ -209,6 +209,38 @@ def load_active_salesman_mapping(path: Path, as_of: str | None = None) -> dict[s
     return active.set_index("CUSTOMER_NO_KEY")["SALESMAN_NO"].to_dict()
 
 
+def load_w3_2025_teu(cache_path: Path, salesman_map: dict[str, str] | None) -> tuple[dict[tuple[str, str], float], dict[str, float]]:
+    """Return ({(tab, Salesman_POR): w3_2025_FST_TEU sum}, {tab: team total}).
+
+    Reads _cache_2025.parquet, filters WOS-3 + OBT, optionally remaps Salesman_POR
+    using salesman.csv active mapping (same rule as the 2026 pipeline), groups by
+    (tab, Salesman_POR) and sums FST_TEU.
+    """
+    if not cache_path.exists():
+        return {}, {}
+    needed_cols = ["BKG_SHPR_CST_NO", "POR_CTR_CD", "POR_PLC_CD", "Lead_time (BKG_Sche)", "team", "Salesman_POR", "FST_TEU"]
+    df = pd.read_parquet(cache_path, columns=[c for c in needed_cols if c])
+    df["POR_CTR_CD"] = df["POR_CTR_CD"].fillna("").astype(str).str.strip()
+    df["POR_PLC_CD"] = df["POR_PLC_CD"].fillna("").astype(str).str.strip()
+    df["BKG_SHPR_CST_NO"] = df["BKG_SHPR_CST_NO"].fillna("").astype(str).str.strip()
+    df["Salesman_POR"] = df["Salesman_POR"].fillna("").astype(str).str.strip()
+    if salesman_map:
+        keys = df["BKG_SHPR_CST_NO"].str.upper()
+        df["Salesman_POR"] = keys.map(salesman_map).fillna("").astype(str).str.strip()
+    df["Salesman_POR"] = df["Salesman_POR"].replace("", MISSING_SALES)
+    df["tab"] = [tab_key(o, p) for o, p in zip(df["POR_CTR_CD"], df["POR_PLC_CD"])]
+    df["fst_num"] = pd.to_numeric(df["FST_TEU"].astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
+    scoped = df.loc[
+        df["team"].astype(str).eq("OBT")
+        & df["Lead_time (BKG_Sche)"].astype(str).eq("WOS-3")
+        & df["fst_num"].gt(0)
+        & df["tab"].ne("UNKNOWN")
+    ]
+    by_pair = scoped.groupby(["tab", "Salesman_POR"], dropna=False)["fst_num"].sum().to_dict()
+    by_tab = scoped.groupby("tab", dropna=False)["fst_num"].sum().to_dict()
+    return by_pair, by_tab
+
+
 def latest_snapshot() -> Path:
     candidates: list[tuple[float, Path]] = []
     for path in (ROOT / "output").glob("booking_snapshot_result_*.csv"):
@@ -259,6 +291,7 @@ def parse_summary(rows: list[list[Any]]) -> list[dict[str, Any]]:
             "row_type": row_type,
             "share_2025": parse_pct(raw[2] if len(raw) > 2 else None),
             "booking_base_2025": parse_pct(raw[3] if len(raw) > 3 else None),
+            "w3_2025_teu": None,
             "kpi": {
                 "booking": {
                     "q1": {
@@ -541,6 +574,26 @@ def main() -> int:
     summary_rows = fetch_summary_rows(service, args.workbook)
     parsed_summary = parse_summary(summary_rows)
     print(f"      Parsed {len(parsed_summary)} target rows.", flush=True)
+
+    # Build the 2025 WOS-3 BKG TEU map up front so we can splice it into the rows.
+    cache_2025 = ROOT / "output" / "_cache_2025.parquet"
+    pre_salesman_map: dict[str, str] = {}
+    if not args.no_remap:
+        sm_csv = Path(args.salesman_csv) if args.salesman_csv else find_salesman_csv()
+        if sm_csv and sm_csv.exists():
+            pre_salesman_map = load_active_salesman_mapping(sm_csv, args.as_of)
+    w3_2025_by_pair, w3_2025_by_tab = load_w3_2025_teu(cache_2025, pre_salesman_map)
+    if w3_2025_by_pair:
+        for row in parsed_summary:
+            if row["row_type"] == "TOTAL":
+                row["w3_2025_teu"] = float(w3_2025_by_tab.get(row["tab"], 0.0))
+            else:
+                row["w3_2025_teu"] = float(w3_2025_by_pair.get((row["tab"], row["name"]), 0.0))
+        print(f"      2025 W3 TEU: {len(w3_2025_by_pair)} (tab, salesperson) pairs · {len(w3_2025_by_tab)} tab totals.", flush=True)
+    else:
+        print("      WARN: _cache_2025.parquet missing — '25 W3 BKG' column will be empty.", flush=True)
+        for row in parsed_summary:
+            row["w3_2025_teu"] = None
 
     salesman_map: dict[str, str] | None = None
     salesman_csv_path: Path | None = None
