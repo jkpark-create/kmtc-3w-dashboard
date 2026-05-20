@@ -711,7 +711,7 @@ def select_display_sales_names(
     kept: list[str] = []
     seen: set[str] = set()
     for name in owner_order:
-        if name in raw_by_sales and name not in seen:
+        if name in raw_by_sales and name not in seen and auto_keep(name):
             kept.append(name)
             seen.add(name)
 
@@ -1660,6 +1660,39 @@ def readme_format_requests(sheet_id: int, row_count: int) -> list[dict[str, Any]
     ]
 
 
+def existing_sheet_format_requests(requests: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return format requests that are safe to reapply on an existing sheet.
+
+    In-place runs keep the current header merges, but data row counts can grow.
+    Reapply number formats, borders, dimensions, and conditional formatting so
+    newly appended rows do not inherit Google Sheets' default "automatic" format.
+    """
+    return [request for request in requests if "mergeCells" not in request]
+
+
+def delete_conditional_format_requests(
+    service: Any,
+    spreadsheet_id: str,
+    sheet_ids: set[int],
+) -> list[dict[str, Any]]:
+    if not sheet_ids:
+        return []
+    meta = (
+        service.spreadsheets()
+        .get(spreadsheetId=spreadsheet_id, fields="sheets(properties(sheetId),conditionalFormats)")
+        .execute()
+    )
+    requests: list[dict[str, Any]] = []
+    for sheet in meta.get("sheets", []):
+        sheet_id = sheet.get("properties", {}).get("sheetId")
+        if sheet_id not in sheet_ids:
+            continue
+        rule_count = len(sheet.get("conditionalFormats", []))
+        for idx in range(rule_count - 1, -1, -1):
+            requests.append({"deleteConditionalFormatRule": {"sheetId": sheet_id, "index": idx}})
+    return requests
+
+
 def _with_backoff(call) -> Any:
     import time
     attempt = 0
@@ -1921,6 +1954,18 @@ def main() -> None:
             requests.extend(origin_format_requests(sheet_ids[origin], per_origin_rowcounts[origin]))
         batch_apply(service, spreadsheet_id, requests)
     else:
+        # In-place runs keep existing header merges, but row counts can grow when
+        # stale Sales_Owner_Input entries are supplemented by data-derived owners.
+        # Refresh visible data formats and conditional-format ranges for every
+        # target sheet so newly appended rows render as percentages/counts.
+        target_sheet_ids = {sheet_ids[SUMMARY_SHEET], *[sheet_ids[origin] for origin in origins]}
+        format_reqs: list[dict[str, Any]] = []
+        format_reqs.extend(delete_conditional_format_requests(service, spreadsheet_id, target_sheet_ids))
+        format_reqs.extend(existing_sheet_format_requests(summary_format_requests(sheet_ids[SUMMARY_SHEET], len(summary_values))))
+        for origin in origins:
+            format_reqs.extend(existing_sheet_format_requests(origin_format_requests(sheet_ids[origin], per_origin_rowcounts[origin])))
+        batch_apply(service, spreadsheet_id, format_reqs)
+
         # In-place runs reassert Target_Input formats. The new layout is wider (8 cols, with
         # suggestion columns C/E/G interleaved), so we also resize the grid and reapply the
         # suggestion-highlight + column widths. We avoid touching merges/filter to keep the
