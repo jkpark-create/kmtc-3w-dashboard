@@ -19,8 +19,13 @@ from openpyxl.utils import get_column_letter
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "output"
 TEAM_FILTER = "OBT"
-MONTHS = [f"2025{m:02d}" for m in range(1, 13)] + [f"2026{m:02d}" for m in range(1, 4)]
+MONTHS = [f"2025{m:02d}" for m in range(1, 13)] + [f"2026{m:02d}" for m in range(1, 7)]
 MONTH_LABELS = {m: f"{m[:4]}-{m[4:]}" for m in MONTHS}
+Q2_PROGRESS_KEY = "2026_Q2_W14_19"
+Q2_PROGRESS_LABEL = "2026 Q2 W14-19"
+Q2_PROGRESS_START = datetime(2026, 4, 5)
+Q2_PROGRESS_END = datetime(2026, 5, 10)
+Q2_PROGRESS_WEEKS = set(range(14, 20))
 MISSING = "(미지정)"
 NO_BASIS_LABEL = "(no 2025 basis)"
 NO_BASIS_LEVEL = "no 2025 basis"
@@ -67,6 +72,7 @@ PERIODS: list[tuple[str, str, list[str]]] = [
     ("202602", "2026-02", ["202602"]),
     ("202603", "2026-03", ["202603"]),
     ("2026_Q1", "2026 Q1", ["202601", "202602", "202603"]),
+    (Q2_PROGRESS_KEY, Q2_PROGRESS_LABEL, [Q2_PROGRESS_KEY]),
 ]
 
 
@@ -149,6 +155,75 @@ def tab_key(origin: object, ori_port: object) -> str:
     return origin
 
 
+def parse_week_start(value: object) -> datetime | None:
+    text = norm_text(value)
+    if not text:
+        return None
+    match = re.match(r"(\d{4})\D+(\d{1,2})\D+(\d{1,2})", text)
+    if not match:
+        return None
+    year, month, day = (int(part) for part in match.groups())
+    try:
+        return datetime(year, month, day)
+    except ValueError:
+        return None
+
+
+def is_q2_progress_week(value: object) -> bool:
+    week_start = parse_week_start(value)
+    return bool(week_start and Q2_PROGRESS_START <= week_start <= Q2_PROGRESS_END)
+
+
+def compute_route_profit_type(df: pd.DataFrame) -> pd.Series:
+    """Classify each shipper-route as high/low profit by POR_port + DLY_port CM1/TEU."""
+    out = pd.Series([""] * len(df), index=df.index, dtype="object")
+    if df.empty:
+        return out
+
+    valid = df.loc[
+        df["status"].eq("Normal")
+        & df["cm1"].ne(0)
+        & df["lst"].gt(0)
+        & df["shipper_code"].ne("")
+        & df["ori_port"].ne("")
+        & df["dst_port"].ne("")
+    ].copy()
+    if valid.empty:
+        return out
+
+    route = (
+        valid.groupby(["ori_port", "dst_port"], dropna=False)
+        .agg(route_cm1=("cm1", "sum"), route_teu=("lst", "sum"))
+        .reset_index()
+    )
+    route["route_cm1_teu"] = route["route_cm1"] / route["route_teu"]
+
+    shipper_route = (
+        valid.groupby(["shipper_code", "ori_port", "dst_port"], dropna=False)
+        .agg(shipper_cm1=("cm1", "sum"), shipper_teu=("lst", "sum"))
+        .reset_index()
+    )
+    shipper_route["shipper_cm1_teu"] = shipper_route["shipper_cm1"] / shipper_route["shipper_teu"]
+    shipper_route = shipper_route.merge(
+        route[["ori_port", "dst_port", "route_cm1_teu"]],
+        on=["ori_port", "dst_port"],
+        how="left",
+    )
+    shipper_route["profit_type"] = shipper_route.apply(
+        lambda row: "고수익" if row["shipper_cm1_teu"] >= row["route_cm1_teu"] else "저수익",
+        axis=1,
+    )
+    lookup = {
+        (row.shipper_code, row.ori_port, row.dst_port): row.profit_type
+        for row in shipper_route.itertuples(index=False)
+    }
+    out.loc[:] = [
+        lookup.get((shipper, ori_port, dst_port), "")
+        for shipper, ori_port, dst_port in zip(df["shipper_code"], df["ori_port"], df["dst_port"])
+    ]
+    return out
+
+
 def load_booking() -> pd.DataFrame:
     cache_2025 = OUT_DIR / "_cache_2025.parquet"
     cache_current = OUT_DIR / f"_cache_{CURRENT_DATASET_ID}.parquet"
@@ -168,7 +243,9 @@ def load_booking() -> pd.DataFrame:
         "FST_TEU",
         "LST_Status",
         "LST_TEU",
+        "CM1",
         "YYYYMM",
+        "week_start_date",
         "Booking_date",
         "Lead_time (BKG_Sche)",
         "Salesman_POR",
@@ -181,10 +258,8 @@ def load_booking() -> pd.DataFrame:
         missing = [c for c in columns if c not in frame.columns]
         for c in missing:
             frame[c] = ""
-        frames.append(frame[columns])
-    df = pd.concat(frames, ignore_index=True)
-    df = df.rename(
-        columns={
+        frame = frame[columns].rename(
+            columns={
             "BKG_SHPR_CST_NO": "shipper_code",
             "BKG_SHPR_CST_ENM": "shipper_name",
             "POR_CTR_CD": "origin",
@@ -194,30 +269,38 @@ def load_booking() -> pd.DataFrame:
             "FST_TEU": "fst",
             "LST_Status": "status",
             "LST_TEU": "lst",
+            "CM1": "cm1",
             "YYYYMM": "yyyymm",
+            "week_start_date": "week_start",
             "Booking_date": "booking_date",
             "Lead_time (BKG_Sche)": "lead_time",
             "Salesman_POR": "sales",
             "고/저": "profit_type",
         }
-    )
-    for col in [
-        "shipper_code",
-        "shipper_name",
-        "origin",
-        "ori_port",
-        "dest",
-        "dst_port",
-        "status",
-        "yyyymm",
-        "lead_time",
-        "sales",
-        "profit_type",
-    ]:
-        df[col] = df[col].map(norm_text)
+        )
+        for col in [
+            "shipper_code",
+            "shipper_name",
+            "origin",
+            "ori_port",
+            "dest",
+            "dst_port",
+            "status",
+            "yyyymm",
+            "week_start",
+            "lead_time",
+            "sales",
+            "profit_type",
+        ]:
+            frame[col] = frame[col].map(norm_text)
+        frame["fst"] = to_number(frame["fst"])
+        frame["lst"] = to_number(frame["lst"])
+        frame["cm1"] = to_number(frame["cm1"])
+        frame["profit_type"] = compute_route_profit_type(frame)
+        frame["_q2_progress"] = frame["week_start"].map(is_q2_progress_week)
+        frames.append(frame)
+    df = pd.concat(frames, ignore_index=True)
     df["sales"] = df["sales"].replace("", MISSING)
-    df["fst"] = to_number(df["fst"])
-    df["lst"] = to_number(df["lst"])
     df["team"] = [classify_team(o, d) for o, d in zip(df["origin"], df["dest"])]
     df["tab"] = [tab_key(o, p) for o, p in zip(df["origin"], df["ori_port"])]
     df = df.loc[df["yyyymm"].isin(MONTHS) & df["team"].eq(TEAM_FILTER)].copy()
@@ -269,18 +352,26 @@ def load_bsa() -> pd.DataFrame:
             "DLY_PORT": "dst_port",
             "YYYYMM": "yyyymm",
             "TEU_BSA (Actual)": "route_bsa",
+            "WW": "ww",
         }
     )
-    for col in ["origin", "ori_port", "dest", "dst_port", "yyyymm"]:
+    for col in ["origin", "ori_port", "dest", "dst_port", "yyyymm", "ww"]:
         bsa[col] = bsa[col].map(norm_text)
     bsa["team"] = bsa.get("team", bsa.get("Sales Team", "")).map(norm_text).str.upper()
     bsa["route_bsa"] = to_number(bsa["route_bsa"])
+    bsa["ww_num"] = pd.to_numeric(bsa["ww"], errors="coerce").fillna(0).astype(int)
     bsa["tab"] = [tab_key(o, p) for o, p in zip(bsa["origin"], bsa["ori_port"])]
     bsa = bsa.loc[
         bsa["yyyymm"].isin(MONTHS) & bsa["team"].eq(TEAM_FILTER) & bsa["route_bsa"].gt(0)
     ].copy()
     keys = ["yyyymm", "tab", "team", "origin", "ori_port", "dest", "dst_port"]
-    return bsa.groupby(keys, dropna=False)["route_bsa"].sum().reset_index()
+    monthly = bsa.groupby(keys, dropna=False)["route_bsa"].sum().reset_index()
+    q2 = bsa.loc[bsa["yyyymm"].str.startswith("2026") & bsa["ww_num"].isin(Q2_PROGRESS_WEEKS)].copy()
+    if q2.empty:
+        return monthly
+    q2["yyyymm"] = Q2_PROGRESS_KEY
+    q2 = q2.groupby(keys, dropna=False)["route_bsa"].sum().reset_index()
+    return pd.concat([monthly, q2], ignore_index=True)
 
 
 def metric_sum(df: pd.DataFrame, mask: pd.Series, value_col: str) -> pd.DataFrame:
@@ -292,6 +383,18 @@ def metric_sum(df: pd.DataFrame, mask: pd.Series, value_col: str) -> pd.DataFram
         .reset_index()
         .rename(columns={value_col: "value"})
     )
+    if "_q2_progress" in df.columns:
+        q2_mask = mask & df["_q2_progress"].fillna(False)
+        if q2_mask.any():
+            q2 = df.loc[q2_mask, keys + [value_col]].copy()
+            q2["yyyymm"] = Q2_PROGRESS_KEY
+            q2 = (
+                q2.groupby(keys, dropna=False)[value_col]
+                .sum()
+                .reset_index()
+                .rename(columns={value_col: "value"})
+            )
+            out = pd.concat([out, q2], ignore_index=True)
     return out
 
 
@@ -422,9 +525,12 @@ def pivot_sum(long_df: pd.DataFrame, tab: str, rows: pd.DataFrame) -> pd.DataFra
             fill_value=0.0,
         )
     pivot = pivot.reindex(pd.MultiIndex.from_frame(rows[["team", "sales"]]), fill_value=0.0)
-    for month in MONTHS:
-        if month not in pivot.columns:
-            pivot[month] = 0.0
+    required_members = set(MONTHS)
+    for _, _, members in PERIODS:
+        required_members.update(members)
+    for member in required_members:
+        if member not in pivot.columns:
+            pivot[member] = 0.0
     out = rows.copy()
     for key, _, members in PERIODS:
         out[key] = pivot[members].sum(axis=1).to_numpy()

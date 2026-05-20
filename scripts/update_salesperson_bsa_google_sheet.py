@@ -252,6 +252,18 @@ def build_readme_values(tab_count: int, dataset_id: str) -> list[list[object]]:
     ]
 
 
+def execute_with_backoff(call, max_attempts: int = 7):
+    import time
+
+    for attempt in range(max_attempts):
+        try:
+            return call.execute()
+        except Exception as exc:  # noqa: BLE001
+            if "429" not in str(exc) or attempt == max_attempts - 1:
+                raise
+            time.sleep((2 ** attempt) * 5)
+
+
 def ensure_sheets(service, required_titles: list[str]) -> dict[str, int]:
     meta = service.spreadsheets().get(
         spreadsheetId=SPREADSHEET_ID,
@@ -266,7 +278,9 @@ def ensure_sheets(service, required_titles: list[str]) -> dict[str, int]:
         if title not in existing:
             requests.append({"addSheet": {"properties": {"title": title}}})
     if requests:
-        service.spreadsheets().batchUpdate(spreadsheetId=SPREADSHEET_ID, body={"requests": requests}).execute()
+        execute_with_backoff(
+            service.spreadsheets().batchUpdate(spreadsheetId=SPREADSHEET_ID, body={"requests": requests})
+        )
     meta = service.spreadsheets().get(
         spreadsheetId=SPREADSHEET_ID,
         fields="sheets(properties(sheetId,title,index,gridProperties))",
@@ -276,10 +290,12 @@ def ensure_sheets(service, required_titles: list[str]) -> dict[str, int]:
 
 def batch_update_requests(service, requests: list[dict[str, object]], chunk_size: int = 400) -> None:
     for start in range(0, len(requests), chunk_size):
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=SPREADSHEET_ID,
-            body={"requests": requests[start : start + chunk_size]},
-        ).execute()
+        execute_with_backoff(
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=SPREADSHEET_ID,
+                body={"requests": requests[start : start + chunk_size]},
+            )
+        )
 
 
 def format_report_sheet_requests(
@@ -761,44 +777,73 @@ def main() -> None:
     batch_update_requests(service, unmerge_requests)
 
     clear_ranges = [f"{q(title)}!A:AZ" for title in required_titles]
-    service.spreadsheets().values().batchClear(
-        spreadsheetId=SPREADSHEET_ID,
-        body={"ranges": clear_ranges},
-    ).execute()
+    execute_with_backoff(
+        service.spreadsheets().values().batchClear(
+            spreadsheetId=SPREADSHEET_ID,
+            body={"ranges": clear_ranges},
+        )
+    )
 
     readme_values = build_readme_values(len(tab_names), mod.CURRENT_DATASET_ID)
-    service.spreadsheets().values().update(
-        spreadsheetId=SPREADSHEET_ID,
-        range=f"{q('README')}!A1",
-        valueInputOption="RAW",
-        body={"values": readme_values},
-    ).execute()
+    execute_with_backoff(
+        service.spreadsheets().values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{q('README')}!A1",
+            valueInputOption="RAW",
+            body={"values": readme_values},
+        )
+    )
 
     index_values = build_index_values(validation, allocation, tab_names, gids)
-    service.spreadsheets().values().update(
-        spreadsheetId=SPREADSHEET_ID,
-        range=f"{q('Index')}!A1",
-        valueInputOption="USER_ENTERED",
-        body={"values": index_values},
-    ).execute()
+    execute_with_backoff(
+        service.spreadsheets().values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{q('Index')}!A1",
+            valueInputOption="USER_ENTERED",
+            body={"values": index_values},
+        )
+    )
 
     value_data = []
     for tab, values in report_values.items():
         value_data.append({"range": f"{q(tab)}!A1", "values": values})
-    service.spreadsheets().values().batchUpdate(
-        spreadsheetId=SPREADSHEET_ID,
-        body={"valueInputOption": "RAW", "data": value_data},
-    ).execute()
+    execute_with_backoff(
+        service.spreadsheets().values().batchUpdate(
+            spreadsheetId=SPREADSHEET_ID,
+            body={"valueInputOption": "RAW", "data": value_data},
+        )
+    )
+
+    support_resize_requests: list[dict[str, object]] = []
+    for title, df in support_frames.items():
+        support_resize_requests.append(
+            {
+                "updateSheetProperties": {
+                    "properties": {
+                        "sheetId": gids[title],
+                        "gridProperties": {
+                            "rowCount": max(len(df) + 21, 100),
+                            "columnCount": max(len(df.columns), 1),
+                            "frozenRowCount": 1,
+                        },
+                    },
+                    "fields": "gridProperties(rowCount,columnCount,frozenRowCount)",
+                }
+            }
+        )
+    batch_update_requests(service, support_resize_requests)
 
     for title, df in support_frames.items():
         values = dataframe_values(df)
         for start, part in chunked(values):
-            service.spreadsheets().values().update(
-                spreadsheetId=SPREADSHEET_ID,
-                range=f"{q(title)}!A{start + 1}",
-                valueInputOption="RAW",
-                body={"values": part},
-            ).execute()
+            execute_with_backoff(
+                service.spreadsheets().values().update(
+                    spreadsheetId=SPREADSHEET_ID,
+                    range=f"{q(title)}!A{start + 1}",
+                    valueInputOption="RAW",
+                    body={"values": part},
+                )
+            )
 
     fmt_requests: list[dict[str, object]] = []
     for tab in tab_names:

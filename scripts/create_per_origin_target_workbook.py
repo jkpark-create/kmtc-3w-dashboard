@@ -33,6 +33,7 @@ STATE_PATH = ROOT / "output" / "per_origin_target_workbook.json"
 INPUT_SHEET = "Target_Input"
 SUMMARY_SHEET = "Summary_All"
 README_SHEET = "README"
+OWNER_INPUT_SHEET = "Sales_Owner_Input"
 
 NO_BASIS_LABEL = "(no 2025 basis)"
 MISSING_SALES = "(미지정)"
@@ -44,6 +45,7 @@ PERIOD_COLS = {
     "2025_Q2": 9,
     "2025_Total": 18,
     "2026_Q1": 22,
+    "2026_Q2_W14_19": 23,
 }
 
 BLOCK_PREFIXES = {
@@ -64,6 +66,7 @@ SUPPORT_TABS = {
     "2025_Basis",
     "Validation",
     "Target_Input",
+    "Sales_Owner_Input",
     "Sales_Target_All",
 }
 
@@ -193,6 +196,10 @@ RAW_KEYS = (
     "bsa_q1",
     "w3_norm_lst_q1",
     "hi_w3_q1",
+    "w3_q2_progress",
+    "bsa_q2_progress",
+    "w3_norm_lst_q2_progress",
+    "hi_w3_q2_progress",
 )
 
 
@@ -207,6 +214,10 @@ def build_raw_metrics(sales: str, blocks: dict[str, dict[str, list[Any]]]) -> di
         "bsa_q1": metric(blocks, "bsa", sales, "2026_Q1") or 0.0,
         "w3_norm_lst_q1": metric(blocks, "w3_norm_lst", sales, "2026_Q1") or 0.0,
         "hi_w3_q1": metric(blocks, "hi_w3", sales, "2026_Q1") or 0.0,
+        "w3_q2_progress": metric(blocks, "w3", sales, "2026_Q2_W14_19") or 0.0,
+        "bsa_q2_progress": metric(blocks, "bsa", sales, "2026_Q2_W14_19") or 0.0,
+        "w3_norm_lst_q2_progress": metric(blocks, "w3_norm_lst", sales, "2026_Q2_W14_19") or 0.0,
+        "hi_w3_q2_progress": metric(blocks, "hi_w3", sales, "2026_Q2_W14_19") or 0.0,
     }
 
 
@@ -255,6 +266,9 @@ def build_display_row(
         "lifting_q1_perform": safe_ratio(raw["w3_norm_lst_q1"], raw["w3_q1"]),
         "high_profit_base_2025": safe_ratio(raw["hi_w3_2025"], raw["w3_2025"]),
         "high_profit_q1_perform": safe_ratio(raw["hi_w3_q1"], raw["w3_q1"]),
+        "booking_q2_progress": safe_ratio(raw["w3_q2_progress"], raw["bsa_q2_progress"]),
+        "lifting_q2_progress": safe_ratio(raw["w3_norm_lst_q2_progress"], raw["w3_q2_progress"]),
+        "high_profit_q2_progress": safe_ratio(raw["hi_w3_q2_progress"], raw["w3_q2_progress"]),
         "sort_lift_2025": raw["lst_2025"],
     }
 
@@ -274,7 +288,7 @@ def get_report_tab_values(service: Any) -> dict[str, list[list[Any]]]:
         for s in meta.get("sheets", [])
         if s["properties"]["title"] not in SUPPORT_TABS
     ]
-    ranges = [f"{q(title)}!A1:W220" for title in candidates]
+    ranges = [f"{q(title)}!A1:X260" for title in candidates]
     response = (
         service.spreadsheets()
         .values()
@@ -330,6 +344,56 @@ def read_existing_input(service: Any, spreadsheet_id: str) -> dict[str, tuple[fl
             memo = clean_text(value_at(row, 4))
         out[tab] = (booking, lifting, hp, memo)
     return out
+
+
+def read_sales_owner_input(service: Any, spreadsheet_id: str) -> dict[str, list[str]]:
+    try:
+        rows = (
+            service.spreadsheets()
+            .values()
+            .get(
+                spreadsheetId=spreadsheet_id,
+                range=f"{q(OWNER_INPUT_SHEET)}!A1:O",
+                valueRenderOption="UNFORMATTED_VALUE",
+            )
+            .execute()
+            .get("values", [])
+        )
+    except Exception:
+        return {}
+    if len(rows) < 2:
+        return {}
+    header_row_idx = next(
+        (
+            idx
+            for idx, row in enumerate(rows)
+            if {"Active", "Target_Tab", "Salesman"}.issubset({clean_text(value) for value in row})
+        ),
+        None,
+    )
+    if header_row_idx is None:
+        return {}
+    header = [clean_text(value) for value in rows[header_row_idx]]
+    try:
+        active_idx = header.index("Active")
+        tab_idx = header.index("Target_Tab")
+        sales_idx = header.index("Salesman")
+    except ValueError:
+        return {}
+
+    owners: dict[str, list[str]] = {}
+    seen: dict[str, set[str]] = {}
+    for row in rows[header_row_idx + 1 :]:
+        active = clean_text(value_at(row, active_idx)).upper()
+        tab = clean_text(value_at(row, tab_idx))
+        sales = clean_text(value_at(row, sales_idx))
+        if active not in {"Y", "YES", "TRUE", "1"} or not tab or not sales:
+            continue
+        if sales in seen.setdefault(tab, set()):
+            continue
+        seen[tab].add(sales)
+        owners.setdefault(tab, []).append(sales)
+    return owners
 
 
 def latest_current_cache() -> Path | None:
@@ -582,10 +646,37 @@ def make_data_row(
     ]
 
 
+def row_counts(
+    origin: str,
+    item: dict[str, Any],
+    rows: list[dict[str, Any]],
+    account_counts: dict[tuple[str, str], tuple[int, int, float | None]],
+) -> tuple[Any, Any, Any]:
+    if item.get("row_type") != "TOTAL":
+        return account_counts.get((origin, item["sales"]), (None, None, None))
+
+    total_count = 0
+    w3_count = 0
+    found = False
+    for row in rows:
+        if row.get("row_type") == "TOTAL":
+            continue
+        counts = account_counts.get((origin, row["sales"]))
+        if counts is None:
+            continue
+        total_count += counts[0] or 0
+        w3_count += counts[1] or 0
+        found = True
+    if not found:
+        return account_counts.get((origin, "Team Total"), (None, None, None))
+    return total_count, w3_count, (w3_count / total_count if total_count else None)
+
+
 def collect_rows_for_origin(
     origin: str,
     blocks: dict[str, dict[str, list[Any]]],
     account_counts: dict[tuple[str, str], tuple[int, int, float | None]] | None = None,
+    owner_order: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return display rows for one origin.
 
@@ -594,28 +685,35 @@ def collect_rows_for_origin(
     `(미지정)` always sorts to the bottom regardless of its 2025 lifting volume.
     """
     counts = account_counts or {}
-    sales_names = {
+    metric_sales_names = {
         name
         for block in blocks.values()
         for name in block
         if name not in {"TOTAL", NO_BASIS_LABEL}
     }
+    sales_names = set(metric_sales_names)
+    if owner_order:
+        sales_names.update(owner_order)
     raw_by_sales: dict[str, dict[str, float]] = {
         name: build_raw_metrics(name, blocks) for name in sales_names
     }
-    kept = [
-        name
-        for name in sales_names
-        if has_q1_customers(origin, name, raw_by_sales[name], counts)
-        and has_any_target_base(raw_by_sales[name])
-    ]
+    if owner_order:
+        kept = [name for name in owner_order if name in raw_by_sales]
+    else:
+        kept = [
+            name
+            for name in sales_names
+            if has_q1_customers(origin, name, raw_by_sales[name], counts)
+            and has_any_target_base(raw_by_sales[name])
+        ]
 
     def sort_key(name: str) -> tuple[int, float, str]:
         # (미지정) → bucket 1 (bottom); everyone else bucket 0, sorted by descending 2025 LST.
         bucket = 1 if name == MISSING_SALES else 0
         return (bucket, -raw_by_sales[name]["lst_2025"], name)
 
-    kept.sort(key=sort_key)
+    if not owner_order:
+        kept.sort(key=sort_key)
 
     team_raw: dict[str, float] = {k: 0.0 for k in RAW_KEYS}
     for name in kept:
@@ -642,7 +740,7 @@ def build_origin_sheet_values(
     base_cols = {"booking": "Y", "lifting": "Z", "hp": "AA"}
     for item in rows:
         sheet_row = len(values) + 1
-        counts = account_counts.get((origin, item["sales"]), (None, None, None))
+        counts = row_counts(origin, item, rows, account_counts)
         values.append(
             make_data_row(
                 item=item,
@@ -662,6 +760,7 @@ def build_summary_values(
     report_tabs: dict[str, list[list[Any]]],
     account_counts: dict[tuple[str, str], tuple[int, int, float | None]],
     ordered_origins: list[str] | None = None,
+    owner_orders: dict[str, list[str]] | None = None,
 ) -> list[list[Any]]:
     values: list[list[Any]] = [["2026 OBT Sales Target — All 선적지 통합"]]
     values.extend(header_block(include_tab_col=True))
@@ -675,10 +774,10 @@ def build_summary_values(
         blocks = parse_report_tab(report_tabs[origin])
         if not {"lst", "bsa", "w3", "w3_norm_lst", "hi_w3"}.issubset(blocks):
             continue
-        rows = collect_rows_for_origin(origin, blocks, account_counts)
+        rows = collect_rows_for_origin(origin, blocks, account_counts, (owner_orders or {}).get(origin))
         for item in rows:
             sheet_row = len(values) + 1
-            counts = account_counts.get((origin, item["sales"]), (None, None, None))
+            counts = row_counts(origin, item, rows, account_counts)
             values.append(
                 make_data_row(
                     item=item,
@@ -737,22 +836,29 @@ def compute_team_total_raw(
     origin: str,
     blocks: dict[str, dict[str, list[Any]]],
     account_counts: dict[tuple[str, str], tuple[int, int, float | None]] | None,
+    owner_order: list[str] | None = None,
 ) -> dict[str, float]:
     """Replay the filter+aggregation used by collect_rows_for_origin to recover Team Total raw values."""
     counts = account_counts or {}
-    sales_names = {
+    metric_sales_names = {
         name
         for block in blocks.values()
         for name in block
         if name not in {"TOTAL", NO_BASIS_LABEL}
     }
+    sales_names = set(metric_sales_names)
+    if owner_order:
+        sales_names.update(owner_order)
     raw_by_sales = {name: build_raw_metrics(name, blocks) for name in sales_names}
-    kept = [
-        name
-        for name in sales_names
-        if has_q1_customers(origin, name, raw_by_sales[name], counts)
-        and has_any_target_base(raw_by_sales[name])
-    ]
+    if owner_order:
+        kept = [name for name in owner_order if name in raw_by_sales]
+    else:
+        kept = [
+            name
+            for name in sales_names
+            if has_q1_customers(origin, name, raw_by_sales[name], counts)
+            and has_any_target_base(raw_by_sales[name])
+        ]
     team_raw = {k: 0.0 for k in RAW_KEYS}
     for name in kept:
         for k in RAW_KEYS:
@@ -764,6 +870,7 @@ def compute_suggestions(
     report_tabs: dict[str, list[list[Any]]],
     account_counts: dict[tuple[str, str], tuple[int, int, float | None]] | None,
     origins: list[str],
+    owner_orders: dict[str, list[str]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """For every origin, recommend a +%p for booking / lifting / high-profit and capture
     the per-metric base, performance and reason so a rationale can be written into Memo.
@@ -775,7 +882,7 @@ def compute_suggestions(
         blocks = parse_report_tab(report_tabs[origin])
         if not {"lst", "bsa", "w3", "w3_norm_lst", "hi_w3"}.issubset(blocks):
             continue
-        team = compute_team_total_raw(origin, blocks, account_counts)
+        team = compute_team_total_raw(origin, blocks, account_counts, (owner_orders or {}).get(origin))
         booking_base = safe_ratio(team["w3_2025"], team["bsa_2025"])
         lifting_base = safe_ratio(team["w3_norm_lst_2025"], team["w3_2025"])
         hp_base = safe_ratio(team["hi_w3_2025"], team["w3_2025"])
@@ -1698,7 +1805,7 @@ def list_existing_origin_tabs(service: Any, spreadsheet_id: str) -> tuple[list[s
     for s in sheets:
         title = s["properties"]["title"]
         sheet_ids[title] = s["properties"]["sheetId"]
-        if title in {README_SHEET, INPUT_SHEET, SUMMARY_SHEET}:
+        if title in SUPPORT_TABS or title in {README_SHEET, INPUT_SHEET, SUMMARY_SHEET, OWNER_INPUT_SHEET}:
             continue
         ordered_origins.append(title)
     return ordered_origins, sheet_ids
@@ -1740,6 +1847,7 @@ def main() -> None:
         existing_input = read_existing_input(service, existing_id)
     if not existing_input:
         existing_input = read_existing_input(service, SOURCE_SPREADSHEET_ID)
+    owner_orders: dict[str, list[str]] = read_sales_owner_input(service, existing_id) if existing_id else {}
 
     valid_origins = {
         origin
@@ -1778,8 +1886,13 @@ def main() -> None:
         clear_tab_values(service, spreadsheet_id, [README_SHEET, INPUT_SHEET, SUMMARY_SHEET, *origins])
 
     # Compose all writes, then ship them in a single batchUpdate to avoid 429s.
-    summary_values = build_summary_values(report_tabs, account_counts, ordered_origins=origins)
-    suggestions = compute_suggestions(report_tabs, account_counts, origins)
+    summary_values = build_summary_values(
+        report_tabs,
+        account_counts,
+        ordered_origins=origins,
+        owner_orders=owner_orders,
+    )
+    suggestions = compute_suggestions(report_tabs, account_counts, origins, owner_orders)
     payloads: list[tuple[str, list[list[Any]]]] = [
         (README_SHEET, build_readme_values()),
         (INPUT_SHEET, build_input_values(origins, existing_input, suggestions)),
@@ -1788,7 +1901,7 @@ def main() -> None:
     per_origin_rowcounts: dict[str, int] = {}
     for origin in origins:
         blocks = parse_report_tab(report_tabs[origin])
-        rows = collect_rows_for_origin(origin, blocks, account_counts)
+        rows = collect_rows_for_origin(origin, blocks, account_counts, owner_orders.get(origin))
         values = build_origin_sheet_values(origin, rows, account_counts)
         payloads.append((origin, values))
         per_origin_rowcounts[origin] = len(values)
