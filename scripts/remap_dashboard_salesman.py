@@ -62,6 +62,40 @@ def load_active_mapping(path: Path, as_of: str | None) -> dict[str, str]:
     return active.set_index("KEY")["SALESMAN_NO"].to_dict()
 
 
+# Salesman team classification — OBT means home country is NOT KR / JP.
+# Unknown (blank-only) salespeople are kept (we don't have signal to exclude).
+NON_OBT_COUNTRIES = {"KR", "JP"}
+
+
+def compute_obt_salesman_set(path: Path, as_of: str | None) -> list[str]:
+    """Return SALESMAN_NO list for salespeople whose home country (mode of
+    non-empty COUNTRY rows in active assignments) is NOT KR or JP. Their
+    bookings on OBT routes should still be excluded from the OBT bySales
+    table because the *salesperson* belongs to another team.
+    """
+    if as_of is None:
+        as_of = datetime.now().strftime("%Y%m%d")
+    as_of_int = int(as_of)
+    df = pd.read_csv(path, dtype=str, encoding="utf-8-sig", low_memory=False)
+    for col in ["COUNTRY", "SALESMAN_NO", "SALES_START_DATE", "SALES_END_DATE"]:
+        if col in df.columns:
+            df[col] = df[col].fillna("").astype(str).str.strip()
+    start = pd.to_numeric(df["SALES_START_DATE"].str.replace(".0", "", regex=False), errors="coerce")
+    end = pd.to_numeric(df["SALES_END_DATE"].str.replace(".0", "", regex=False), errors="coerce")
+    active = df.loc[(start <= as_of_int) & (end >= as_of_int) & df["SALESMAN_NO"].ne("")]
+    obt_set: list[str] = []
+    for sm, group in active.groupby("SALESMAN_NO"):
+        non_empty = group.loc[group["COUNTRY"].ne(""), "COUNTRY"]
+        if len(non_empty):
+            home = non_empty.mode().iloc[0]
+        else:
+            home = ""
+        if home in NON_OBT_COUNTRIES:
+            continue
+        obt_set.append(sm)
+    return sorted(obt_set)
+
+
 def remap_shipper(data: dict, mapping: dict[str, str], missing_label: str) -> tuple[int, int]:
     shipper = data.get("shipper")
     if not isinstance(shipper, dict):
@@ -123,6 +157,10 @@ def main() -> int:
         f"Unmatched → {args.missing_label!r}: {unmatched:,}.",
         flush=True,
     )
+
+    obt_set = compute_obt_salesman_set(salesman_path, args.as_of)
+    data["obt_salesmen"] = obt_set
+    print(f"      OBT salesman set: {len(obt_set):,} names (KR/JP-based excluded).", flush=True)
 
     if args.dry_run:
         print("      Dry run — not writing back.", flush=True)
