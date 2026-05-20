@@ -4,11 +4,12 @@
 - booking snapshot 처리 (수식 계산, -3W 필터, 고/저 분류)
 - output/ 폴더에 날짜별 결과 저장
 """
-import sys, re, os, io, csv, json, time, warnings
+import sys, re, os, io, csv, json, time, warnings, subprocess
 import urllib.parse
 import pandas as pd
 import openpyxl
 import requests, urllib3
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -88,6 +89,9 @@ def classify_team(origin, dly_raw):
     else: return 'JBT'
 
 BSA_TEAMS = ('OBT', 'EST', 'IST', 'JBT')
+SALESMAN_CSV_CANDIDATES = ('salesman.csv', 'saleman.csv')
+MISSING_SALES = '(미지정)'
+NON_OBT_COUNTRIES = {'KR', 'JP'}
 
 DEST_GROUP_MAP = {
     'MY': 'MY/SG',
@@ -119,6 +123,122 @@ def normalize_bsa_team(df):
         df['team'] = [classify_team(str(o).strip(), str(d).strip())
                       for o, d in zip(df['POR_Country'], df['DLY_Country'])]
     return df[df['team'].isin(BSA_TEAMS)].copy()
+
+def find_salesman_csv():
+    for name in SALESMAN_CSV_CANDIDATES:
+        path = WORK_DIR / name
+        if path.exists():
+            return path
+    return None
+
+def clean_owner_key(value):
+    if pd.isna(value):
+        return ''
+    text = str(value).strip()
+    if text.lower() in ('', 'nan', 'none', 'nat'):
+        return ''
+    return text.upper()
+
+def load_active_salesman_lookup(path, as_of=None):
+    """Load current customer-owner mapping from salesman.csv.
+
+    Matching priority is origin+port+customer, then origin+customer, then a
+    blank country/port generic row, then a unique customer-level owner.
+    """
+    if as_of is None:
+        as_of = TODAY_STR
+    as_of_int = int(as_of)
+    df = pd.read_csv(path, dtype=str, encoding='utf-8-sig', low_memory=False)
+    required = {'CUSTOMER_NO', 'SALESMAN_NO', 'SALES_START_DATE', 'SALES_END_DATE'}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise KeyError(f"{path.name} missing required columns: {', '.join(missing)}")
+    for col in ['COUNTRY', 'PORT', 'SALESMAN_NO', 'CUSTOMER_NO', 'SALES_START_DATE', 'SALES_END_DATE']:
+        if col in df.columns:
+            df[col] = df[col].fillna('').astype(str).str.strip()
+        else:
+            df[col] = ''
+    start = pd.to_numeric(df['SALES_START_DATE'].str.replace('.0', '', regex=False), errors='coerce')
+    end = pd.to_numeric(df['SALES_END_DATE'].str.replace('.0', '', regex=False), errors='coerce')
+    active = df.loc[(start <= as_of_int) & (end >= as_of_int)].copy()
+    active = active.loc[active['CUSTOMER_NO'].ne('') & active['SALESMAN_NO'].ne('')]
+
+    exact = {}
+    by_country = {}
+    generic = {}
+    by_customer_sales = {}
+    salesman_countries = {}
+
+    def put_once(bucket, key, value):
+        bucket.setdefault(key, value)
+
+    for _, row in active.iterrows():
+        customer = clean_owner_key(row['CUSTOMER_NO'])
+        sales = str(row['SALESMAN_NO']).strip()
+        country = clean_owner_key(row['COUNTRY'])
+        port = clean_owner_key(row['PORT'])
+        if not customer or not sales:
+            continue
+        if country and port:
+            put_once(exact, (country, port, customer), sales)
+        if country:
+            put_once(by_country, (country, customer), sales)
+        if not country and not port:
+            put_once(generic, customer, sales)
+        by_customer_sales.setdefault(customer, set()).add(sales)
+        salesman_countries.setdefault(sales, [])
+        if country:
+            salesman_countries[sales].append(country)
+
+    unique_customer = {
+        customer: next(iter(salespeople))
+        for customer, salespeople in by_customer_sales.items()
+        if len(salespeople) == 1
+    }
+    obt_salesmen = []
+    for sales, countries in salesman_countries.items():
+        home = Counter(countries).most_common(1)[0][0] if countries else ''
+        if home not in NON_OBT_COUNTRIES:
+            obt_salesmen.append(sales)
+
+    return {
+        'exact': exact,
+        'by_country': by_country,
+        'generic': generic,
+        'unique_customer': unique_customer,
+        'obt_salesmen': sorted(set(obt_salesmen)),
+    }
+
+def lookup_salesman_for_booking(lookup, customer_no, origin, ori_port):
+    customer = clean_owner_key(customer_no)
+    if not customer:
+        return ''
+    country = clean_owner_key(origin)
+    port = clean_owner_key(ori_port)
+    return (
+        lookup['exact'].get((country, port, customer))
+        or lookup['by_country'].get((country, customer))
+        or lookup['generic'].get(customer)
+        or lookup['unique_customer'].get(customer)
+        or ''
+    )
+
+def apply_salesman_mapping(output, lookup):
+    mapped = []
+    matched = 0
+    for customer_no, origin, ori_port in zip(
+        output['BKG_SHPR_CST_NO'],
+        output['POR_CTR_CD'],
+        output['POR_PLC_CD'],
+    ):
+        sales = lookup_salesman_for_booking(lookup, customer_no, origin, ori_port)
+        if sales:
+            matched += 1
+            mapped.append(sales)
+        else:
+            mapped.append(MISSING_SALES)
+    output['Salesman_POR'] = mapped
+    return matched, len(mapped) - matched
 
 # Workbook: booking snapshot(전체) - contentUrl
 BKG_WB_CONTENT_URL = 'bookingsnapshot'
@@ -789,6 +909,7 @@ def process_snapshot():
     print("[Process] Loading reference sheets...")
     grade_lookup = {}
     week_month_lookup = {}
+    obt_salesmen = []
 
     # Grade: Tableau에서 분기별 다운로드 (Q1=01, Q2=04, Q3=07, Q4=10)
     grade_csv = WORK_DIR / 'output' / ('grade_latest.csv' if PUBLISH_LATEST else f'grade_{DATASET_ID}.csv')
@@ -1051,6 +1172,24 @@ def process_snapshot():
 
     only_in_2 = sum(1 for b in bkg_nos if b not in df1_dedup.index)
     print(f"  Total: {total:,} (1.csv matched: {total-only_in_2:,}, 2.csv only: {only_in_2:,})")
+
+    salesman_csv = find_salesman_csv()
+    if salesman_csv:
+        try:
+            salesman_lookup = load_active_salesman_lookup(salesman_csv, TODAY_STR)
+            matched, unmatched = apply_salesman_mapping(output, salesman_lookup)
+            obt_salesmen = salesman_lookup['obt_salesmen']
+            print(
+                f"  Salesman mapping: {salesman_csv.name} current owners applied "
+                f"({matched:,} matched / {unmatched:,} unmatched)."
+            )
+            print(f"  OBT salesman set: {len(obt_salesmen):,} names (KR/JP-based excluded).")
+        except Exception as e:
+            print(f"  WARNING: salesman.csv mapping failed; using raw Salesman_POR ({e})")
+            output['Salesman_POR'] = output['Salesman_POR'].fillna('').astype(str).str.strip().replace('', MISSING_SALES)
+    else:
+        print("  WARNING: salesman.csv not found; using raw Salesman_POR")
+        output['Salesman_POR'] = output['Salesman_POR'].fillna('').astype(str).str.strip().replace('', MISSING_SALES)
 
     # --- Compute formulas ---
     print("[Process] Computing formulas...")
@@ -1397,7 +1536,7 @@ def process_snapshot():
 
 
 # ═══════════════════════════════════════════════════════════
-# Phase 3: Google Drive Upload
+# Phase 3/4: Sales Target Build + Google Drive Upload
 # ═══════════════════════════════════════════════════════════
 GDRIVE_FOLDER_ID = '1JIxg6Y-_gRfI1HueXZ1Q9j4-Z5bxvNgv'
 GDRIVE_CREDS_DIR = Path(r'C:\Users\JKPARK\OneDrive\Documents\Claude\.gdrive-mcp')
@@ -1407,6 +1546,7 @@ def upload_to_gdrive():
     """Upload parquet cache + BSA CSV to Google Drive for web dashboard."""
     print("[Upload] Building summary JSON + uploading to Google Drive...")
     import json as _json
+    obt_salesmen = []
 
     # --- Build aggregated JSON for static dashboard ---
     out_dir = WORK_DIR / 'output'
@@ -1435,6 +1575,21 @@ def upload_to_gdrive():
         return
     if DATASET_IS_YEARLY and bkg.empty:
         raise RuntimeError(f"No rows available for yearly dataset {DATASET_ID}; summary JSON was not created.")
+
+    salesman_csv = find_salesman_csv()
+    if salesman_csv:
+        try:
+            salesman_lookup = load_active_salesman_lookup(salesman_csv, TODAY_STR)
+            obt_salesmen = salesman_lookup['obt_salesmen']
+            required_cols = {'BKG_SHPR_CST_NO', 'POR_CTR_CD', 'POR_PLC_CD'}
+            if required_cols.issubset(set(bkg.columns)):
+                matched, unmatched = apply_salesman_mapping(bkg, salesman_lookup)
+                print(
+                    f"  Salesman mapping verified for summary JSON "
+                    f"({matched:,} matched / {unmatched:,} unmatched)."
+                )
+        except Exception as e:
+            print(f"  WARNING: salesman.csv mapping skipped for summary JSON ({e})")
 
     # Ensure derived columns
     _pt_col = [c for c in bkg.columns if '/' in c and len(c) <= 4]
@@ -1660,6 +1815,7 @@ def upload_to_gdrive():
         'weekly': pack_records(weekly_records),
         'shipper': pack_records(shipper_records),
         'bsa': pack_records(bsa_records),
+        'obt_salesmen': obt_salesmen,
     }
 
     json_path = out_dir / f'dashboard_summary_{DATASET_ID}.json'
@@ -1744,6 +1900,38 @@ def upload_to_gdrive():
     print("[Upload] Done.")
 
 
+def build_sales_target_payload():
+    """Build Sales Target chunks from the same snapshot as the main dashboard."""
+    if os.environ.get('SKIP_SALES_TARGET_BUILD') == '1':
+        print("[Sales Target] Skipped by SKIP_SALES_TARGET_BUILD=1.")
+        return
+    if DATASET_IS_YEARLY:
+        print("[Sales Target] Yearly dataset; skipping Sales Target chunk build.")
+        return
+    if not PUBLISH_LATEST:
+        print("[Sales Target] Non-latest dataset; skipping Sales Target chunk build.")
+        return
+
+    script_path = WORK_DIR / 'scripts' / 'build_sales_target_drill_data.py'
+    snapshot_path = WORK_DIR / 'output' / f'booking_snapshot_result_{DATASET_ID}.csv'
+    out_dir = WORK_DIR / 'dist' / 'sales-target'
+
+    if not script_path.exists():
+        raise FileNotFoundError(f"Sales Target build script not found: {script_path}")
+    if not snapshot_path.exists():
+        raise FileNotFoundError(f"Sales Target snapshot not found: {snapshot_path}")
+
+    print(f"[Sales Target] Building chunks from {snapshot_path.name}...")
+    cmd = [
+        sys.executable,
+        str(script_path),
+        '--snapshot', str(snapshot_path),
+        '--out', str(out_dir),
+        '--as-of', DATASET_ID,
+    ]
+    subprocess.run(cmd, cwd=WORK_DIR, check=True)
+
+
 def _upload_file(headers, local_path, filename):
     """Upload or update a file in the Drive folder."""
     import json as _json
@@ -1801,7 +1989,10 @@ def main():
     print("\n--- Phase 2: Booking Snapshot Processing ---")
     process_snapshot()
 
-    print("\n--- Phase 3: Google Drive Upload ---")
+    print("\n--- Phase 3: Sales Target Build ---")
+    build_sales_target_payload()
+
+    print("\n--- Phase 4: Google Drive Upload ---")
     upload_to_gdrive()
 
     elapsed = time.time() - start

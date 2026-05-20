@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -29,6 +30,14 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_JSON = ROOT / "dist" / "data.json"
 DEFAULT_SALESMAN_CANDIDATES = ("salesman.csv", "saleman.csv")
+NON_OBT_COUNTRIES = {"KR", "JP"}
+
+
+def clean_key(value: object) -> str:
+    text = "" if value is None else str(value).strip()
+    if text.lower() in {"", "nan", "none", "nat"}:
+        return ""
+    return text.upper()
 DEFAULT_MISSING = "(미지정)"
 
 
@@ -45,21 +54,81 @@ def find_salesman_csv(explicit: str | None) -> Path:
     raise FileNotFoundError("Missing salesman.csv / saleman.csv in project root")
 
 
-def load_active_mapping(path: Path, as_of: str | None) -> dict[str, str]:
+def load_active_mapping(path: Path, as_of: str | None) -> dict[str, object]:
     if as_of is None:
         as_of = datetime.now().strftime("%Y%m%d")
     as_of_int = int(as_of)
     df = pd.read_csv(path, dtype=str, encoding="utf-8-sig", low_memory=False)
-    for col in ["CUSTOMER_NO", "SALESMAN_NO", "SALES_START_DATE", "SALES_END_DATE"]:
+    for col in ["COUNTRY", "PORT", "CUSTOMER_NO", "SALESMAN_NO", "SALES_START_DATE", "SALES_END_DATE"]:
         if col in df.columns:
             df[col] = df[col].fillna("").astype(str).str.strip()
+        else:
+            df[col] = ""
     start = pd.to_numeric(df["SALES_START_DATE"].str.replace(".0", "", regex=False), errors="coerce")
     end = pd.to_numeric(df["SALES_END_DATE"].str.replace(".0", "", regex=False), errors="coerce")
     active = df.loc[(start <= as_of_int) & (end >= as_of_int)].copy()
     active = active.loc[active["CUSTOMER_NO"].ne("") & active["SALESMAN_NO"].ne("")]
-    active["KEY"] = active["CUSTOMER_NO"].str.upper()
-    active = active.drop_duplicates("KEY", keep="first")
-    return active.set_index("KEY")["SALESMAN_NO"].to_dict()
+    exact: dict[tuple[str, str, str], str] = {}
+    by_country: dict[tuple[str, str], str] = {}
+    generic: dict[str, str] = {}
+    by_customer_sales: dict[str, set[str]] = {}
+    salesman_countries: dict[str, list[str]] = {}
+
+    def put_once(bucket, key, value) -> None:
+        bucket.setdefault(key, value)
+
+    for _, row in active.iterrows():
+        customer = clean_key(row["CUSTOMER_NO"])
+        sales = str(row["SALESMAN_NO"]).strip()
+        country = clean_key(row["COUNTRY"])
+        port = clean_key(row["PORT"])
+        if not customer or not sales:
+            continue
+        if country and port:
+            put_once(exact, (country, port, customer), sales)
+        if country:
+            put_once(by_country, (country, customer), sales)
+        if not country and not port:
+            put_once(generic, customer, sales)
+        by_customer_sales.setdefault(customer, set()).add(sales)
+        salesman_countries.setdefault(sales, [])
+        if country:
+            salesman_countries[sales].append(country)
+
+    unique_customer = {
+        customer: next(iter(salespeople))
+        for customer, salespeople in by_customer_sales.items()
+        if len(salespeople) == 1
+    }
+    obt_salesmen = []
+    for sales, countries in salesman_countries.items():
+        home = Counter(countries).most_common(1)[0][0] if countries else ""
+        if home not in NON_OBT_COUNTRIES:
+            obt_salesmen.append(sales)
+
+    return {
+        "exact": exact,
+        "by_country": by_country,
+        "generic": generic,
+        "unique_customer": unique_customer,
+        "obt_salesmen": sorted(set(obt_salesmen)),
+        "active_rows": int(len(active)),
+    }
+
+
+def lookup_salesman(mapping: dict[str, object], customer_no: object, origin: object = "", ori_port: object = "") -> str:
+    customer = clean_key(customer_no)
+    if not customer:
+        return ""
+    country = clean_key(origin)
+    port = clean_key(ori_port)
+    return (
+        mapping["exact"].get((country, port, customer))
+        or mapping["by_country"].get((country, customer))
+        or mapping["generic"].get(customer)
+        or mapping["unique_customer"].get(customer)
+        or ""
+    )
 
 
 # Salesman team classification — OBT means home country is NOT KR / JP.
@@ -96,7 +165,7 @@ def compute_obt_salesman_set(path: Path, as_of: str | None) -> list[str]:
     return sorted(obt_set)
 
 
-def remap_shipper(data: dict, mapping: dict[str, str], missing_label: str) -> tuple[int, int]:
+def remap_shipper(data: dict, mapping: dict[str, object], missing_label: str) -> tuple[int, int]:
     shipper = data.get("shipper")
     if not isinstance(shipper, dict):
         return 0, 0
@@ -106,17 +175,23 @@ def remap_shipper(data: dict, mapping: dict[str, str], missing_label: str) -> tu
         return 0, 0
     sm_idx = cols.index("Salesman_POR")
     cn_idx = cols.index("BKG_SHPR_CST_NO")
+    origin_idx = cols.index("origin") if "origin" in cols else None
+    port_idx = cols.index("ori_port") if "ori_port" in cols else None
     matched = 0
     unmatched = 0
-    need_len = max(sm_idx, cn_idx) + 1
+    indexes = [sm_idx, cn_idx]
+    if origin_idx is not None:
+        indexes.append(origin_idx)
+    if port_idx is not None:
+        indexes.append(port_idx)
+    need_len = max(indexes) + 1
     for row in rows:
         # columns-v1 rows may omit trailing nulls; pad as needed before we can index.
         if len(row) < need_len:
             row.extend([None] * (need_len - len(row)))
-        cn = row[cn_idx]
-        cn_str = "" if cn is None else (cn if isinstance(cn, str) else str(cn))
-        key = cn_str.strip().upper()
-        new_sales = mapping.get(key)
+        origin = row[origin_idx] if origin_idx is not None else ""
+        ori_port = row[port_idx] if port_idx is not None else ""
+        new_sales = lookup_salesman(mapping, row[cn_idx], origin, ori_port)
         if new_sales:
             row[sm_idx] = new_sales
             matched += 1
@@ -143,7 +218,11 @@ def main() -> int:
 
     print(f"[1/3] Loading {salesman_path.name} ...", flush=True)
     mapping = load_active_mapping(salesman_path, args.as_of)
-    print(f"      Active mapping: {len(mapping):,} CUSTOMER_NO → SALESMAN_NO.", flush=True)
+    print(
+        f"      Active mapping: {mapping['active_rows']:,} active rows; "
+        f"{len(mapping['unique_customer']):,} unique CUSTOMER_NO owners.",
+        flush=True,
+    )
 
     print(f"[2/3] Reading {data_path.name} ...", flush=True)
     with data_path.open(encoding="utf-8") as fh:
@@ -158,12 +237,12 @@ def main() -> int:
         flush=True,
     )
 
-    obt_set = compute_obt_salesman_set(salesman_path, args.as_of)
+    obt_set = mapping["obt_salesmen"]
     data["obt_salesmen"] = obt_set
     print(f"      OBT salesman set: {len(obt_set):,} names (KR/JP-based excluded).", flush=True)
 
     if args.dry_run:
-        print("      Dry run — not writing back.", flush=True)
+        print("      Dry run - not writing back.", flush=True)
         return 0
 
     with data_path.open("w", encoding="utf-8") as fh:

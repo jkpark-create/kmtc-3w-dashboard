@@ -589,9 +589,9 @@ def main() -> int:
                 row["w3_2025_teu"] = float(w3_2025_by_tab.get(row["tab"], 0.0))
             else:
                 row["w3_2025_teu"] = float(w3_2025_by_pair.get((row["tab"], row["name"]), 0.0))
-        print(f"      2025 W3 TEU: {len(w3_2025_by_pair)} (tab, salesperson) pairs · {len(w3_2025_by_tab)} tab totals.", flush=True)
+        print(f"      2025 W3 TEU: {len(w3_2025_by_pair)} (tab, salesperson) pairs; {len(w3_2025_by_tab)} tab totals.", flush=True)
     else:
-        print("      WARN: _cache_2025.parquet missing — '25 W3 BKG' column will be empty.", flush=True)
+        print("      WARN: _cache_2025.parquet missing - '25 W3 BKG' column will be empty.", flush=True)
         for row in parsed_summary:
             row["w3_2025_teu"] = None
 
@@ -610,7 +610,7 @@ def main() -> int:
     df = load_snapshot(snapshot_path, salesman_map=salesman_map)
     if salesman_map:
         matched = int((df["Salesman_POR"] != MISSING_SALES).sum())
-        print(f"      Remap coverage: {matched:,} / {len(df):,} rows matched (others → {MISSING_SALES}).", flush=True)
+        print(f"      Remap coverage: {matched:,} / {len(df):,} rows matched (others -> {MISSING_SALES}).", flush=True)
     print(f"      Loaded {len(df):,} booking rows.", flush=True)
 
     print("[3/3] Writing chunk JSONs ...", flush=True)
