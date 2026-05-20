@@ -1,7 +1,12 @@
 const { chromium } = require('playwright');
 (async () => {
   const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
+  const ctx = await browser.newContext();
+  await ctx.addInitScript(() => {
+    sessionStorage.setItem('gtoken', 'STUB');
+    sessionStorage.setItem('guser', JSON.stringify({ email: 'verifier@ekmtc.com', name: 'Verifier', picture: '' }));
+  });
+  const page = await ctx.newPage();
   page.on('console', m => console.log(`[${m.type()}]`, m.text()));
   page.on('pageerror', e => console.log('[pageerror]', e.message, e.stack?.split('\n').slice(0,3).join(' | ')));
   await page.goto('http://127.0.0.1:8749/sales-target/', { waitUntil: 'networkidle' });

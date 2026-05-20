@@ -37,6 +37,10 @@ async function main() {
     viewport: { width: 1480, height: 920 },
     recordVideo: { dir: VIDEO_DIR, size: { width: 1480, height: 920 } },
   });
+    await context.addInitScript(() => {
+    sessionStorage.setItem('gtoken', 'STUB');
+    sessionStorage.setItem('guser', JSON.stringify({ email: 'verifier@ekmtc.com', name: 'Verifier', picture: '' }));
+  });
   const page = await context.newPage();
 
   const consoleErrors = [];

@@ -8,6 +8,10 @@ const BASE = 'http://127.0.0.1:8749';
 (async () => {
   const browser = await chromium.launch({ headless: true });
   const ctx = await browser.newContext({ viewport: { width: 2010, height: 920 } });
+    await ctx.addInitScript(() => {
+    sessionStorage.setItem('gtoken', 'STUB');
+    sessionStorage.setItem('guser', JSON.stringify({ email: 'verifier@ekmtc.com', name: 'Verifier', picture: '' }));
+  });
   const page = await ctx.newPage();
   page.on('console', m => { if (m.type() === 'error') console.log('ERR:', m.text()); });
   await page.goto(`${BASE}/sales-target/`, { waitUntil: 'networkidle' });
