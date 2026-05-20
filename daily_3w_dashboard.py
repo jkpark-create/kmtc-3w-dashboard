@@ -1825,10 +1825,15 @@ def upload_to_gdrive():
     print(f"  Summary JSON: {json_path.name} ({json_size:,} bytes)")
     print(f"    monthly: {len(monthly_records):,} rows, weekly: {len(weekly_records):,} rows, "
           f"shipper: {len(shipper_records):,} rows, bsa: {len(bsa_records):,} rows")
-    if json_size >= DASHBOARD_JSON_SAFE_LIMIT_BYTES:
+    if PUBLISH_LATEST and json_size >= DASHBOARD_JSON_SAFE_LIMIT_BYTES:
         raise RuntimeError(
             f"{json_path.name} is {json_size:,} bytes; safe limit is "
             f"{DASHBOARD_JSON_SAFE_LIMIT_BYTES:,} bytes to avoid GitHub's 100 MB file limit."
+        )
+    elif json_size >= DASHBOARD_JSON_SAFE_LIMIT_BYTES:
+        print(
+            f"  Historical summary exceeds GitHub-safe size "
+            f"({json_size:,} bytes); Drive-only upload is allowed."
         )
 
     # Copy to dist/data.json only for the current/latest dataset.
