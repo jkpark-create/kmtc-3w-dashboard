@@ -218,10 +218,29 @@ def load_w3_2025_teu(cache_path: Path, salesman_map: dict[str, str] | None) -> t
     """
     if not cache_path.exists():
         return {}, {}
-    needed_cols = ["BKG_SHPR_CST_NO", "POR_CTR_CD", "POR_PLC_CD", "Lead_time (BKG_Sche)", "team", "Salesman_POR", "FST_TEU"]
-    df = pd.read_parquet(cache_path, columns=[c for c in needed_cols if c])
+    needed_cols = [
+        "BKG_SHPR_CST_NO",
+        "POR_CTR_CD",
+        "POR_PLC_CD",
+        "DLY_CTR_CD",
+        "Lead_time (BKG_Sche)",
+        "team",
+        "Salesman_POR",
+        "FST_TEU",
+    ]
+    try:
+        import pyarrow.parquet as pq
+
+        available_cols = set(pq.read_schema(cache_path).names)
+        read_cols = [c for c in needed_cols if c in available_cols]
+    except Exception:
+        read_cols = needed_cols
+    df = pd.read_parquet(cache_path, columns=read_cols)
     df["POR_CTR_CD"] = df["POR_CTR_CD"].fillna("").astype(str).str.strip()
     df["POR_PLC_CD"] = df["POR_PLC_CD"].fillna("").astype(str).str.strip()
+    if "DLY_CTR_CD" not in df.columns:
+        df["DLY_CTR_CD"] = ""
+    df["DLY_CTR_CD"] = df["DLY_CTR_CD"].fillna("").astype(str).str.strip()
     df["BKG_SHPR_CST_NO"] = df["BKG_SHPR_CST_NO"].fillna("").astype(str).str.strip()
     df["Salesman_POR"] = df["Salesman_POR"].fillna("").astype(str).str.strip()
     if salesman_map:
@@ -229,6 +248,10 @@ def load_w3_2025_teu(cache_path: Path, salesman_map: dict[str, str] | None) -> t
         df["Salesman_POR"] = keys.map(salesman_map).fillna("").astype(str).str.strip()
     df["Salesman_POR"] = df["Salesman_POR"].replace("", MISSING_SALES)
     df["tab"] = [tab_key(o, p) for o, p in zip(df["POR_CTR_CD"], df["POR_PLC_CD"])]
+    if "team" not in df.columns:
+        df["team"] = [classify_team(o, d) for o, d in zip(df["POR_CTR_CD"], df["DLY_CTR_CD"])]
+    else:
+        df["team"] = df["team"].fillna("").astype(str).str.strip()
     df["fst_num"] = pd.to_numeric(df["FST_TEU"].astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
     scoped = df.loc[
         df["team"].astype(str).eq("OBT")

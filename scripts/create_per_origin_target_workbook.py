@@ -672,18 +672,12 @@ def row_counts(
     return total_count, w3_count, (w3_count / total_count if total_count else None)
 
 
-def collect_rows_for_origin(
+def select_display_sales_names(
     origin: str,
     blocks: dict[str, dict[str, list[Any]]],
     account_counts: dict[tuple[str, str], tuple[int, int, float | None]] | None = None,
     owner_order: list[str] | None = None,
-) -> list[dict[str, Any]]:
-    """Return display rows for one origin.
-
-    Salespersons with no 1Q 2026 customers are dropped entirely. The Team Total row
-    is recomputed from the surviving salespersons so denominators stay consistent.
-    `(미지정)` always sorts to the bottom regardless of its 2025 lifting volume.
-    """
+) -> tuple[list[str], dict[str, dict[str, float]]]:
     counts = account_counts or {}
     metric_sales_names = {
         name
@@ -697,23 +691,52 @@ def collect_rows_for_origin(
     raw_by_sales: dict[str, dict[str, float]] = {
         name: build_raw_metrics(name, blocks) for name in sales_names
     }
-    if owner_order:
-        kept = [name for name in owner_order if name in raw_by_sales]
-    else:
-        kept = [
-            name
-            for name in sales_names
-            if has_q1_customers(origin, name, raw_by_sales[name], counts)
-            and has_any_target_base(raw_by_sales[name])
-        ]
 
     def sort_key(name: str) -> tuple[int, float, str]:
-        # (미지정) → bucket 1 (bottom); everyone else bucket 0, sorted by descending 2025 LST.
+        # Keep the missing-owner bucket at the bottom; sort the rest by 2025 LST volume.
         bucket = 1 if name == MISSING_SALES else 0
         return (bucket, -raw_by_sales[name]["lst_2025"], name)
 
+    def auto_keep(name: str) -> bool:
+        return (
+            has_q1_customers(origin, name, raw_by_sales[name], counts)
+            and has_any_target_base(raw_by_sales[name])
+        )
+
     if not owner_order:
+        kept = [name for name in sales_names if auto_keep(name)]
         kept.sort(key=sort_key)
+        return kept, raw_by_sales
+
+    kept: list[str] = []
+    seen: set[str] = set()
+    for name in owner_order:
+        if name in raw_by_sales and name not in seen:
+            kept.append(name)
+            seen.add(name)
+
+    # Sales_Owner_Input is an ordering/curation aid, not a hard allow-list.
+    # Append data-derived salespeople so stale or incomplete owner input cannot
+    # hide active target rows from Summary_All and the web dashboard.
+    supplemental = [name for name in metric_sales_names if name not in seen and auto_keep(name)]
+    supplemental.sort(key=sort_key)
+    kept.extend(supplemental)
+    return kept, raw_by_sales
+
+
+def collect_rows_for_origin(
+    origin: str,
+    blocks: dict[str, dict[str, list[Any]]],
+    account_counts: dict[tuple[str, str], tuple[int, int, float | None]] | None = None,
+    owner_order: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return display rows for one origin.
+
+    Salespersons with no 1Q 2026 customers are dropped entirely. The Team Total row
+    is recomputed from the surviving salespersons so denominators stay consistent.
+    `(미지정)` always sorts to the bottom regardless of its 2025 lifting volume.
+    """
+    kept, raw_by_sales = select_display_sales_names(origin, blocks, account_counts, owner_order)
 
     team_raw: dict[str, float] = {k: 0.0 for k in RAW_KEYS}
     for name in kept:
@@ -839,26 +862,7 @@ def compute_team_total_raw(
     owner_order: list[str] | None = None,
 ) -> dict[str, float]:
     """Replay the filter+aggregation used by collect_rows_for_origin to recover Team Total raw values."""
-    counts = account_counts or {}
-    metric_sales_names = {
-        name
-        for block in blocks.values()
-        for name in block
-        if name not in {"TOTAL", NO_BASIS_LABEL}
-    }
-    sales_names = set(metric_sales_names)
-    if owner_order:
-        sales_names.update(owner_order)
-    raw_by_sales = {name: build_raw_metrics(name, blocks) for name in sales_names}
-    if owner_order:
-        kept = [name for name in owner_order if name in raw_by_sales]
-    else:
-        kept = [
-            name
-            for name in sales_names
-            if has_q1_customers(origin, name, raw_by_sales[name], counts)
-            and has_any_target_base(raw_by_sales[name])
-        ]
+    kept, raw_by_sales = select_display_sales_names(origin, blocks, account_counts, owner_order)
     team_raw = {k: 0.0 for k in RAW_KEYS}
     for name in kept:
         for k in RAW_KEYS:
