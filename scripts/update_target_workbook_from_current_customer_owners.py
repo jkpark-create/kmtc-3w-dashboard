@@ -24,12 +24,12 @@ from googleapiclient.http import MediaIoBaseDownload
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "output"
 
-SALES_OWNER_SOURCE_ID = "15RZVs4gpEfr4JzYfOw5iPT1AgTaqZsSf_otjN9eNRxI"
+SALES_OWNER_SOURCE_ID = "1aGn2YyvKRx35mOsHLQAMaas6sa81LTOf4pNPugIUajg"
 TARGET_SPREADSHEET_ID = "1YxZkwvoMaQXIEw07qUDZtCPDFZBf8GOZyr5knkxnLxo"
 SALES_OWNER_INPUT_SHEET = "Sales_Owner_Input"
 
-CURRENT_DATE_INT = 20260519
-CURRENT_DATASET_ID = "20260519"
+CURRENT_DATE_INT = 20260521
+CURRENT_DATASET_ID = "20260521"
 TEAM_FILTER = "OBT"
 MISSING_SALES = "(\ubbf8\uc9c0\uc815)"
 NO_BASIS_LABEL = "(no 2025 basis)"
@@ -108,6 +108,14 @@ MANUAL_ALIASES = {
     "WHZL": "LEOWANG",
     "MARTIN": "MARTIN1",
     "MICHAEL": "MICHAELWEI",
+}
+
+PREFERRED_ALIASES = {
+    # ICC IDs in Global Network that are stale/short forms while salesman.csv
+    # keeps the active customer owner under the expanded ID.
+    "MANOJ": "ARYA",
+    "PAPADA": "PAPHADA",
+    "WINNIE": "WINNIESIA",
 }
 
 
@@ -384,6 +392,10 @@ def id_key(value: object) -> str:
 def resolve_sales_from_keys(keys: list[str], available_by_key: dict[str, str]) -> tuple[str, str]:
     keys = [key for key in dict.fromkeys(keys) if key and key not in {"NA", "N", "A"}]
     for key in keys:
+        alias = PREFERRED_ALIASES.get(key)
+        if alias and norm_key(alias) in available_by_key:
+            return available_by_key[norm_key(alias)], f"preferred_alias:{key}->{alias}"
+    for key in keys:
         if key in available_by_key:
             return available_by_key[key], f"exact:{key}"
     for key in keys:
@@ -409,52 +421,48 @@ def resolve_sales_from_keys(keys: list[str], available_by_key: dict[str, str]) -
 
 
 CONTACT_POINT_SHEETS = [
-    "4. SHA",
-    "5. N.CN",
-    "6. S.CN",
-    "7. TW",
-    "8. PH",
-    "9. HK",
-    "10. SG",
-    "11. ID",
-    "12. MY",
-    "13. VN",
-    "15. TH ",
-    "18. IN",
-    "20.LK",
-    "22. PK",
-    "23. AE",
-    "24. SA",
-    "25. OM",
-    "26.QA",
-    "27. BH",
-    "30.KE",
-    "31. TZ",
-    "32. EG",
-    "33. JO",
-    "34. MX_LZO",
+    "JP",
+    "S.CN",
+    "N.CN",
+    "TH ",
+    "TW",
+    "HK",
+    "PH",
+    "VN",
+    "SG",
+    "MY",
+    "BD",
+    "IN",
+    "LK",
+    "AE+ME",
+    "PK",
+    "KH",
+    "TZ,KE",
+    "ID",
+    "US",
+    "MX",
+    "RU",
 ]
 
 
 SHEET_DEFAULT_TARGET = {
-    "7. TW": "TW",
-    "8. PH": "PH",
-    "9. HK": "HK",
-    "10. SG": "SG",
-    "15. TH ": "TH",
-    "18. IN": "IN",
-    "20.LK": "LK",
-    "22. PK": "PK",
-    "23. AE": "AE",
-    "24. SA": "SA",
-    "25. OM": "OM",
-    "26.QA": "QA",
-    "27. BH": "BH",
-    "30.KE": "KE",
-    "31. TZ": "TZ",
-    "32. EG": "EG",
-    "33. JO": "JO",
-    "34. MX_LZO": "MX",
+    "TH ": "TH",
+    "TW": "TW",
+    "HK": "HK",
+    "PH": "PH",
+    "VN": "VN_SGN_CMP",
+    "SG": "SG",
+    "MY": "PKG+PKW",
+    "BD": "BD",
+    "IN": "IN",
+    "LK": "LK",
+    "AE+ME": "AE",
+    "PK": "PK",
+    "KH": "KH",
+    "TZ,KE": "TZ",
+    "US": "US",
+    "MX": "MX",
+    "RU": "RU",
 }
 
 
@@ -541,10 +549,22 @@ def contact_sheet_rows(ws: Any, max_rows: int = 1100, max_cols: int = 40) -> lis
 
 def contact_header(row: list[str]) -> dict[str, int | None] | None:
     keys = [norm_key(value) for value in row]
-    name_idx = next((i for i, key in enumerate(keys) if key == "NAME" or key.startswith("NAME")), None)
+    name_idx = next((i for i, key in enumerate(keys) if key in {"NAME", "FULLNAME"} or key.endswith("NAME")), None)
+    if name_idx is not None and any(token in keys[name_idx] for token in {"EMAIL", "GROUP"}):
+        name_idx = None
+    if name_idx is None and "PORT" in keys and "ORGANIZATION" in keys and ("ICCID" in keys or "ICC" in keys):
+        # Some Global Network blocks label the person-name column as "Port";
+        # the actual location is held in the adjacent Organization column.
+        port_candidate = keys.index("PORT")
+        org_candidate = keys.index("ORGANIZATION")
+        if port_candidate < org_candidate:
+            name_idx = port_candidate
     if name_idx is None:
         return None
-    has_context = any(key in keys or any(item.startswith(key) for item in keys) for key in {"DEPARTMENT", "DEPT", "PORT", "JOB"})
+    has_context = any(
+        key in keys or any(item.startswith(key) for item in keys)
+        for key in {"AREA", "DEPARTMENT", "DEPT", "JOB", "ORGANIZATION", "PORT", "POSITION", "ROLE"}
+    )
     if not has_context:
         return None
 
@@ -560,13 +580,17 @@ def contact_header(row: list[str]) -> dict[str, int | None] | None:
     icc_idx = idx("ICCID", "ICC")
     next_header = norm_key(row[name_idx + 1]) if name_idx + 1 < len(row) else ""
     name_extra_idx = name_idx + 1 if icc_idx is not None and name_idx + 1 < icc_idx and not next_header else None
+    port_idx = idx("AREA", "PORT", "ORGANIZATION")
+    if name_idx is not None and port_idx == name_idx:
+        alternate_port = idx("ORGANIZATION", "AREA")
+        port_idx = alternate_port if alternate_port != name_idx else None
     return {
-        "port": idx("PORT"),
+        "port": port_idx,
         "dept": idx("DEPARTMENT", "DEPT"),
         "name": name_idx,
         "name_extra": name_extra_idx,
         "icc": icc_idx,
-        "job": idx("JOB", "JOBDESCRIPTION"),
+        "job": idx("JOB", "JOBDESCRIPTION", "ROLE", "POSITION"),
     }
 
 
