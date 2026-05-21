@@ -708,19 +708,16 @@ def select_display_sales_names(
         kept.sort(key=sort_key)
         return kept, raw_by_sales
 
+    # Sales_Owner_Input (the org-chart sheet) is the authoritative roster.
+    # Honour its order exactly and never append data-derived names — bookings
+    # made by a salesperson under a different origin's port should not pull
+    # that salesperson into this origin's table.
     kept: list[str] = []
     seen: set[str] = set()
     for name in owner_order:
-        if name in raw_by_sales and name not in seen and auto_keep(name):
+        if name in raw_by_sales and name not in seen:
             kept.append(name)
             seen.add(name)
-
-    # Sales_Owner_Input is an ordering/curation aid, not a hard allow-list.
-    # Append data-derived salespeople so stale or incomplete owner input cannot
-    # hide active target rows from Summary_All and the web dashboard.
-    supplemental = [name for name in metric_sales_names if name not in seen and auto_keep(name)]
-    supplemental.sort(key=sort_key)
-    kept.extend(supplemental)
     return kept, raw_by_sales
 
 
