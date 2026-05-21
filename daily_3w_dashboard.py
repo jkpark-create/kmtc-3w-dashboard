@@ -53,6 +53,8 @@ PUBLISH_LATEST = os.environ.get(
     'PUBLISH_LATEST',
     '1' if DATASET_ID == TODAY_STR else '0'
 ) == '1'
+GDRIVE_REQUEST_TIMEOUT_SECONDS = int(os.environ.get('GDRIVE_REQUEST_TIMEOUT_SECONDS', '300'))
+GDRIVE_UPLOAD_RETRIES = int(os.environ.get('GDRIVE_UPLOAD_RETRIES', '3'))
 
 # 445 fiscal calendar. 2025 is handled as a 53-week year.
 FISCAL_445 = {
@@ -1866,7 +1868,9 @@ def upload_to_gdrive():
     with open(GDRIVE_CREDS_DIR / 'token.json', encoding='utf-8-sig') as f:
         token = _json.load(f)
 
-    resp = requests.post('https://oauth2.googleapis.com/token', data={
+    resp = _drive_request('POST', 'https://oauth2.googleapis.com/token',
+        retry_label='Google OAuth token refresh',
+        timeout=30, data={
         'client_id': creds['client_id'], 'client_secret': creds['client_secret'],
         'refresh_token': token['refresh_token'], 'grant_type': 'refresh_token'})
     at = resp.json()['access_token']
@@ -1943,8 +1947,9 @@ def _upload_file(headers, local_path, filename):
 
     # Check if file already exists
     q = f"name='{filename}' and '{GDRIVE_FOLDER_ID}' in parents and trashed=false"
-    r = requests.get('https://www.googleapis.com/drive/v3/files',
-        headers=headers, params={'q': q, 'fields': 'files(id)'})
+    r = _drive_request('GET', 'https://www.googleapis.com/drive/v3/files',
+        retry_label=f'Drive lookup {filename}',
+        headers=headers, params={'q': q, 'fields': 'files(id)'}, timeout=30)
     existing = r.json().get('files', [])
 
     with open(local_path, 'rb') as fh:
@@ -1954,7 +1959,8 @@ def _upload_file(headers, local_path, filename):
     if existing:
         # Update existing
         fid = existing[0]['id']
-        r = requests.patch(f'https://www.googleapis.com/upload/drive/v3/files/{fid}',
+        _drive_request('PATCH', f'https://www.googleapis.com/upload/drive/v3/files/{fid}',
+            retry_label=f'Drive update {filename}',
             headers={**headers, 'Content-Type': 'application/octet-stream'},
             params={'uploadType': 'media'}, data=data)
         print(f"  Updated: {filename} ({size:,} bytes)")
@@ -1966,10 +1972,39 @@ def _upload_file(headers, local_path, filename):
         body = (f'--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'
                 f'{metadata}\r\n--{boundary}\r\nContent-Type: application/octet-stream\r\n\r\n').encode()
         body += data + f'\r\n--{boundary}--'.encode()
-        r = requests.post('https://www.googleapis.com/upload/drive/v3/files',
+        _drive_request('POST', 'https://www.googleapis.com/upload/drive/v3/files',
+            retry_label=f'Drive create {filename}',
             headers={**headers, 'Content-Type': f'multipart/related; boundary={boundary}'},
             params={'uploadType': 'multipart'}, data=body)
         print(f"  Created: {filename} ({size:,} bytes)")
+
+
+def _drive_request(method, url, *, retry_label, **kwargs):
+    """Make a Google API request with retries for transient network failures."""
+    kwargs.setdefault('timeout', GDRIVE_REQUEST_TIMEOUT_SECONDS)
+    last_error = None
+    retries = max(1, GDRIVE_UPLOAD_RETRIES)
+
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.request(method, url, **kwargs)
+            response.raise_for_status()
+            return response
+        except requests.RequestException as exc:
+            last_error = exc
+            status = getattr(getattr(exc, 'response', None), 'status_code', None)
+            retryable = status is None or status == 408 or status == 429 or status >= 500
+            if attempt >= retries or not retryable:
+                raise
+
+            wait_seconds = min(60, 5 * attempt)
+            print(
+                f"  WARN: {retry_label} failed on attempt {attempt}/{retries}: "
+                f"{exc}. Retrying in {wait_seconds}s..."
+            )
+            time.sleep(wait_seconds)
+
+    raise RuntimeError(f"{retry_label} failed after {retries} attempts: {last_error}")
 
 
 # ═══════════════════════════════════════════════════════════
