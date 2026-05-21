@@ -28,8 +28,8 @@ SALES_OWNER_SOURCE_ID = "1aGn2YyvKRx35mOsHLQAMaas6sa81LTOf4pNPugIUajg"
 TARGET_SPREADSHEET_ID = "1YxZkwvoMaQXIEw07qUDZtCPDFZBf8GOZyr5knkxnLxo"
 SALES_OWNER_INPUT_SHEET = "Sales_Owner_Input"
 
-CURRENT_DATE_INT = 20260521
-CURRENT_DATASET_ID = "20260521"
+CURRENT_DATASET_ID = datetime.now().strftime("%Y%m%d")
+CURRENT_DATE_INT = int(CURRENT_DATASET_ID)
 TEAM_FILTER = "OBT"
 MISSING_SALES = "(\ubbf8\uc9c0\uc815)"
 NO_BASIS_LABEL = "(no 2025 basis)"
@@ -276,6 +276,31 @@ def get_creds() -> Credentials:
     )
     creds.refresh(Request())
     return creds
+
+
+def latest_dataset_id() -> str:
+    cache_ids = {
+        match.group(1)
+        for path in OUT_DIR.glob("_cache_*.parquet")
+        if (match := re.fullmatch(r"_cache_(\d{8})", path.stem))
+    }
+    bsa_ids = {
+        match.group(1)
+        for path in OUT_DIR.glob("BSA_raw_monthly3W_*.csv")
+        if (match := re.fullmatch(r"BSA_raw_monthly3W_(\d{8})", path.stem))
+    }
+    paired = sorted(cache_ids & bsa_ids)
+    if paired:
+        return paired[-1]
+    snapshot_ids = {
+        match.group(1)
+        for path in OUT_DIR.glob("booking_snapshot_result_*.csv")
+        if (match := re.fullmatch(r"booking_snapshot_result_(\d{8})", path.stem))
+    }
+    fallback = sorted(snapshot_ids | cache_ids | bsa_ids)
+    if fallback:
+        return fallback[-1]
+    return datetime.now().strftime("%Y%m%d")
 
 
 def with_backoff(call: Any) -> Any:
@@ -1320,13 +1345,14 @@ def build_input_values(
     return values
 
 
-def build_readme_values() -> list[list[Any]]:
+def build_readme_values(as_of_int: int) -> list[list[Any]]:
+    as_of_text = f"{str(as_of_int)[:4]}-{str(as_of_int)[4:6]}-{str(as_of_int)[6:8]}"
     return [
         ["2026 OBT Sales Target by Origin"],
         [""],
         ["This version recalculates salesperson performance from the current customer-code owner mapping."],
         ["Owner source", f"https://docs.google.com/spreadsheets/d/{SALES_OWNER_SOURCE_ID}/edit"],
-        ["Customer owner mapping", "saleman.csv active rows as of 2026-05-19"],
+        ["Customer owner mapping", f"saleman.csv active rows as of {as_of_text}"],
         ["Performance basis", "2025, 2026 Q1, and 2026 Q2 week 14-19 bookings are attributed by BKG_SHPR_CST_NO -> current SALESMAN_NO."],
         ["BSA allocation", "Route BSA is allocated inside each tab's selected/current owner group by 2025 Normal LST_TEU route share; Q2 progress uses WW14-19 BSA."],
         ["Generated", datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
@@ -1701,32 +1727,39 @@ def audit_mapping(booking: pd.DataFrame, owner_entries: dict[str, list[OwnerEntr
     return summary
 
 
-def write_audit_files(report: dict[str, Any], owner_entries: dict[str, list[OwnerEntry]], audit: pd.DataFrame) -> None:
+def write_audit_files(report: dict[str, Any], owner_entries: dict[str, list[OwnerEntry]], audit: pd.DataFrame, dataset_id: str) -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     owner_rows = []
     for entries in owner_entries.values():
         for entry in entries:
             owner_rows.append(entry.__dict__)
-    pd.DataFrame(owner_rows).to_csv(OUT_DIR / "current_customer_owner_input_audit_20260519.csv", index=False, encoding="utf-8-sig")
-    audit.to_csv(OUT_DIR / "current_customer_owner_target_audit_20260519.csv", index=False, encoding="utf-8-sig")
-    (OUT_DIR / "current_customer_owner_target_update_20260519.json").write_text(
+    pd.DataFrame(owner_rows).to_csv(OUT_DIR / f"current_customer_owner_input_audit_{dataset_id}.csv", index=False, encoding="utf-8-sig")
+    audit.to_csv(OUT_DIR / f"current_customer_owner_target_audit_{dataset_id}.csv", index=False, encoding="utf-8-sig")
+    (OUT_DIR / f"current_customer_owner_target_update_{dataset_id}.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
 
 def main() -> None:
+    global CURRENT_DATASET_ID, CURRENT_DATE_INT
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="Build payloads and audit files without writing to Google Sheets.")
+    parser.add_argument("--dataset-id", default=None, help="Dataset date YYYYMMDD for _cache/BSA files. Default: latest output dataset.")
+    parser.add_argument("--as-of", default=None, help="Active salesman date YYYYMMDD. Default: dataset-id.")
     args = parser.parse_args()
+
+    CURRENT_DATASET_ID = args.dataset_id or latest_dataset_id()
+    CURRENT_DATE_INT = int(args.as_of or CURRENT_DATASET_ID)
 
     mod = target_builder()
     creds = get_creds()
     drive = build("drive", "v3", credentials=creds)
     sheets = build("sheets", "v4", credentials=creds)
 
-    owner_path = export_sheet(drive, SALES_OWNER_SOURCE_ID, "contact_point_sales_owner_source_export_20260519.xlsx")
-    target_path = export_sheet(drive, TARGET_SPREADSHEET_ID, "target_workbook_before_current_customer_owner_update_20260519.xlsx")
+    owner_path = export_sheet(drive, SALES_OWNER_SOURCE_ID, f"contact_point_sales_owner_source_export_{CURRENT_DATASET_ID}.xlsx")
+    target_path = export_sheet(drive, TARGET_SPREADSHEET_ID, f"target_workbook_before_current_customer_owner_update_{CURRENT_DATASET_ID}.xlsx")
 
     active_sales, customer_to_sales, customer_counts = active_salesman_mapping()
     explicit_entries = load_owner_entries(owner_path, active_sales, customer_counts)
@@ -1752,7 +1785,7 @@ def main() -> None:
     existing_input = read_existing_target_input(target_path, mod)
     suggestions = compute_suggestions(mod, rows_by_origin)
     summary_values = build_summary_values(mod, origins, rows_by_origin, counts)
-    readme_values = build_readme_values()
+    readme_values = build_readme_values(CURRENT_DATE_INT)
     input_values = build_input_values(origins, existing_input, suggestions)
     owner_input_values = build_owner_input_values(owner_entries, origins, raw_by_origin)
     payloads: list[tuple[str, list[list[Any]]]] = [
@@ -1774,6 +1807,8 @@ def main() -> None:
         "target_spreadsheet_id": TARGET_SPREADSHEET_ID,
         "sales_owner_source_id": SALES_OWNER_SOURCE_ID,
         "customer_owner_file": str(ROOT / ("saleman.csv" if (ROOT / "saleman.csv").exists() else "salesman.csv")),
+        "dataset_id": CURRENT_DATASET_ID,
+        "as_of": CURRENT_DATE_INT,
         "booking_rows": int(len(booking)),
         "q2_progress_weeks": "14-19",
         "booking_rows_mapped_to_current_owner": int(booking["mapped_current_owner"].sum()),
@@ -1785,7 +1820,7 @@ def main() -> None:
         "origin_rowcounts": origin_rowcounts,
         "dry_run": args.dry_run,
     }
-    write_audit_files(report, owner_entries, audit)
+    write_audit_files(report, owner_entries, audit, CURRENT_DATASET_ID)
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
     if args.dry_run:
