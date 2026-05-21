@@ -392,6 +392,7 @@ SNAPSHOT_COLUMNS = [
     "Lead_time (BKG_Sche)",
     "YYYYMM_BKG_Sche",
     "Salesman_POR",
+    "고/저",
     "고수익태그",
 ]
 
@@ -419,9 +420,14 @@ def load_snapshot(path: Path, salesman_map: dict[str, str] | None = None) -> pd.
     df["cm1_num"] = pd.to_numeric(df["CM1"].str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
     df["cm1_per_teu_num"] = pd.to_numeric(df["CM1/TEU"].str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
     df["is_w3"] = df["Lead_time (BKG_Sche)"].eq("WOS-3")
-    df["is_hi"] = df["고수익태그"].str.contains("고수익", na=False)
-    df["is_lifted"] = df["LST_Status"].isin({"실선적", "Loaded"}) | df["lst_teu_num"].gt(0)
-    df["is_cancel"] = df["LST_Status"].str.contains("캔슬|cancel", case=False, na=False) | df["Cancel_date"].ne("")
+    status = df["LST_Status"].astype(str).str.strip()
+    df["is_normal"] = status.isin({"Normal", "실선적", "Loaded"})
+    df["is_route_hi"] = df["고/저"].str.contains("고수익", na=False)
+    df["is_hi"] = df["is_route_hi"]
+    df["norm_lst_teu_num"] = df["lst_teu_num"].where(df["is_normal"], 0.0)
+    df["norm_cm1_num"] = df["cm1_num"].where(df["is_normal"] & df["cm1_num"].ne(0), 0.0)
+    df["is_lifted"] = df["is_normal"]
+    df["is_cancel"] = status.str.contains("캔슬|cancel", case=False, na=False) | df["Cancel_date"].ne("")
     return df
 
 
@@ -512,11 +518,17 @@ def build_chunk(origin: str, salesman: str, yyyymm: str, block: pd.DataFrame) ->
             "lst_status": r["LST_Status"],
             "fst_teu": float(r["fst_teu_num"]),
             "lst_teu": float(r["lst_teu_num"]),
+            "norm_lst_teu": float(r["norm_lst_teu_num"]),
             "cm1": float(r["cm1_num"]),
+            "norm_cm1": float(r["norm_cm1_num"]),
             "cm1_per_teu": float(r["cm1_per_teu_num"]),
             "grade": r["grade"],
+            "route_profit": r["고/저"],
+            "shipper_profit_tag": r["고수익태그"],
             "is_w3": bool(r["is_w3"]),
             "is_hi": bool(r["is_hi"]),
+            "is_route_hi": bool(r["is_route_hi"]),
+            "is_normal": bool(r["is_normal"]),
             "is_lifted": bool(r["is_lifted"]),
             "is_cancel": bool(r["is_cancel"]),
         })
@@ -525,11 +537,11 @@ def build_chunk(origin: str, salesman: str, yyyymm: str, block: pd.DataFrame) ->
     shippers: list[dict[str, Any]] = []
     for (cst_no, cst_nm), g in shipper_groups:
         fst = float(g["fst_teu_num"].sum())
-        lst = float(g["lst_teu_num"].sum())
-        cm1 = float(g["cm1_num"].sum())
+        lst = float(g["norm_lst_teu_num"].sum())
+        cm1 = float(g["norm_cm1_num"].sum())
         w3_fst = float(g.loc[g["is_w3"], "fst_teu_num"].sum())
-        w3_lst = float(g.loc[g["is_w3"], "lst_teu_num"].sum())
-        hi_w3_fst = float(g.loc[g["is_w3"] & g["is_hi"], "fst_teu_num"].sum())
+        w3_lst = float(g.loc[g["is_w3"], "norm_lst_teu_num"].sum())
+        hi_w3_fst = float(g.loc[g["is_w3"] & g["is_route_hi"], "fst_teu_num"].sum())
         grade_values = sorted(set(g["grade"].dropna().tolist()))
         grade_label = grade_values[0] if len(grade_values) == 1 else (", ".join(grade_values) if grade_values else "")
         shippers.append({
@@ -550,11 +562,11 @@ def build_chunk(origin: str, salesman: str, yyyymm: str, block: pd.DataFrame) ->
     shippers.sort(key=lambda x: x["fst_teu"], reverse=True)
 
     total_fst = float(block["fst_teu_num"].sum())
-    total_lst = float(block["lst_teu_num"].sum())
-    total_cm1 = float(block["cm1_num"].sum())
+    total_lst = float(block["norm_lst_teu_num"].sum())
+    total_cm1 = float(block["norm_cm1_num"].sum())
     w3_fst = float(block.loc[block["is_w3"], "fst_teu_num"].sum())
-    w3_lst = float(block.loc[block["is_w3"], "lst_teu_num"].sum())
-    w3_hi_fst = float(block.loc[block["is_w3"] & block["is_hi"], "fst_teu_num"].sum())
+    w3_lst = float(block.loc[block["is_w3"], "norm_lst_teu_num"].sum())
+    w3_hi_fst = float(block.loc[block["is_w3"] & block["is_route_hi"], "fst_teu_num"].sum())
 
     return {
         "origin": origin,
