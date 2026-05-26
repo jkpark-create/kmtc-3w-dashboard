@@ -32,6 +32,7 @@ snapshot path defaults to the latest booking_snapshot_result_*.csv in output/.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import math
 import re
@@ -52,6 +53,9 @@ DEFAULT_WORKBOOK = "1YxZkwvoMaQXIEw07qUDZtCPDFZBf8GOZyr5knkxnLxo"
 SUMMARY_SHEET = "Summary_All"
 MISSING_SALES = "(미지정)"
 SALESMAN_CSV_CANDIDATES = ("salesman.csv", "saleman.csv")
+TEAM_FILTER = "OBT"
+BSA_ROUTE_KEYS = ["team", "tab", "origin", "ori_port", "dest", "dst_port"]
+NO_BASIS_SALES = "(no 2025 basis)"
 
 
 def clean_text(value: Any, fallback: str = "") -> str:
@@ -264,6 +268,184 @@ def load_w3_2025_teu(cache_path: Path, salesman_map: dict[str, str] | None) -> t
     return by_pair, by_tab
 
 
+def load_module(module_name: str, path: Path) -> Any:
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load {module_name} from {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def ensure_2025_cache() -> Path:
+    """Create output/_cache_2025.parquet on demand for the BSA allocation basis."""
+    out = ROOT / "output" / "_cache_2025.parquet"
+    if out.exists():
+        return out
+    mod = load_module("build_2025_bsa_shipper_sheet", ROOT / "scripts" / "build_2025_bsa_shipper_sheet.py")
+    df = mod.add_dashboard_fields(mod.build_booking_frame())
+    if "Lead_time (BKG_Sche)" not in df.columns and "Lead_time_BKG_Sche" in df.columns:
+        df["Lead_time (BKG_Sche)"] = df["Lead_time_BKG_Sche"]
+    df.to_parquet(out, index=False)
+    return out
+
+
+def find_bsa_csv(as_of: str | None) -> Path | None:
+    out_dir = ROOT / "output"
+    if as_of:
+        exact = out_dir / f"BSA_raw_monthly3W_{as_of}.csv"
+        if exact.exists():
+            return exact
+    candidates = sorted(out_dir.glob("BSA_raw_monthly3W_*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def load_allocation_basis(cache_path: Path, salesman_map: dict[str, str] | None) -> pd.DataFrame:
+    needed_cols = [
+        "BKG_SHPR_CST_NO",
+        "POR_CTR_CD",
+        "POR_PLC_CD",
+        "DLY_CTR_CD",
+        "DLY_PLC_CD",
+        "LST_Status",
+        "LST_TEU",
+        "YYYYMM",
+        "Salesman_POR",
+        "team",
+    ]
+    try:
+        import pyarrow.parquet as pq
+
+        available_cols = set(pq.read_schema(cache_path).names)
+        read_cols = [c for c in needed_cols if c in available_cols]
+    except Exception:
+        read_cols = needed_cols
+    df = pd.read_parquet(cache_path, columns=read_cols)
+    for col in ["BKG_SHPR_CST_NO", "POR_CTR_CD", "POR_PLC_CD", "DLY_CTR_CD", "DLY_PLC_CD", "LST_Status", "YYYYMM", "Salesman_POR"]:
+        if col not in df.columns:
+            df[col] = ""
+        df[col] = df[col].fillna("").astype(str).str.strip()
+    if salesman_map:
+        keys = df["BKG_SHPR_CST_NO"].str.upper()
+        df["Salesman_POR"] = keys.map(salesman_map).fillna("").astype(str).str.strip()
+    df["Salesman_POR"] = df["Salesman_POR"].replace("", MISSING_SALES)
+    df["tab"] = [tab_key(o, p) for o, p in zip(df["POR_CTR_CD"], df["POR_PLC_CD"])]
+    if "team" not in df.columns:
+        df["team"] = [classify_team(o, d) for o, d in zip(df["POR_CTR_CD"], df["DLY_CTR_CD"])]
+    else:
+        df["team"] = df["team"].fillna("").astype(str).str.strip()
+    df["lst_num"] = pd.to_numeric(df["LST_TEU"].astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
+    basis = df.loc[
+        df["team"].eq(TEAM_FILTER)
+        & df["YYYYMM"].astype(str).str.startswith("2025")
+        & df["LST_Status"].eq("Normal")
+        & df["lst_num"].gt(0)
+        & df["tab"].ne("UNKNOWN")
+    ].copy()
+    if basis.empty:
+        return pd.DataFrame(columns=BSA_ROUTE_KEYS + ["Salesman_POR", "basis_lst"])
+    basis = basis.rename(
+        columns={
+            "POR_CTR_CD": "origin",
+            "POR_PLC_CD": "ori_port",
+            "DLY_CTR_CD": "dest",
+            "DLY_PLC_CD": "dst_port",
+        }
+    )
+    return (
+        basis.groupby(BSA_ROUTE_KEYS + ["Salesman_POR"], dropna=False)["lst_num"]
+        .sum()
+        .reset_index()
+        .rename(columns={"lst_num": "basis_lst"})
+    )
+
+
+def load_bsa_routes(path: Path, months: set[str]) -> pd.DataFrame:
+    bsa = pd.read_csv(path, dtype=str, encoding="utf-8-sig", low_memory=False)
+    bsa = bsa.rename(
+        columns={
+            "POR_Country": "origin",
+            "POR_PORT": "ori_port",
+            "DLY_Country": "dest",
+            "DLY_PORT": "dst_port",
+            "TEU_BSA (Actual)": "route_bsa",
+        }
+    )
+    for col in ["origin", "ori_port", "dest", "dst_port", "YYYYMM"]:
+        if col not in bsa.columns:
+            bsa[col] = ""
+        bsa[col] = bsa[col].fillna("").astype(str).str.strip()
+    if "team" in bsa.columns:
+        team_source = bsa["team"]
+    elif "Sales Team" in bsa.columns:
+        team_source = bsa["Sales Team"]
+    else:
+        team_source = pd.Series([""] * len(bsa), index=bsa.index)
+    bsa["team"] = team_source.fillna("").astype(str).str.strip().str.upper()
+    bsa["route_bsa"] = pd.to_numeric(bsa["route_bsa"].fillna("").astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
+    bsa["tab"] = [tab_key(o, p) for o, p in zip(bsa["origin"], bsa["ori_port"])]
+    bsa = bsa.loc[
+        bsa["team"].eq(TEAM_FILTER)
+        & bsa["YYYYMM"].isin(months)
+        & bsa["route_bsa"].gt(0)
+        & bsa["tab"].ne("UNKNOWN")
+    ].copy()
+    if bsa.empty:
+        return pd.DataFrame(columns=["YYYYMM"] + BSA_ROUTE_KEYS + ["route_bsa"])
+    return bsa.groupby(["YYYYMM"] + BSA_ROUTE_KEYS, dropna=False)["route_bsa"].sum().reset_index()
+
+
+def build_allocated_bsa(months: set[str], salesman_map: dict[str, str] | None, as_of: str | None) -> pd.DataFrame:
+    columns = ["tab", "Salesman_POR", "YYYYMM", "dest", "dst_port", "allocated_bsa"]
+    if not months:
+        return pd.DataFrame(columns=columns)
+    bsa_path = find_bsa_csv(as_of)
+    if bsa_path is None:
+        print("      WARN: BSA CSV not found; detailed 3W/BSA will be blank.", flush=True)
+        return pd.DataFrame(columns=columns)
+    try:
+        cache_2025 = ensure_2025_cache()
+        basis = load_allocation_basis(cache_2025, salesman_map)
+        bsa = load_bsa_routes(bsa_path, months)
+    except Exception as exc:
+        print(f"      WARN: failed to build allocated BSA ({exc}); detailed 3W/BSA will be blank.", flush=True)
+        return pd.DataFrame(columns=columns)
+    if basis.empty or bsa.empty:
+        return pd.DataFrame(columns=columns)
+    basis_total = (
+        basis.groupby(BSA_ROUTE_KEYS, dropna=False)["basis_lst"]
+        .sum()
+        .reset_index()
+        .rename(columns={"basis_lst": "basis_total_lst"})
+    )
+    alloc = bsa.merge(basis, on=BSA_ROUTE_KEYS, how="left").merge(basis_total, on=BSA_ROUTE_KEYS, how="left")
+    alloc["basis_lst"] = pd.to_numeric(alloc["basis_lst"], errors="coerce").fillna(0.0)
+    alloc["basis_total_lst"] = pd.to_numeric(alloc["basis_total_lst"], errors="coerce").fillna(0.0)
+    with_basis = alloc.loc[alloc["basis_lst"].gt(0) & alloc["basis_total_lst"].gt(0)].copy()
+    no_basis = alloc.loc[alloc["basis_total_lst"].le(0)].copy()
+    pieces: list[pd.DataFrame] = []
+    if not with_basis.empty:
+        with_basis["allocated_bsa"] = with_basis["route_bsa"] * with_basis["basis_lst"] / with_basis["basis_total_lst"]
+        pieces.append(with_basis)
+    if not no_basis.empty:
+        no_basis["Salesman_POR"] = NO_BASIS_SALES
+        no_basis["allocated_bsa"] = no_basis["route_bsa"]
+        pieces.append(no_basis)
+    if not pieces:
+        return pd.DataFrame(columns=columns)
+    alloc = pd.concat(pieces, ignore_index=True)
+    out = (
+        alloc.groupby(["tab", "Salesman_POR", "YYYYMM", "dest", "dst_port"], dropna=False)["allocated_bsa"]
+        .sum()
+        .reset_index()
+    )
+    print(
+        f"      Allocated BSA from {bsa_path.name}: {len(out):,} origin/sales/month/destination rows.",
+        flush=True,
+    )
+    return out
+
+
 def latest_snapshot() -> Path:
     candidates: list[tuple[float, Path]] = []
     for path in (ROOT / "output").glob("booking_snapshot_result_*.csv"):
@@ -431,7 +613,7 @@ def load_snapshot(path: Path, salesman_map: dict[str, str] | None = None) -> pd.
     return df
 
 
-def aggregate_chunks(df: pd.DataFrame, out_dir: Path) -> dict[str, Any]:
+def aggregate_chunks(df: pd.DataFrame, out_dir: Path, bsa_allocations: pd.DataFrame | None = None) -> dict[str, Any]:
     """Filter to OBT scope, drop rows with no origin tab, then write per-(tab, salesman, YYYYMM) JSON chunks."""
     scoped = df.loc[
         df["team"].eq("OBT")
@@ -468,10 +650,16 @@ def aggregate_chunks(df: pd.DataFrame, out_dir: Path) -> dict[str, Any]:
 
     chunk_count = 0
     bkg_total = 0
+    bsa_groups: dict[tuple[str, str, str], pd.DataFrame] = {}
+    if bsa_allocations is not None and not bsa_allocations.empty:
+        for key, group in bsa_allocations.groupby(["tab", "Salesman_POR", "YYYYMM"], dropna=False):
+            bsa_groups[key] = group
+    written_keys: set[tuple[str, str, str]] = set()
     for (origin, salesman, yyyymm), block in scoped.groupby(["tab", "Salesman_POR", "YYYYMM"], dropna=False):
         if not origin or not salesman or not yyyymm:
             continue
-        chunk = build_chunk(origin, salesman, yyyymm, block)
+        written_keys.add((origin, salesman, yyyymm))
+        chunk = build_chunk(origin, salesman, yyyymm, block, bsa_groups.get((origin, salesman, yyyymm)))
         token = "__".join([safe_filename_token(origin), safe_filename_token(salesman), safe_filename_token(yyyymm)])
         path = chunk_dir / f"{token}.json"
         path.write_text(json.dumps(chunk, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
@@ -486,12 +674,75 @@ def aggregate_chunks(df: pd.DataFrame, out_dir: Path) -> dict[str, Any]:
         chunk_count += 1
         bkg_total += len(chunk["bookings"])
 
+    for (origin, salesman, yyyymm), group in bsa_groups.items():
+        if (origin, salesman, yyyymm) in written_keys or not origin or not salesman or not yyyymm:
+            continue
+        chunk = build_empty_bsa_chunk(origin, salesman, yyyymm, group)
+        token = "__".join([safe_filename_token(origin), safe_filename_token(salesman), safe_filename_token(yyyymm)])
+        path = chunk_dir / f"{token}.json"
+        path.write_text(json.dumps(chunk, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        manifest["chunks"].append({
+            "origin": origin,
+            "salesman": salesman,
+            "yyyymm": yyyymm,
+            "file": f"data/{path.name}",
+            "rows": 0,
+            "shippers": 0,
+        })
+        chunk_count += 1
+
     manifest["chunk_count"] = chunk_count
     manifest["bkg_rows"] = bkg_total
     return manifest
 
 
-def build_chunk(origin: str, salesman: str, yyyymm: str, block: pd.DataFrame) -> dict[str, Any]:
+def serialize_bsa_allocations(bsa_block: pd.DataFrame | None) -> tuple[float, list[dict[str, Any]]]:
+    if bsa_block is None or bsa_block.empty:
+        return 0.0, []
+    grouped = (
+        bsa_block.groupby(["dest", "dst_port"], dropna=False)["allocated_bsa"]
+        .sum()
+        .reset_index()
+    )
+    rows: list[dict[str, Any]] = []
+    total = 0.0
+    for item in grouped.itertuples(index=False):
+        value = float(item.allocated_bsa or 0.0)
+        total += value
+        rows.append({
+            "pod_country": clean_text(item.dest),
+            "pod": clean_text(item.dst_port),
+            "allocated_bsa": value,
+        })
+    return total, rows
+
+
+def build_empty_bsa_chunk(origin: str, salesman: str, yyyymm: str, bsa_block: pd.DataFrame) -> dict[str, Any]:
+    allocated_bsa, bsa_rows = serialize_bsa_allocations(bsa_block)
+    return {
+        "origin": origin,
+        "salesman": salesman,
+        "yyyymm": yyyymm,
+        "totals": {
+            "bkg_count": 0,
+            "shipper_count": 0,
+            "fst_teu": 0.0,
+            "lst_teu": 0.0,
+            "cm1": 0.0,
+            "w3_fst": 0.0,
+            "w3_lst": 0.0,
+            "w3_hi_fst": 0.0,
+            "allocated_bsa": allocated_bsa,
+            "lst_rate_w3": None,
+            "hi_share_w3": None,
+        },
+        "shippers": [],
+        "bsa_allocations": bsa_rows,
+        "bookings": [],
+    }
+
+
+def build_chunk(origin: str, salesman: str, yyyymm: str, block: pd.DataFrame, bsa_block: pd.DataFrame | None = None) -> dict[str, Any]:
     """Per-(origin, salesman, YYYYMM) chunk: shipper aggregates + BKG_NO list."""
     bookings: list[dict[str, Any]] = []
     for _, r in block.iterrows():
@@ -567,6 +818,7 @@ def build_chunk(origin: str, salesman: str, yyyymm: str, block: pd.DataFrame) ->
     w3_fst = float(block.loc[block["is_w3"], "fst_teu_num"].sum())
     w3_lst = float(block.loc[block["is_w3"], "norm_lst_teu_num"].sum())
     w3_hi_fst = float(block.loc[block["is_w3"] & block["is_route_hi"], "fst_teu_num"].sum())
+    allocated_bsa, bsa_rows = serialize_bsa_allocations(bsa_block)
 
     return {
         "origin": origin,
@@ -581,10 +833,12 @@ def build_chunk(origin: str, salesman: str, yyyymm: str, block: pd.DataFrame) ->
             "w3_fst": w3_fst,
             "w3_lst": w3_lst,
             "w3_hi_fst": w3_hi_fst,
+            "allocated_bsa": allocated_bsa,
             "lst_rate_w3": (w3_lst / w3_fst) if w3_fst else None,
             "hi_share_w3": (w3_hi_fst / w3_fst) if w3_fst else None,
         },
         "shippers": shippers,
+        "bsa_allocations": bsa_rows,
         "bookings": bookings,
     }
 
@@ -641,6 +895,8 @@ def main() -> int:
             print("      WARN: salesman.csv not found; Salesman_POR will use the raw snapshot values.", flush=True)
 
     snapshot_path = Path(args.snapshot) if args.snapshot else latest_snapshot()
+    data_date_match = re.search(r"booking_snapshot_result_(\d{8})", snapshot_path.stem)
+    data_date = data_date_match.group(1) if data_date_match else datetime.now().strftime("%Y%m%d")
     print(f"[2/3] Reading snapshot {snapshot_path.name} ...", flush=True)
     df = load_snapshot(snapshot_path, salesman_map=salesman_map)
     if salesman_map:
@@ -649,10 +905,17 @@ def main() -> int:
     print(f"      Loaded {len(df):,} booking rows.", flush=True)
 
     print("[3/3] Writing chunk JSONs ...", flush=True)
-    manifest = aggregate_chunks(df, out_dir)
-
-    data_date_match = re.search(r"booking_snapshot_result_(\d{8})", snapshot_path.stem)
-    data_date = data_date_match.group(1) if data_date_match else datetime.now().strftime("%Y%m%d")
+    alloc_months = set(
+        df.loc[
+            df["team"].eq(TEAM_FILTER)
+            & df["fst_teu_num"].gt(0)
+            & df["YYYYMM"].ne("")
+            & df["tab"].ne("UNKNOWN"),
+            "YYYYMM",
+        ].dropna().astype(str)
+    )
+    bsa_allocations = build_allocated_bsa(alloc_months, salesman_map, args.as_of or data_date)
+    manifest = aggregate_chunks(df, out_dir, bsa_allocations)
 
     index_payload = {
         "_format": "sales-target-index-v1",
