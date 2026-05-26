@@ -603,7 +603,7 @@ def load_snapshot(path: Path, salesman_map: dict[str, str] | None = None) -> pd.
     df["cm1_per_teu_num"] = pd.to_numeric(df["CM1/TEU"].str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
     df["is_w3"] = df["Lead_time (BKG_Sche)"].eq("WOS-3")
     status = df["LST_Status"].astype(str).str.strip()
-    df["is_normal"] = status.isin({"Normal", "실선적", "Loaded"})
+    df["is_normal"] = status.eq("Normal")
     df["is_route_hi"] = df["고/저"].str.contains("고수익", na=False)
     df["is_hi"] = df["is_route_hi"]
     df["norm_lst_teu_num"] = df["lst_teu_num"].where(df["is_normal"], 0.0)
@@ -613,14 +613,23 @@ def load_snapshot(path: Path, salesman_map: dict[str, str] | None = None) -> pd.
     return df
 
 
-def aggregate_chunks(df: pd.DataFrame, out_dir: Path, bsa_allocations: pd.DataFrame | None = None) -> dict[str, Any]:
-    """Filter to OBT scope, drop rows with no origin tab, then write per-(tab, salesman, YYYYMM) JSON chunks."""
-    scoped = df.loc[
-        df["team"].eq("OBT")
-        & df["fst_teu_num"].gt(0)
+def sales_target_scope_mask(df: pd.DataFrame) -> pd.Series:
+    """Rows that contribute to Sales Target metrics.
+
+    The main dashboard includes zero-FST rows in the actual lifting numerator
+    when they have Normal LST_TEU, so the Sales Target chunks must keep them too.
+    """
+    return (
+        df["team"].eq(TEAM_FILTER)
+        & (df["fst_teu_num"].gt(0) | df["norm_lst_teu_num"].gt(0))
         & df["YYYYMM"].ne("")
         & df["tab"].ne("UNKNOWN")
-    ].copy()
+    )
+
+
+def aggregate_chunks(df: pd.DataFrame, out_dir: Path, bsa_allocations: pd.DataFrame | None = None) -> dict[str, Any]:
+    """Filter to OBT scope, drop rows with no origin tab, then write per-(tab, salesman, YYYYMM) JSON chunks."""
+    scoped = df.loc[sales_target_scope_mask(df)].copy()
 
     chunk_dir = out_dir / "data"
     chunk_dir.mkdir(parents=True, exist_ok=True)
@@ -905,15 +914,7 @@ def main() -> int:
     print(f"      Loaded {len(df):,} booking rows.", flush=True)
 
     print("[3/3] Writing chunk JSONs ...", flush=True)
-    alloc_months = set(
-        df.loc[
-            df["team"].eq(TEAM_FILTER)
-            & df["fst_teu_num"].gt(0)
-            & df["YYYYMM"].ne("")
-            & df["tab"].ne("UNKNOWN"),
-            "YYYYMM",
-        ].dropna().astype(str)
-    )
+    alloc_months = set(df.loc[sales_target_scope_mask(df), "YYYYMM"].dropna().astype(str))
     bsa_allocations = build_allocated_bsa(alloc_months, salesman_map, args.as_of or data_date)
     manifest = aggregate_chunks(df, out_dir, bsa_allocations)
 
