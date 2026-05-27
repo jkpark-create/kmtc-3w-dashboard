@@ -56,6 +56,12 @@ SALESMAN_CSV_CANDIDATES = ("salesman.csv", "saleman.csv")
 TEAM_FILTER = "OBT"
 BSA_ROUTE_KEYS = ["team", "tab", "origin", "ori_port", "dest", "dst_port"]
 NO_BASIS_SALES = "(no 2025 basis)"
+CN_NKG_PORTS = frozenset({
+    "AIA", "AQG", "CGD", "CGS", "CKG", "CKQ", "CSX", "CZH",
+    "CZX", "FLG", "HFE", "HSI", "JIA", "JIN", "JJG", "LUZ",
+    "MSN", "NCH", "NKG", "NTG", "TAZ", "TCG", "TOL", "WHI",
+    "WUH", "WUW", "WZH", "YCH", "YYA", "YZH", "YZR", "ZHE", "ZJG",
+})
 
 
 def clean_text(value: Any, fallback: str = "") -> str:
@@ -119,6 +125,8 @@ def tab_key(origin: Any, ori_port: Any) -> str:
     origin_text = clean_text(origin, "UNKNOWN")
     port = clean_text(ori_port, "UNKNOWN")
     if origin_text == "CN":
+        if port in CN_NKG_PORTS:
+            return "CN_NKG"
         return "CN_SHK_DCB" if port in {"SHK", "DCB"} else f"CN_{port}"
     if origin_text == "VN":
         if port in {"SGN", "CMP"}:
@@ -633,6 +641,8 @@ def aggregate_chunks(df: pd.DataFrame, out_dir: Path, bsa_allocations: pd.DataFr
 
     chunk_dir = out_dir / "data"
     chunk_dir.mkdir(parents=True, exist_ok=True)
+    for old_chunk in chunk_dir.glob("*.json"):
+        old_chunk.unlink()
 
     manifest: dict[str, Any] = {
         "chunks": [],

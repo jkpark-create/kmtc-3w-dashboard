@@ -35,6 +35,12 @@ NO_BASIS_NOTE = (
 )
 ALWAYS_KEEP_SALES = {MISSING, NO_BASIS_LABEL}
 SALES_SCOPED_TAB_PREFIXES = ("CN_",)
+CN_NKG_PORTS = frozenset({
+    "AIA", "AQG", "CGD", "CGS", "CKG", "CKQ", "CSX", "CZH",
+    "CZX", "FLG", "HFE", "HSI", "JIA", "JIN", "JJG", "LUZ",
+    "MSN", "NCH", "NKG", "NTG", "TAZ", "TCG", "TOL", "WHI",
+    "WUH", "WUW", "WZH", "YCH", "YYA", "YZH", "YZR", "ZHE", "ZJG",
+})
 
 
 def latest_dataset_id() -> str:
@@ -131,6 +137,8 @@ def tab_key(origin: object, ori_port: object) -> str:
     origin = norm_text(origin, "UNKNOWN")
     port = norm_text(ori_port, "UNKNOWN")
     if origin == "CN":
+        if port in CN_NKG_PORTS:
+            return "CN_NKG"
         return "CN_SHK_DCB" if port in {"SHK", "DCB"} else f"CN_{port}"
     if origin == "VN":
         if port in {"SGN", "CMP"}:

@@ -39,6 +39,12 @@ NO_BASIS_LABEL = "(no 2025 basis)"
 MISSING_SALES = "(미지정)"
 Q1_2026 = {"202601", "202602", "202603"}
 Q2_2026 = {"202604", "202605", "202606"}
+CN_NKG_PORTS = frozenset({
+    "AIA", "AQG", "CGD", "CGS", "CKG", "CKQ", "CSX", "CZH",
+    "CZX", "FLG", "HFE", "HSI", "JIA", "JIN", "JJG", "LUZ",
+    "MSN", "NCH", "NKG", "NTG", "TAZ", "TCG", "TOL", "WHI",
+    "WUH", "WUW", "WZH", "YCH", "YYA", "YZH", "YZR", "ZHE", "ZJG",
+})
 
 PERIOD_COLS = {
     "2025_Q1": 5,
@@ -420,6 +426,8 @@ def tab_key(origin: Any, ori_port: Any) -> str:
     origin_text = clean_text(origin, "UNKNOWN")
     port = clean_text(ori_port, "UNKNOWN")
     if origin_text == "CN":
+        if port in CN_NKG_PORTS:
+            return "CN_NKG"
         return "CN_SHK_DCB" if port in {"SHK", "DCB"} else f"CN_{port}"
     if origin_text == "VN":
         if port in {"SGN", "CMP"}:

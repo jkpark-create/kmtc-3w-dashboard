@@ -46,6 +46,12 @@ FISCAL_445 = {
     2026: (datetime(2026, 1, 4), [4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4, 5]),
     2027: (datetime(2027, 1, 3), [4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4, 5]),
 }
+CN_NKG_PORTS = frozenset({
+    "AIA", "AQG", "CGD", "CGS", "CKG", "CKQ", "CSX", "CZH",
+    "CZX", "FLG", "HFE", "HSI", "JIA", "JIN", "JJG", "LUZ",
+    "MSN", "NCH", "NKG", "NTG", "TAZ", "TCG", "TOL", "WHI",
+    "WUH", "WUW", "WZH", "YCH", "YYA", "YZH", "YZR", "ZHE", "ZJG",
+})
 
 
 # Target workbook tab -> source organization-chart sheet / column / row span.
@@ -493,8 +499,7 @@ SHEET_DEFAULT_TARGET = {
 
 PORT_TARGET_MAP = {
     "SHA": "CN_SHA",
-    "NKG": "CN_NKG",
-    "YZR": "CN_NKG",
+    **{port: "CN_NKG" for port in CN_NKG_PORTS},
     "XGG": "CN_XGG",
     "DLC": "CN_DLC",
     "TAO": "CN_TAO",
@@ -742,6 +747,8 @@ def tab_key(origin: object, ori_port: object) -> str:
     origin_text = clean_text(origin, "UNKNOWN")
     port = clean_text(ori_port, "UNKNOWN")
     if origin_text == "CN":
+        if port in CN_NKG_PORTS:
+            return "CN_NKG"
         return "CN_SHK_DCB" if port in {"SHK", "DCB"} else f"CN_{port}"
     if origin_text == "VN":
         if port in {"SGN", "CMP"}:
