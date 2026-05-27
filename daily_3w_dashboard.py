@@ -1728,8 +1728,8 @@ def upload_to_gdrive():
     shpr_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','week_start_date','BKG_SHPR_CST_NO','BKG_SHPR_CST_ENM','Salesman_POR','고수익태그','grade']
     _shpr_excl = ('w3_ab_fst','w3_ab_norm_lst','w3_cd_fst','w3_cd_norm_lst',
                   'w2_fst','w2_norm_lst','w1_fst','w1_norm_lst','wos_fst','wos_norm_lst',
-                  'cm1_norm','lst_norm','hi_cm1_norm','hi_lst_norm',
-                  'hi_fst','hi_norm_lst','route_hi_norm_lst','route_hi_cm1_norm',
+                  'hi_cm1_norm','hi_lst_norm',
+                  'hi_fst','hi_norm_lst',
                   'w3_route_hi_canc_fst',
                   'w2_route_hi_fst','w1_route_hi_fst','wos_route_hi_fst',
                   'w3_hi_cm1_norm')
