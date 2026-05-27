@@ -207,6 +207,15 @@ RAW_KEYS = (
     "w3_norm_lst_q2_progress",
     "hi_w3_q2_progress",
 )
+DISPLAY_ZERO_SHARE_CUTOFF = 0.0005
+CURRENT_ACTIVITY_KEYS = (
+    "w3_q1",
+    "w3_norm_lst_q1",
+    "hi_w3_q1",
+    "w3_q2_progress",
+    "w3_norm_lst_q2_progress",
+    "hi_w3_q2_progress",
+)
 
 
 def build_raw_metrics(sales: str, blocks: dict[str, dict[str, list[Any]]]) -> dict[str, float]:
@@ -252,6 +261,22 @@ def has_any_target_base(raw: dict[str, float]) -> bool:
     and are excluded from the tab.
     """
     return raw["bsa_2025"] > 0 or raw["w3_2025"] > 0
+
+
+def should_exclude_zero_activity_sales(
+    origin: str,
+    sales: str,
+    raw: dict[str, float],
+    team_raw: dict[str, float],
+    account_counts: dict[tuple[str, str], tuple[int, int, float | None]],
+) -> bool:
+    share = safe_ratio(raw["lst_2025"], team_raw["lst_2025"]) or 0.0
+    if share >= DISPLAY_ZERO_SHARE_CUTOFF:
+        return False
+    total_accounts = (account_counts.get((origin, sales)) or (0, 0, None))[0] or 0
+    if total_accounts > 0:
+        return False
+    return not any(raw[key] > 0 for key in CURRENT_ACTIVITY_KEYS)
 
 
 def build_display_row(
@@ -699,6 +724,10 @@ def select_display_sales_names(
     raw_by_sales: dict[str, dict[str, float]] = {
         name: build_raw_metrics(name, blocks) for name in sales_names
     }
+    team_raw_all: dict[str, float] = {k: 0.0 for k in RAW_KEYS}
+    for raw in raw_by_sales.values():
+        for k in RAW_KEYS:
+            team_raw_all[k] += raw[k]
 
     def sort_key(name: str) -> tuple[int, float, str]:
         # Keep the missing-owner bucket at the bottom; sort the rest by 2025 LST volume.
@@ -709,6 +738,7 @@ def select_display_sales_names(
         return (
             has_q1_customers(origin, name, raw_by_sales[name], counts)
             and has_any_target_base(raw_by_sales[name])
+            and not should_exclude_zero_activity_sales(origin, name, raw_by_sales[name], team_raw_all, counts)
         )
 
     if not owner_order:
@@ -723,7 +753,11 @@ def select_display_sales_names(
     kept: list[str] = []
     seen: set[str] = set()
     for name in owner_order:
-        if name in raw_by_sales and name not in seen:
+        if (
+            name in raw_by_sales
+            and name not in seen
+            and not should_exclude_zero_activity_sales(origin, name, raw_by_sales[name], team_raw_all, counts)
+        ):
             kept.append(name)
             seen.add(name)
     return kept, raw_by_sales

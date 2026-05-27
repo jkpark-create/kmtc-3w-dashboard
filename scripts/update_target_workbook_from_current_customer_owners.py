@@ -160,6 +160,15 @@ RAW_KEYS = (
     "w3_norm_lst_q2_progress",
     "hi_w3_q2_progress",
 )
+DISPLAY_ZERO_SHARE_CUTOFF = 0.0005
+CURRENT_ACTIVITY_KEYS = (
+    "w3_q1",
+    "w3_norm_lst_q1",
+    "hi_w3_q1",
+    "w3_q2_progress",
+    "w3_norm_lst_q2_progress",
+    "hi_w3_q2_progress",
+)
 
 
 @dataclass(frozen=True)
@@ -1157,12 +1166,60 @@ def build_display_row(origin: str, sales: str, raw: dict[str, float], team_raw: 
     }
 
 
+def should_exclude_zero_activity_sales(
+    origin: str,
+    sales: str,
+    raw: dict[str, float],
+    team_raw: dict[str, float],
+    counts: dict[tuple[str, str], tuple[int, int, float | None]],
+) -> bool:
+    share = safe_ratio(raw["lst_2025"], team_raw["lst_2025"]) or 0.0
+    if share >= DISPLAY_ZERO_SHARE_CUTOFF:
+        return False
+    total_accounts = (counts.get((origin, sales)) or (0, 0, None))[0] or 0
+    if total_accounts > 0:
+        return False
+    return not any(raw[key] > 0 for key in CURRENT_ACTIVITY_KEYS)
+
+
+def filter_zero_activity_owner_entries(
+    owner_entries: dict[str, list[OwnerEntry]],
+    frames: dict[str, pd.DataFrame],
+    counts: dict[tuple[str, str], tuple[int, int, float | None]],
+) -> tuple[dict[str, list[OwnerEntry]], int]:
+    filtered: dict[str, list[OwnerEntry]] = {}
+    removed = 0
+    for origin, entries in owner_entries.items():
+        raw_by_sales = {
+            entry.resolved_sales: raw_for_sales(frames, origin, entry.resolved_sales)
+            for entry in entries
+            if entry.resolved_sales and entry.match_status != "unmatched"
+        }
+        team_raw = {key: 0.0 for key in RAW_KEYS}
+        for raw in raw_by_sales.values():
+            for key in RAW_KEYS:
+                team_raw[key] += raw[key]
+        kept: list[OwnerEntry] = []
+        for entry in entries:
+            if not entry.resolved_sales or entry.match_status == "unmatched":
+                kept.append(entry)
+                continue
+            raw = raw_by_sales.get(entry.resolved_sales, {key: 0.0 for key in RAW_KEYS})
+            if should_exclude_zero_activity_sales(origin, entry.resolved_sales, raw, team_raw, counts):
+                removed += 1
+                continue
+            kept.append(entry)
+        filtered[origin] = kept
+    return filtered, removed
+
+
 def rows_for_origin(
     mod: Any,
     origin: str,
     entries: list[OwnerEntry],
     frames: dict[str, pd.DataFrame],
     explicit_order: bool,
+    counts: dict[tuple[str, str], tuple[int, int, float | None]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, float]]]:
     raw_by_sales = {
         entry.resolved_sales: raw_for_sales(frames, origin, entry.resolved_sales)
@@ -1179,6 +1236,16 @@ def rows_for_origin(
     for raw in raw_by_sales.values():
         for key in RAW_KEYS:
             team_raw[key] += raw[key]
+    if counts:
+        raw_by_sales = {
+            sales: raw
+            for sales, raw in raw_by_sales.items()
+            if not should_exclude_zero_activity_sales(origin, sales, raw, team_raw, counts)
+        }
+        team_raw = {key: 0.0 for key in RAW_KEYS}
+        for raw in raw_by_sales.values():
+            for key in RAW_KEYS:
+                team_raw[key] += raw[key]
     rows = [build_display_row(origin, "Team Total", team_raw, team_raw, is_total=True)]
     sales_order = list(raw_by_sales)
     if not explicit_order:
@@ -1780,12 +1847,16 @@ def main() -> None:
     allowed = allowed_sales_by_origin(owner_entries)
     frames = build_metric_frames(booking, bsa, q2_progress_bsa, allowed)
     counts = account_counts(booking, owner_entries)
+    owner_entries, zero_activity_removed = filter_zero_activity_owner_entries(owner_entries, frames, counts)
+    allowed = allowed_sales_by_origin(owner_entries)
+    frames = build_metric_frames(booking, bsa, q2_progress_bsa, allowed)
+    counts = account_counts(booking, owner_entries)
 
     rows_by_origin: dict[str, list[dict[str, Any]]] = {}
     raw_by_origin: dict[str, dict[str, dict[str, float]]] = {}
     for origin in origins:
         explicit_order = bool(explicit_entries.get(origin))
-        rows, raw = rows_for_origin(mod, origin, owner_entries.get(origin, []), frames, explicit_order)
+        rows, raw = rows_for_origin(mod, origin, owner_entries.get(origin, []), frames, explicit_order, counts)
         rows_by_origin[origin] = rows
         raw_by_origin[origin] = raw
 
@@ -1824,6 +1895,7 @@ def main() -> None:
         "origins": len(origins),
         "owner_rows": owner_row_count,
         "unmatched_owner_rows": unmatched,
+        "zero_activity_owner_rows_removed": zero_activity_removed,
         "origin_rowcounts": origin_rowcounts,
         "dry_run": args.dry_run,
     }

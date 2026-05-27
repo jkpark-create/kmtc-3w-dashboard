@@ -647,9 +647,21 @@ def sales_target_scope_mask(df: pd.DataFrame) -> pd.Series:
     )
 
 
-def aggregate_chunks(df: pd.DataFrame, out_dir: Path, bsa_allocations: pd.DataFrame | None = None) -> dict[str, Any]:
+def aggregate_chunks(
+    df: pd.DataFrame,
+    out_dir: Path,
+    bsa_allocations: pd.DataFrame | None = None,
+    allowed_sales_by_origin: dict[str, set[str]] | None = None,
+) -> dict[str, Any]:
     """Filter to OBT scope, drop rows with no origin tab, then write per-(tab, salesman, YYYYMM) JSON chunks."""
     scoped = df.loc[sales_target_scope_mask(df)].copy()
+    if allowed_sales_by_origin:
+        scoped = scoped.loc[
+            [
+                clean_text(row.Salesman_POR) in allowed_sales_by_origin.get(clean_text(row.tab), set())
+                for row in scoped.itertuples(index=False)
+            ]
+        ].copy()
 
     chunk_dir = out_dir / "data"
     chunk_dir.mkdir(parents=True, exist_ok=True)
@@ -947,7 +959,7 @@ def main() -> int:
         args.as_of or data_date,
         allowed_sales_by_origin,
     )
-    manifest = aggregate_chunks(df, out_dir, bsa_allocations)
+    manifest = aggregate_chunks(df, out_dir, bsa_allocations, allowed_sales_by_origin)
 
     index_payload = {
         "_format": "sales-target-index-v1",
