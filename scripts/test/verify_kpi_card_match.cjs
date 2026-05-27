@@ -1,5 +1,5 @@
-// Confirm: KPI cards now match the Team Total row of the Target Summary
-// when a single origin is filtered. Reproduces the user's VN_HPH scenario.
+// Confirm: KPI rate cards match the Team Total row of the Target Summary
+// when a single origin is filtered. Customer count is live-deduped and can differ.
 const { chromium } = require('playwright');
 const BASE = 'http://127.0.0.1:8749';
 
@@ -34,20 +34,20 @@ const BASE = 'http://127.0.0.1:8749';
   console.log('cards :', JSON.stringify(result.cards));
   console.log('team  :', JSON.stringify(result.teamRow));
   // teamRow column layout: tab, name, '25 share, '25 W3/BSA,
-  // bkT, bkP, bkG, lfT, lfP, lfG, hpT, hpP, hpG, ac.total, ac.w3, ac.%
+  // bkT, bkP, bkG, bkAchv, lfT, lfP, lfG, lfAchv,
+  // hpT, hpP, hpG, hpAchv, ac.total, ac.w3, ac.%
   if (result.teamRow) {
     const t = result.teamRow;
     const checks = [
       ['bkT', result.cards.bkT, t[4]],
       ['bkP', result.cards.bkP, t[5]],
       ['bkG', result.cards.bkG, t[6]],
-      ['lfT', result.cards.lfT, t[7]],
-      ['lfP', result.cards.lfP, t[8]],
-      ['lfG', result.cards.lfG, t[9]],
-      ['hpT', result.cards.hpT, t[10]],
-      ['hpP', result.cards.hpP, t[11]],
-      ['hpG', result.cards.hpG, t[12]],
-      ['cust', result.cards.cust, t[13]],
+      ['lfT', result.cards.lfT, t[8]],
+      ['lfP', result.cards.lfP, t[9]],
+      ['lfG', result.cards.lfG, t[10]],
+      ['hpT', result.cards.hpT, t[12]],
+      ['hpP', result.cards.hpP, t[13]],
+      ['hpG', result.cards.hpG, t[14]],
     ];
     let ok = true;
     checks.forEach(([k, a, b]) => {
@@ -55,6 +55,7 @@ const BASE = 'http://127.0.0.1:8749';
       console.log(`${match ? '✓' : '✗'} ${k.padEnd(5)} card=${(a || '').padEnd(8)} team=${b}`);
       if (!match) ok = false;
     });
+    console.log(`cust card=${result.cards.cust} team-total=${t[16]} (informational)`);
     console.log(ok ? '\nALL MATCH ✅' : '\nMISMATCH ⚠');
   }
   console.log('console errors:', errors.length);

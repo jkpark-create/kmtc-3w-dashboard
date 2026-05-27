@@ -37,7 +37,7 @@ DEFAULT_TITLE = "OBT Sales Target Input (Eternal)"
 
 # Same whitelist the dashboard uses. Keep in sync with dist/sales-target/app.js.
 WHITELIST = [
-    ("CN", "중국 / China", ["CN_SHA", "CN_NBO", "CN_TAO", "CN_XGG", "CN_DLC", "CN_LYG", "CN_SHK_DCB", "CN_XMN", "CN_NNS"]),
+    ("CN", "중국 / China", ["CN_SHA", "CN_NKG", "CN_NBO", "CN_TAO", "CN_XGG", "CN_DLC", "CN_LYG", "CN_SHK_DCB", "CN_XMN", "CN_NNS"]),
     ("HK", "홍콩 / Hong Kong", ["HK"]),
     ("TW", "대만 / Taiwan", ["TW"]),
     ("TH", "태국 / Thailand", ["TH"]),
