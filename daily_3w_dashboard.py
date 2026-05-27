@@ -1692,6 +1692,15 @@ def upload_to_gdrive():
 
     print(f"    Total: {len(bkg):,}, WOS-3: {(lt=='WOS-3').sum():,}, Normal: {normal.sum():,}")
 
+    basis_mask = normal & (bkg['cm1v'] != 0) & (bkg['lst'] > 0)
+    basis_keys = ['BKG_SHPR_CST_NO', 'ori_port', 'dst_port']
+    route_profit_basis = (
+        bkg[basis_mask]
+        .groupby(basis_keys, dropna=False)
+        .agg(basis_cm1=('cm1v', 'sum'), basis_lst=('lst', 'sum'))
+        .reset_index()
+    )
+
     # Monthly aggregation with ports
     gk = ['team','origin','ori_port','dest','dst_port','YYYYMM']
     agg_cols = {'fst':'sum','norm_lst':'sum','hi_fst':'sum','hi_norm_lst':'sum',
@@ -1726,6 +1735,8 @@ def upload_to_gdrive():
                   'w3_hi_cm1_norm')
     shpr_agg_cols = {k:v for k,v in agg_cols.items() if k not in _shpr_excl}
     shipper = bkg.groupby(shpr_keys).agg(shpr_agg_cols).reset_index()
+    shipper = shipper.merge(route_profit_basis, on=basis_keys, how='left')
+    shipper[['basis_cm1', 'basis_lst']] = shipper[['basis_cm1', 'basis_lst']].fillna(0)
     if 'route_hi_fst' in shipper.columns:
         shipper = shipper.drop(columns=['route_hi_fst'])
     shipper = shipper.rename(columns={
@@ -1758,7 +1769,7 @@ def upload_to_gdrive():
         bsa_agg = bsa_agg[bsa_agg['teu_bsa'] > 0]  # teu_bsa=0 records contribute nothing; drop to avoid field-missing issue in JSON
         bsa_data = bsa_agg.to_dict('records')
 
-    metric_keys = set(agg_cols) | {'teu_bsa', 'rhn', 'rhc', 'w3l', 'w3cl'}
+    metric_keys = set(agg_cols) | {'teu_bsa', 'rhn', 'rhc', 'w3l', 'w3cl', 'basis_cm1', 'basis_lst'}
 
     def compact_records(records):
         compacted = []
