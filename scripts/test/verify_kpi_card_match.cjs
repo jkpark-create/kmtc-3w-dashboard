@@ -34,20 +34,20 @@ const BASE = 'http://127.0.0.1:8749';
   console.log('cards :', JSON.stringify(result.cards));
   console.log('team  :', JSON.stringify(result.teamRow));
   // teamRow column layout: tab, name, '25 share, '25 W3/BSA,
-  // bkT, bkP, bkG, bkAchv, lfT, lfP, lfG, lfAchv,
-  // hpT, hpP, hpG, hpAchv, ac.total, ac.w3, ac.%
+  // bkT, bkP, bkAchv, bkG, lfT, lfP, lfAchv, lfG,
+  // hpT, hpP, hpAchv, hpG, ac.total, ac.w3, ac.%
   if (result.teamRow) {
     const t = result.teamRow;
     const checks = [
       ['bkT', result.cards.bkT, t[4]],
       ['bkP', result.cards.bkP, t[5]],
-      ['bkG', result.cards.bkG, t[6]],
+      ['bkG', result.cards.bkG, t[7]],
       ['lfT', result.cards.lfT, t[8]],
       ['lfP', result.cards.lfP, t[9]],
-      ['lfG', result.cards.lfG, t[10]],
+      ['lfG', result.cards.lfG, t[11]],
       ['hpT', result.cards.hpT, t[12]],
       ['hpP', result.cards.hpP, t[13]],
-      ['hpG', result.cards.hpG, t[14]],
+      ['hpG', result.cards.hpG, t[15]],
     ];
     let ok = true;
     checks.forEach(([k, a, b]) => {
