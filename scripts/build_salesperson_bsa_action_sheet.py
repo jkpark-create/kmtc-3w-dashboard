@@ -432,7 +432,7 @@ def build_basis(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, tuple[list[st
     )
 
     levels = {
-        "same POR_port + DLY_port": ["team", "tab", "origin", "ori_port", "dest", "dst_port"],
+        "same target tab + DLY_port": ["team", "tab", "dest", "dst_port"],
     }
     lookups: dict[str, tuple[list[str], dict[tuple, pd.DataFrame]]] = {}
     for level, keys in levels.items():

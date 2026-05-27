@@ -54,7 +54,7 @@ SUMMARY_SHEET = "Summary_All"
 MISSING_SALES = "(미지정)"
 SALESMAN_CSV_CANDIDATES = ("salesman.csv", "saleman.csv")
 TEAM_FILTER = "OBT"
-BSA_ROUTE_KEYS = ["team", "tab", "origin", "ori_port", "dest", "dst_port"]
+BSA_ROUTE_KEYS = ["team", "tab", "dest", "dst_port"]
 NO_BASIS_SALES = "(no 2025 basis)"
 CN_NKG_PORTS = frozenset({
     "AIA", "AQG", "CGD", "CGS", "CKG", "CKQ", "CSX", "CZH",
@@ -403,7 +403,12 @@ def load_bsa_routes(path: Path, months: set[str]) -> pd.DataFrame:
     return bsa.groupby(["YYYYMM"] + BSA_ROUTE_KEYS, dropna=False)["route_bsa"].sum().reset_index()
 
 
-def build_allocated_bsa(months: set[str], salesman_map: dict[str, str] | None, as_of: str | None) -> pd.DataFrame:
+def build_allocated_bsa(
+    months: set[str],
+    salesman_map: dict[str, str] | None,
+    as_of: str | None,
+    allowed_sales_by_origin: dict[str, set[str]] | None = None,
+) -> pd.DataFrame:
     columns = ["tab", "Salesman_POR", "YYYYMM", "dest", "dst_port", "allocated_bsa"]
     if not months:
         return pd.DataFrame(columns=columns)
@@ -418,6 +423,13 @@ def build_allocated_bsa(months: set[str], salesman_map: dict[str, str] | None, a
     except Exception as exc:
         print(f"      WARN: failed to build allocated BSA ({exc}); detailed 3W/BSA will be blank.", flush=True)
         return pd.DataFrame(columns=columns)
+    if allowed_sales_by_origin:
+        basis = basis.loc[
+            [
+                clean_text(row.Salesman_POR) in allowed_sales_by_origin.get(clean_text(row.tab), set())
+                for row in basis.itertuples(index=False)
+            ]
+        ].copy()
     if basis.empty or bsa.empty:
         return pd.DataFrame(columns=columns)
     basis_total = (
@@ -435,7 +447,7 @@ def build_allocated_bsa(months: set[str], salesman_map: dict[str, str] | None, a
     if not with_basis.empty:
         with_basis["allocated_bsa"] = with_basis["route_bsa"] * with_basis["basis_lst"] / with_basis["basis_total_lst"]
         pieces.append(with_basis)
-    if not no_basis.empty:
+    if not allowed_sales_by_origin and not no_basis.empty:
         no_basis["Salesman_POR"] = NO_BASIS_SALES
         no_basis["allocated_bsa"] = no_basis["route_bsa"]
         pieces.append(no_basis)
@@ -925,7 +937,16 @@ def main() -> int:
 
     print("[3/3] Writing chunk JSONs ...", flush=True)
     alloc_months = set(df.loc[sales_target_scope_mask(df), "YYYYMM"].dropna().astype(str))
-    bsa_allocations = build_allocated_bsa(alloc_months, salesman_map, args.as_of or data_date)
+    allowed_sales_by_origin: dict[str, set[str]] = {}
+    for row in parsed_summary:
+        if row.get("row_type") == "SALES":
+            allowed_sales_by_origin.setdefault(clean_text(row.get("tab")), set()).add(clean_text(row.get("name")))
+    bsa_allocations = build_allocated_bsa(
+        alloc_months,
+        salesman_map,
+        args.as_of or data_date,
+        allowed_sales_by_origin,
+    )
     manifest = aggregate_chunks(df, out_dir, bsa_allocations)
 
     index_payload = {

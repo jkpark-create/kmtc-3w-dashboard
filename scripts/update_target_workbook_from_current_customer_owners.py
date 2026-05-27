@@ -1034,7 +1034,7 @@ def allocate_bsa_scoped(bsa: pd.DataFrame, booking: pd.DataFrame, allowed: dict[
         & basis_rows["status"].eq("Normal")
         & basis_rows["lst"].gt(0)
     ].copy()
-    route_keys = ["tab", "team", "origin", "ori_port", "dest", "dst_port"]
+    route_keys = ["tab", "team", "dest", "dst_port"]
     grouped = (
         basis_rows.groupby(route_keys + ["sales"], dropna=False)["lst"]
         .sum()
