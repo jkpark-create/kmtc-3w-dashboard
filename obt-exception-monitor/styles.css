@@ -588,7 +588,7 @@ select {
 
 .detail-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.9fr) minmax(360px, .9fr);
+  grid-template-columns: minmax(0, 2.6fr) minmax(248px, .6fr);
   gap: 12px;
   margin-bottom: 12px;
 }
