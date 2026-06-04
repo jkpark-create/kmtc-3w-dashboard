@@ -465,7 +465,7 @@ def tab_key(origin: Any, ori_port: Any) -> str:
             return "JKT"
         if port == "SUB":
             return "SUB"
-        return "ID_out"
+        return "ID-IDO"
     if origin_text == "MY":
         if port in {"PKG", "PKW"}:
             return "PKG+PKW"

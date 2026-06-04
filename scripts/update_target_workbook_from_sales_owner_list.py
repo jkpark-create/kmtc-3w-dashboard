@@ -51,7 +51,7 @@ SALES_OWNER_RANGES: dict[str, list[tuple[str, str, int, int]]] = {
     "AE": [("AE", "F", 16, 20)],
     "JKT": [("ID", "F", 18, 24)],
     "SUB": [("ID", "Q", 20, 24)],
-    "ID_out": [("ID", "G", 20, 24)],
+    "ID-IDO": [("ID", "G", 20, 24)],
     "PKG+PKW": [("MY", "N", 21, 23)],
     "PGU": [("MY", "R", 23, 23)],
     "PEN": [("MY", "W", 23, 23)],

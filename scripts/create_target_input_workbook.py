@@ -45,7 +45,7 @@ WHITELIST = [
     ("PH", "필리핀 / Philippines", ["PH"]),
     ("MY", "말레이시아 / Malaysia", ["PKG+PKW", "PEN", "PGU"]),
     ("SG", "싱가포르 / Singapore", ["SG"]),
-    ("ID", "인도네시아 / Indonesia", ["JKT", "SUB"]),
+    ("ID", "인도네시아 / Indonesia", ["JKT", "SUB", "ID-IDO"]),
     ("IN", "인도 / India", ["IN"]),
     ("AE", "UAE", ["AE"]),
 ]

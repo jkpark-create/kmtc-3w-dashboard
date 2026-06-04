@@ -105,12 +105,11 @@ def parse_pct(value: Any) -> float | None:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         if math.isnan(value) or math.isinf(value):
             return None
-        if abs(value) <= 1.5:
-            return float(value)
-        return float(value) / 100.0
+        return float(value)
     text = str(value).strip()
     if not text:
         return None
+    is_percent = text.endswith("%")
     text = text.replace(",", "").rstrip("%").strip()
     try:
         num = float(text)
@@ -118,7 +117,7 @@ def parse_pct(value: Any) -> float | None:
         return None
     if math.isnan(num) or math.isinf(num):
         return None
-    return num / 100.0
+    return num / 100.0 if is_percent else num
 
 
 def tab_key(origin: Any, ori_port: Any) -> str:
@@ -139,7 +138,7 @@ def tab_key(origin: Any, ori_port: Any) -> str:
             return "JKT"
         if port == "SUB":
             return "SUB"
-        return "ID_out"
+        return "ID-IDO"
     if origin_text == "MY":
         if port in {"PKG", "PKW"}:
             return "PKG+PKW"

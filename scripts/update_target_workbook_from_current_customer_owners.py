@@ -27,6 +27,10 @@ OUT_DIR = ROOT / "output"
 SALES_OWNER_SOURCE_ID = "1aGn2YyvKRx35mOsHLQAMaas6sa81LTOf4pNPugIUajg"
 TARGET_SPREADSHEET_ID = "1YxZkwvoMaQXIEw07qUDZtCPDFZBf8GOZyr5knkxnLxo"
 SALES_OWNER_INPUT_SHEET = "Sales_Owner_Input"
+ID_OUT_ORIGIN = "ID-IDO"
+REQUIRED_ORIGIN_TABS = (ID_OUT_ORIGIN,)
+ORIGIN_INSERT_AFTER = {ID_OUT_ORIGIN: "SUB"}
+PINNED_SALES_BY_ORIGIN = {ID_OUT_ORIGIN: ("NINA", "ZUL", "ALFAN")}
 
 CURRENT_DATASET_ID = datetime.now().strftime("%Y%m%d")
 CURRENT_DATE_INT = int(CURRENT_DATASET_ID)
@@ -76,7 +80,7 @@ SALES_OWNER_RANGES: dict[str, list[tuple[str, str, int, int]]] = {
     "AE": [("AE", "F", 16, 20)],
     "JKT": [("ID", "F", 18, 24)],
     "SUB": [("ID", "Q", 20, 24)],
-    "ID_out": [("ID", "G", 20, 24)],
+    ID_OUT_ORIGIN: [("ID", "G", 20, 24)],
     "PKG+PKW": [("MY", "N", 21, 23)],
     "PGU": [("MY", "R", 23, 23)],
     "PEN": [("MY", "W", 23, 23)],
@@ -535,12 +539,12 @@ PORT_TARGET_MAP = {
     "HPH": "VN_HPH",
     "JKT": "JKT",
     "SUB": "SUB",
-    "SRG": "ID_out",
-    "BDG": "ID_out",
-    "BLW": "ID_out",
-    "BKS": "ID_out",
-    "PJG": "ID_out",
-    "BTM": "ID_out",
+    "SRG": ID_OUT_ORIGIN,
+    "BDG": ID_OUT_ORIGIN,
+    "BLW": ID_OUT_ORIGIN,
+    "BKS": ID_OUT_ORIGIN,
+    "PJG": ID_OUT_ORIGIN,
+    "BTM": ID_OUT_ORIGIN,
     "PKG": "PKG+PKW",
     "PKW": "PKG+PKW",
     "PEN": "PEN",
@@ -770,7 +774,7 @@ def tab_key(origin: object, ori_port: object) -> str:
             return "JKT"
         if port == "SUB":
             return "SUB"
-        return "ID_out"
+        return ID_OUT_ORIGIN
     if origin_text == "MY":
         if port in {"PKG", "PKW"}:
             return "PKG+PKW"
@@ -945,7 +949,16 @@ def load_bsa(week_filter: set[int] | None = None) -> pd.DataFrame:
 def target_origins_from_workbook(path: Path, mod: Any) -> list[str]:
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
     support = {mod.README_SHEET, mod.INPUT_SHEET, mod.SUMMARY_SHEET, SALES_OWNER_INPUT_SHEET}
-    return [name for name in wb.sheetnames if name not in support]
+    origins = [name for name in wb.sheetnames if name not in support]
+    for required in REQUIRED_ORIGIN_TABS:
+        if required in origins:
+            continue
+        after = ORIGIN_INSERT_AFTER.get(required)
+        if after in origins:
+            origins.insert(origins.index(after) + 1, required)
+        else:
+            origins.append(required)
+    return origins
 
 
 def candidate_sales_by_origin(booking: pd.DataFrame) -> dict[str, list[str]]:
@@ -986,6 +999,23 @@ def complete_owner_entries(
 ) -> dict[str, list[OwnerEntry]]:
     out: dict[str, list[OwnerEntry]] = {}
     for origin in origins:
+        pinned = PINNED_SALES_BY_ORIGIN.get(origin)
+        if pinned:
+            out[origin] = [
+                OwnerEntry(
+                    target_tab=origin,
+                    source_sheet="manual",
+                    source_cell="PINNED_SALES_BY_ORIGIN",
+                    input_name=sales,
+                    sales_key=norm_key(sales),
+                    resolved_sales=sales,
+                    match_status="manual_required",
+                    source_type="pinned_sales",
+                    customer_count=customer_counts.get(sales, 0),
+                )
+                for sales in pinned
+            ]
+            continue
         entries = explicit.get(origin, [])
         if entries:
             out[origin] = entries
@@ -1402,8 +1432,14 @@ def build_input_values(
         ],
     ]
     for origin in origins:
-        booking, lifting, hp, memo = existing.get(origin, (0.10, 0.10, 0.10, ""))
         suggestion = suggestions.get(origin, {})
+        initial = (
+            suggestion.get("booking_pp", 0.10),
+            suggestion.get("lifting_pp", 0.10),
+            suggestion.get("hp_pp", 0.10),
+            "",
+        )
+        booking, lifting, hp, memo = existing.get(origin, initial)
         values.append(
             [
                 origin,
@@ -1761,6 +1797,48 @@ def ensure_support_sheet(service: Any, spreadsheet_id: str) -> dict[str, int]:
     return sheet_ids
 
 
+def ensure_origin_sheets(service: Any, spreadsheet_id: str, origins: list[str]) -> dict[str, int]:
+    meta = with_backoff(
+        service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets(properties(sheetId,title,index))",
+        )
+    )
+    sheets = meta.get("sheets", [])
+    sheet_ids = {s["properties"]["title"]: s["properties"]["sheetId"] for s in sheets}
+    sheet_indexes = {s["properties"]["title"]: s["properties"].get("index", 0) for s in sheets}
+    requests: list[dict[str, Any]] = []
+    for origin in origins:
+        if origin in sheet_ids:
+            continue
+        properties: dict[str, Any] = {
+            "title": origin,
+            "gridProperties": {"rowCount": 2000, "columnCount": 30},
+        }
+        after = ORIGIN_INSERT_AFTER.get(origin)
+        if after in sheet_indexes:
+            properties["index"] = sheet_indexes[after] + 1
+        requests.append({"addSheet": {"properties": properties}})
+    if requests:
+        with_backoff(
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": requests},
+            )
+        )
+        meta = with_backoff(
+            service.spreadsheets().get(
+                spreadsheetId=spreadsheet_id,
+                fields="sheets(properties(sheetId,title,index))",
+            )
+        )
+        sheet_ids = {
+            s["properties"]["title"]: s["properties"]["sheetId"]
+            for s in meta.get("sheets", [])
+        }
+    return sheet_ids
+
+
 def audit_mapping(booking: pd.DataFrame, owner_entries: dict[str, list[OwnerEntry]], raw_by_origin: dict[str, dict[str, dict[str, float]]]) -> pd.DataFrame:
     active_tabs = set(owner_entries)
     total_rows = int(len(booking))
@@ -1906,6 +1984,7 @@ def main() -> None:
         return
 
     ensure_support_sheet(sheets, TARGET_SPREADSHEET_ID)
+    ensure_origin_sheets(sheets, TARGET_SPREADSHEET_ID, origins)
     mod.clear_tab_values(
         sheets,
         TARGET_SPREADSHEET_ID,
