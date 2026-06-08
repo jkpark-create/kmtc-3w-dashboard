@@ -328,6 +328,28 @@ def add_dashboard_fields(df: pd.DataFrame) -> pd.DataFrame:
     df["is_normal"] = df["LST_Status"].eq("Normal")
     df["is_w3"] = df["Lead_time_BKG_Sche"].eq("WOS-3")
 
+    # 루트별 고/저 (POR_PLC_CD+DLY_PLC_CD 루트 평균 CM1/TEU 대비 화주 CM1/TEU).
+    # daily_3w_dashboard / build_salesperson_bsa_action_sheet 와 동일 정의.
+    # 목표 파이프라인(update_target_workbook)이 2025 base를 이 컬럼으로 계산하도록 캐시에 포함.
+    print("computing route 고/저 (루트 CM1/TEU 평균 대비)")
+    rmask = df["is_normal"] & df["cm1v"].ne(0) & df["lst"].gt(0)
+    rvalid = df.loc[rmask, ["BKG_SHPR_CST_NO", "POR_PLC_CD", "DLY_PLC_CD", "cm1v", "lst"]].copy()
+    route_agg = rvalid.groupby(["POR_PLC_CD", "DLY_PLC_CD"], dropna=False).agg(
+        r_cm1=("cm1v", "sum"), r_teu=("lst", "sum")
+    )
+    route_agg["r_avg"] = route_agg["r_cm1"] / route_agg["r_teu"]
+    shpr_route = rvalid.groupby(["BKG_SHPR_CST_NO", "POR_PLC_CD", "DLY_PLC_CD"], dropna=False).agg(
+        s_cm1=("cm1v", "sum"), s_teu=("lst", "sum")
+    )
+    shpr_route["s_avg"] = shpr_route["s_cm1"] / shpr_route["s_teu"]
+    shpr_route = shpr_route.join(route_agg[["r_avg"]], on=["POR_PLC_CD", "DLY_PLC_CD"])
+    shpr_route["pt"] = np.where(shpr_route["s_avg"] >= shpr_route["r_avg"], "고수익", "저수익")
+    _pt_lookup = shpr_route["pt"].to_dict()
+    df["고/저"] = [
+        _pt_lookup.get((s, p, d), "")
+        for s, p, d in zip(df["BKG_SHPR_CST_NO"], df["POR_PLC_CD"], df["DLY_PLC_CD"])
+    ]
+
     print("computing high-shipper tag")
     valid = df.loc[df["is_normal"] & df["cm1v"].ne(0) & df["lst"].gt(0)].copy()
     valid = valid.loc[valid["YYYYMM"].ne("")]
