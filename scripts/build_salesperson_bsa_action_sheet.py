@@ -151,7 +151,7 @@ def tab_key(origin: object, ori_port: object) -> str:
             return "JKT"
         if port == "SUB":
             return "SUB"
-        return "ID_out"
+        return "ID-IDO"
     if origin == "MY":
         if port in {"PKG", "PKW"}:
             return "PKG+PKW"
@@ -320,30 +320,71 @@ def load_booking() -> pd.DataFrame:
 # 2025 booking 레코드의 sales를 그 매핑 값으로 덮어씁니다. 1Q 2026에 booking이 없는 화주는
 # 2025 담당자를 그대로 유지합니다 (사용자 정책).
 Q1_2026_MONTHS = frozenset({"202601", "202602", "202603"})
+SALESMAN_CSV = ROOT / "salesman.csv"
+
+
+def _load_active_owner_map(as_of: str | None = None) -> dict[str, str]:
+    """salesman.csv → {CUSTOMER_NO_UPPER: SALESMAN_NO} for rows active on `as_of` (today default).
+
+    드릴 빌더(build_sales_target_drill_data.load_active_salesman_mapping)와 동일 규칙.
+    이게 "계속 업데이트되는 현재 담당자"의 단일 소스이며, 라이브 대시보드(드릴)도 이 매핑을 쓴다.
+    """
+    if not SALESMAN_CSV.exists():
+        return {}
+    if as_of is None:
+        as_of = os.environ.get("SALES_OWNER_AS_OF") or datetime.now().strftime("%Y%m%d")
+    as_of_int = int(as_of)
+    sm = pd.read_csv(SALESMAN_CSV, dtype=str, encoding="utf-8-sig", low_memory=False)
+    for col in ["SALESMAN_NO", "CUSTOMER_NO", "SALES_START_DATE", "SALES_END_DATE"]:
+        if col in sm.columns:
+            sm[col] = sm[col].fillna("").astype(str).str.strip()
+    start = pd.to_numeric(sm["SALES_START_DATE"].str.replace(".0", "", regex=False), errors="coerce")
+    end = pd.to_numeric(sm["SALES_END_DATE"].str.replace(".0", "", regex=False), errors="coerce")
+    active = sm.loc[(start <= as_of_int) & (end >= as_of_int)].copy()
+    active = active.loc[active["CUSTOMER_NO"].ne("") & active["SALESMAN_NO"].ne("")]
+    active["CUSTOMER_NO_KEY"] = active["CUSTOMER_NO"].str.upper()
+    active = active.drop_duplicates("CUSTOMER_NO_KEY", keep="first")
+    return active.set_index("CUSTOMER_NO_KEY")["SALESMAN_NO"].to_dict()
 
 
 def _remap_2025_sales_to_current_owner(df: pd.DataFrame) -> pd.DataFrame:
+    """모든 행(2025·2026)의 담당자를 '현재 담당자' 단일 기준으로 정렬한다.
+
+    우선순위: ① salesman.csv 현재 소유자(권위) → ② 2026 Q1 최신 부킹 담당자(csv 누락 화주) →
+    ③ 원본 2025 담당자. base(2025)와 실적(2026)이 같은 현재 담당자에 귀속되어,
+    라이브 대시보드(드릴)와도 동일한 매핑이 된다.
+    """
     if df.empty:
         return df
-    q1 = df.loc[df["yyyymm"].isin(Q1_2026_MONTHS) & df["shipper_code"].ne("")].copy()
-    if q1.empty:
-        return df
-    q1["_bdate"] = pd.to_datetime(q1["booking_date"], errors="coerce")
-    # If booking_date is missing for all Q1 rows, fall back to yyyymm-only ordering so the
-    # mapping still resolves to *some* deterministic Salesman_POR per shipper.
-    if q1["_bdate"].isna().all():
-        q1 = q1.sort_values(["yyyymm"], ascending=False)
+
+    # ① salesman.csv 현재 소유자 — 전 행 적용 (2026 부킹 없는 화주 포함)
+    owner_map = _load_active_owner_map()
+    if owner_map:
+        keys = df["shipper_code"].astype(str).str.upper()
+        mapped_all = keys.map(owner_map)
+        has_csv = mapped_all.notna() & df["shipper_code"].ne("")
+        df.loc[has_csv, "sales"] = mapped_all[has_csv]
     else:
-        # Latest booking_date first; rows with no parseable date sink to the bottom.
-        q1["_bdate_filled"] = q1["_bdate"].fillna(pd.Timestamp.min)
-        q1 = q1.sort_values(["_bdate_filled"], ascending=False)
-    # The MISSING placeholder shouldn't claim ownership unless it's all we have for the shipper.
-    q1 = q1.assign(_priority=q1["sales"].eq(MISSING).astype(int))
-    q1 = q1.sort_values(["_priority"], ascending=True, kind="stable")
-    current_owner = q1.drop_duplicates("shipper_code", keep="first").set_index("shipper_code")["sales"]
-    is_2025 = df["yyyymm"].str.startswith("2025") & df["shipper_code"].ne("")
-    mapped = df.loc[is_2025, "shipper_code"].map(current_owner)
-    df.loc[is_2025, "sales"] = mapped.fillna(df.loc[is_2025, "sales"])
+        has_csv = pd.Series(False, index=df.index)
+
+    # ② csv에 없는 화주: 2026 Q1 최신 부킹 담당자로 2025 행 fallback
+    q1 = df.loc[df["yyyymm"].isin(Q1_2026_MONTHS) & df["shipper_code"].ne("")].copy()
+    if not q1.empty:
+        q1["_bdate"] = pd.to_datetime(q1["booking_date"], errors="coerce")
+        if q1["_bdate"].isna().all():
+            q1 = q1.sort_values(["yyyymm"], ascending=False)
+        else:
+            q1["_bdate_filled"] = q1["_bdate"].fillna(pd.Timestamp.min)
+            q1 = q1.sort_values(["_bdate_filled"], ascending=False)
+        # The MISSING placeholder shouldn't claim ownership unless it's all we have for the shipper.
+        q1 = q1.assign(_priority=q1["sales"].eq(MISSING).astype(int))
+        q1 = q1.sort_values(["_priority"], ascending=True, kind="stable")
+        current_owner = q1.drop_duplicates("shipper_code", keep="first").set_index("shipper_code")["sales"]
+        is_2025_nocsv = df["yyyymm"].str.startswith("2025") & df["shipper_code"].ne("") & (~has_csv)
+        mapped = df.loc[is_2025_nocsv, "shipper_code"].map(current_owner)
+        df.loc[is_2025_nocsv, "sales"] = mapped.fillna(df.loc[is_2025_nocsv, "sales"])
+
+    df["sales"] = df["sales"].replace("", MISSING)
     return df
 
 

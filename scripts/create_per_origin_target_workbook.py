@@ -319,7 +319,9 @@ def get_report_tab_values(service: Any) -> dict[str, list[list[Any]]]:
         for s in meta.get("sheets", [])
         if s["properties"]["title"] not in SUPPORT_TABS
     ]
-    ranges = [f"{q(title)}!A1:X260" for title in candidates]
+    # 8개 블록 × (제목+헤더+영업사원수+합계+공백). 영업사원이 많은 탭(예: IN 44명)은
+    # 블록 7·8(고수익)이 260행을 넘겨 잘리므로 충분히 넓게 읽는다.
+    ranges = [f"{q(title)}!A1:X1000" for title in candidates]
     response = (
         service.spreadsheets()
         .values()
