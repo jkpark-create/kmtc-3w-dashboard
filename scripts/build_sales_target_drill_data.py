@@ -56,6 +56,7 @@ SALESMAN_CSV_CANDIDATES = ("salesman.csv", "saleman.csv")
 TEAM_FILTER = "OBT"
 BSA_ROUTE_KEYS = ["team", "tab", "dest", "dst_port"]
 NO_BASIS_SALES = "(no 2025 basis)"
+MONTHS_2025 = frozenset(f"2025{m:02d}" for m in range(1, 13))
 CN_NKG_PORTS = frozenset({
     "AIA", "AQG", "CGD", "CGS", "CKG", "CKQ", "CSX", "CZH",
     "CZX", "FLG", "HFE", "HSI", "JIA", "JIN", "JJG", "LUZ",
@@ -273,6 +274,153 @@ def load_w3_2025_teu(cache_path: Path, salesman_map: dict[str, str] | None) -> t
     by_pair = scoped.groupby(["tab", "Salesman_POR"], dropna=False)["fst_num"].sum().to_dict()
     by_tab = scoped.groupby("tab", dropna=False)["fst_num"].sum().to_dict()
     return by_pair, by_tab
+
+
+def load_2025_base_cells(cache_path: Path, salesman_map: dict[str, str] | None) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """Return {(tab, Salesman_POR): [numerator cells]} for the 2025 base recompute.
+
+    Each cell is a dimensional bucket keyed by (DLY country, DLY port, grade-first,
+    route-hi) carrying the raw measures the frontend needs to rebuild the three KPI
+    bases and the '25 share for any destination/grade/profit slice:
+        nlst = Normal LST_TEU over all lead times (share numerator)
+        w3f  = WOS-3 FST_TEU                       (booking-base numerator)
+        w3l  = WOS-3 Normal LST_TEU                (lifting-base numerator)
+        w3h  = WOS-3 route-hi FST_TEU              (high-profit-base numerator)
+    Mirrors load_w3_2025_teu's scoping (OBT team, salesman.csv remap).
+    """
+    if not cache_path.exists():
+        return {}
+    needed_cols = [
+        "BKG_SHPR_CST_NO",
+        "POR_CTR_CD",
+        "POR_PLC_CD",
+        "DLY_CTR_CD",
+        "DLY_PLC_CD",
+        "Lead_time (BKG_Sche)",
+        "LST_Status",
+        "team",
+        "Salesman_POR",
+        "grade",
+        "고/저",
+        "FST_TEU",
+        "LST_TEU",
+    ]
+    try:
+        import pyarrow.parquet as pq
+
+        available_cols = set(pq.read_schema(cache_path).names)
+        read_cols = [c for c in needed_cols if c in available_cols]
+    except Exception:
+        read_cols = needed_cols
+    df = pd.read_parquet(cache_path, columns=read_cols)
+    for col in ["POR_CTR_CD", "POR_PLC_CD", "DLY_CTR_CD", "DLY_PLC_CD", "BKG_SHPR_CST_NO", "Salesman_POR", "grade", "고/저", "LST_Status"]:
+        if col not in df.columns:
+            df[col] = ""
+        df[col] = df[col].fillna("").astype(str).str.strip()
+    if salesman_map:
+        keys = df["BKG_SHPR_CST_NO"].str.upper()
+        df["Salesman_POR"] = keys.map(salesman_map).fillna("").astype(str).str.strip()
+    df["Salesman_POR"] = df["Salesman_POR"].replace("", MISSING_SALES)
+    df["tab"] = [tab_key(o, p) for o, p in zip(df["POR_CTR_CD"], df["POR_PLC_CD"])]
+    if "team" not in df.columns:
+        df["team"] = [classify_team(o, d) for o, d in zip(df["POR_CTR_CD"], df["DLY_CTR_CD"])]
+    else:
+        df["team"] = df["team"].fillna("").astype(str).str.strip()
+    df["fst_num"] = pd.to_numeric(df["FST_TEU"].astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
+    df["lst_num"] = pd.to_numeric(df["LST_TEU"].astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
+    df = df.loc[df["team"].astype(str).eq(TEAM_FILTER) & df["tab"].ne("UNKNOWN")].copy()
+    if df.empty:
+        return {}
+    is_w3 = df["Lead_time (BKG_Sche)"].astype(str).eq("WOS-3") if "Lead_time (BKG_Sche)" in df.columns else pd.Series(False, index=df.index)
+    is_normal = df["LST_Status"].eq("Normal")
+    is_route_hi = df["고/저"].eq("고수익")
+    df["g"] = df["grade"].str[:1].str.upper()
+    df["hi"] = is_route_hi.astype(int)
+    df["nlst"] = df["lst_num"].where(is_normal, 0.0)
+    df["w3f"] = df["fst_num"].where(is_w3, 0.0)
+    df["w3l"] = df["lst_num"].where(is_w3 & is_normal, 0.0)
+    df["w3h"] = df["fst_num"].where(is_w3 & is_route_hi, 0.0)
+    grouped = (
+        df.groupby(["tab", "Salesman_POR", "DLY_CTR_CD", "DLY_PLC_CD", "g", "hi"], dropna=False)[["nlst", "w3f", "w3l", "w3h"]]
+        .sum()
+        .reset_index()
+    )
+    out: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in grouped.itertuples(index=False):
+        nlst = round(float(row.nlst), 3)
+        w3f = round(float(row.w3f), 3)
+        w3l = round(float(row.w3l), 3)
+        w3h = round(float(row.w3h), 3)
+        if not (nlst or w3f or w3l or w3h):
+            continue
+        cell = {
+            "dlyc": clean_text(row.DLY_CTR_CD),
+            "dly": clean_text(row.DLY_PLC_CD),
+            "g": clean_text(row.g),
+            "hi": int(row.hi),
+            "nlst": nlst,
+            "w3f": w3f,
+            "w3l": w3l,
+            "w3h": w3h,
+        }
+        out.setdefault((clean_text(row.tab), clean_text(row.Salesman_POR)), []).append(cell)
+    return out
+
+
+def build_base2025_payload(
+    num_cells: dict[tuple[str, str], list[dict[str, Any]]],
+    bsa_df: pd.DataFrame | None,
+    data_date: str,
+    generated_at: str,
+    allowed_sales_by_origin: dict[str, set[str]] | None = None,
+) -> dict[str, Any]:
+    """Combine 2025 numerator cells (A1) with 2025 allocated BSA (A2) into the
+    base2025.json payload: {tab: {salesman: {"num": [...], "bsa": [...]}}}.
+
+    BSA is a route capacity (no grade/route-hi dimension) so it is carried as a
+    separate DLY-keyed list per salesman. Both lists are restricted to the
+    workbook's SALES roster (`allowed_sales_by_origin`) so a Team-Total recompute
+    (∑ numerators / ∑ BSA over the origin's salesmen) matches the sheet.
+    """
+    base: dict[str, dict[str, dict[str, list[dict[str, Any]]]]] = {}
+
+    def allowed(tab: str, salesman: str) -> bool:
+        if not allowed_sales_by_origin:
+            return True
+        return salesman in allowed_sales_by_origin.get(tab, set())
+
+    def slot(tab: str, salesman: str) -> dict[str, list[dict[str, Any]]]:
+        return base.setdefault(tab, {}).setdefault(salesman, {"num": [], "bsa": []})
+
+    for (tab, salesman), cells in num_cells.items():
+        if not allowed(tab, salesman):
+            continue
+        slot(tab, salesman)["num"] = cells
+    if bsa_df is not None and not bsa_df.empty:
+        grouped = (
+            bsa_df.groupby(["tab", "Salesman_POR", "dest", "dst_port"], dropna=False)["allocated_bsa"]
+            .sum()
+            .reset_index()
+        )
+        for row in grouped.itertuples(index=False):
+            value = round(float(row.allocated_bsa or 0.0), 3)
+            if value <= 0:
+                continue
+            tab_v = clean_text(row.tab)
+            sales_v = clean_text(row.Salesman_POR)
+            if not allowed(tab_v, sales_v):
+                continue
+            slot(tab_v, sales_v)["bsa"].append({
+                "dlyc": clean_text(row.dest),
+                "dly": clean_text(row.dst_port),
+                "bsa": value,
+            })
+    return {
+        "_format": "sales-target-base2025-v1",
+        "generated_at": generated_at,
+        "data_date": data_date,
+        "base": base,
+    }
 
 
 def load_module(module_name: str, path: Path) -> Any:
@@ -991,6 +1139,21 @@ def main() -> int:
     (out_dir / "manifest.json").write_text(
         json.dumps(manifest_payload, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
+    )
+
+    print("      Building 2025 base cells for filter-linked '25/Target columns ...", flush=True)
+    base_num_cells = load_2025_base_cells(cache_2025, salesman_map)
+    bsa_2025 = build_allocated_bsa(MONTHS_2025, salesman_map, args.as_of or data_date, allowed_sales_by_origin)
+    base2025_payload = build_base2025_payload(base_num_cells, bsa_2025, data_date, index_payload["generated_at"], allowed_sales_by_origin)
+    (out_dir / "base2025.json").write_text(
+        json.dumps(base2025_payload, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    base2025_bytes = (out_dir / "base2025.json").stat().st_size
+    print(
+        f"      base2025.json: {len(base_num_cells):,} (tab, salesperson) numerator groups, "
+        f"{base2025_bytes / 1024:.0f} KB.",
+        flush=True,
     )
 
     duration = time.time() - started
