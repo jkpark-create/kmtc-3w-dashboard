@@ -367,11 +367,15 @@ def load_2025_base_cells(cache_path: Path, salesman_map: dict[str, str] | None) 
     return out
 
 
-def load_2025_shipper_cells(cache_path: Path, salesman_map: dict[str, str] | None) -> dict[tuple[str, str], list[dict[str, Any]]]:
-    """Return {(tab, Salesman_POR): [{dlyc, dly, sk, nlst}]} — each shipper's 2025
-    Normal LST_TEU per (route, owning salesperson).
+def load_2025_shipper_cells(cache_path: Path, salesman_map: dict[str, str] | None) -> tuple[dict[tuple[str, str], list[dict[str, Any]]], dict[tuple[str, str], dict[str, list[str]]]]:
+    """Return (cells, meta):
+      cells = {(tab, Salesman_POR): [{dlyc, dly, sk, nlst}]} — each shipper's 2025
+              Normal LST_TEU per (route, owning salesperson).
+      meta  = {(tab, Salesman_POR): {sk: [name, grade]}} — shipper name + grade,
+              so the frontend can show churned shippers (2025 BSA but no 2026
+              booking) as zero-activity rows (이탈화주 인지 + 합계 목표 = 구간 BSA).
 
-    This is the per-shipper basis the frontend uses to split a salesperson's
+    cells is the per-shipper basis the frontend uses to split a salesperson's
     allocated 2026 BSA among that salesperson's shippers BY THEIR 2025 SHARE
     (목표 = 구간BSA × 화주 2025 nlst / 영업사원 구간 2025 nlst 합). Summing the
     cells of one (tab, salesman, route) reproduces that salesperson's basis_lst in
@@ -382,9 +386,10 @@ def load_2025_shipper_cells(cache_path: Path, salesman_map: dict[str, str] | Non
     load_allocation_basis / load_2025_base_cells.
     """
     if not cache_path.exists():
-        return {}
+        return {}, {}
     needed_cols = [
         "BKG_SHPR_CST_NO",
+        "BKG_SHPR_CST_ENM",
         "POR_CTR_CD",
         "POR_PLC_CD",
         "DLY_CTR_CD",
@@ -392,6 +397,7 @@ def load_2025_shipper_cells(cache_path: Path, salesman_map: dict[str, str] | Non
         "LST_Status",
         "team",
         "Salesman_POR",
+        "grade",
         "LST_TEU",
     ]
     try:
@@ -402,7 +408,7 @@ def load_2025_shipper_cells(cache_path: Path, salesman_map: dict[str, str] | Non
     except Exception:
         read_cols = needed_cols
     df = pd.read_parquet(cache_path, columns=read_cols)
-    for col in ["POR_CTR_CD", "POR_PLC_CD", "DLY_CTR_CD", "DLY_PLC_CD", "BKG_SHPR_CST_NO", "Salesman_POR", "LST_Status"]:
+    for col in ["POR_CTR_CD", "POR_PLC_CD", "DLY_CTR_CD", "DLY_PLC_CD", "BKG_SHPR_CST_NO", "BKG_SHPR_CST_ENM", "Salesman_POR", "LST_Status", "grade"]:
         if col not in df.columns:
             df[col] = ""
         df[col] = df[col].fillna("").astype(str).str.strip()
@@ -423,7 +429,7 @@ def load_2025_shipper_cells(cache_path: Path, salesman_map: dict[str, str] | Non
         & df["lst_num"].gt(0)
     ].copy()
     if df.empty:
-        return {}
+        return {}, {}
     grouped = (
         df.groupby(["tab", "Salesman_POR", "DLY_CTR_CD", "DLY_PLC_CD", "BKG_SHPR_CST_NO"], dropna=False)["lst_num"]
         .sum()
@@ -440,7 +446,22 @@ def load_2025_shipper_cells(cache_path: Path, salesman_map: dict[str, str] | Non
             "sk": clean_text(row.BKG_SHPR_CST_NO),
             "nlst": nlst,
         })
-    return out
+    # name/grade per (tab, salesman, shipper): pick the row with the most 2025 LST
+    # so the label reflects the shipper's dominant identity that year.
+    meta_grp = (
+        df.groupby(["tab", "Salesman_POR", "BKG_SHPR_CST_NO", "BKG_SHPR_CST_ENM", "grade"], dropna=False)["lst_num"]
+        .sum()
+        .reset_index()
+        .sort_values("lst_num", ascending=False)
+    )
+    meta: dict[tuple[str, str], dict[str, list[str]]] = {}
+    for row in meta_grp.itertuples(index=False):
+        key = (clean_text(row.tab), clean_text(row.Salesman_POR))
+        sk = clean_text(row.BKG_SHPR_CST_NO)
+        slot = meta.setdefault(key, {})
+        if sk not in slot:  # first = highest-LST row for this shipper
+            slot[sk] = [clean_text(row.BKG_SHPR_CST_ENM), (clean_text(row.grade)[:1].upper())]
+    return out, meta
 
 
 def build_base2025_payload(
@@ -450,6 +471,7 @@ def build_base2025_payload(
     generated_at: str,
     allowed_sales_by_origin: dict[str, set[str]] | None = None,
     shipper_cells: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
+    shipper_meta: dict[tuple[str, str], dict[str, list[str]]] | None = None,
 ) -> dict[str, Any]:
     """Combine 2025 numerator cells (A1) with 2025 allocated BSA (A2) into the
     base2025.json payload: {tab: {salesman: {"num": [...], "bsa": [...]}}}.
@@ -467,7 +489,7 @@ def build_base2025_payload(
         return salesman in allowed_sales_by_origin.get(tab, set())
 
     def slot(tab: str, salesman: str) -> dict[str, list[dict[str, Any]]]:
-        return base.setdefault(tab, {}).setdefault(salesman, {"num": [], "bsa": [], "shpr": []})
+        return base.setdefault(tab, {}).setdefault(salesman, {"num": [], "bsa": [], "shpr": [], "smeta": {}})
 
     for (tab, salesman), cells in num_cells.items():
         if not allowed(tab, salesman):
@@ -478,6 +500,11 @@ def build_base2025_payload(
             if not allowed(tab, salesman):
                 continue
             slot(tab, salesman)["shpr"] = cells
+    if shipper_meta:
+        for (tab, salesman), m in shipper_meta.items():
+            if not allowed(tab, salesman):
+                continue
+            slot(tab, salesman)["smeta"] = m
     if bsa_df is not None and not bsa_df.empty:
         grouped = (
             bsa_df.groupby(["tab", "Salesman_POR", "dest", "dst_port"], dropna=False)["allocated_bsa"]
@@ -1225,9 +1252,9 @@ def main() -> int:
 
     print("      Building 2025 base cells for filter-linked '25/Target columns ...", flush=True)
     base_num_cells = load_2025_base_cells(cache_2025, salesman_map)
-    base_shipper_cells = load_2025_shipper_cells(cache_2025, salesman_map)
+    base_shipper_cells, base_shipper_meta = load_2025_shipper_cells(cache_2025, salesman_map)
     bsa_2025 = build_allocated_bsa(MONTHS_2025, salesman_map, args.as_of or data_date, allowed_sales_by_origin)
-    base2025_payload = build_base2025_payload(base_num_cells, bsa_2025, data_date, index_payload["generated_at"], allowed_sales_by_origin, base_shipper_cells)
+    base2025_payload = build_base2025_payload(base_num_cells, bsa_2025, data_date, index_payload["generated_at"], allowed_sales_by_origin, base_shipper_cells, base_shipper_meta)
     (out_dir / "base2025.json").write_text(
         json.dumps(base2025_payload, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
