@@ -949,6 +949,19 @@ def aggregate_chunks(
 
     chunk_count = 0
     bkg_total = 0
+    # Per-(tab, salesman, YYYYMM) live W3 metrics, collected straight from the chunk
+    # totals so the index.json can carry month-level Progress that matches what the
+    # Sales Target screen recomputes live (booking=w3f/bsa, lifting=w3l/w3f, hp=w3h/w3f).
+    month_metrics: dict[str, dict[str, dict[str, dict[str, float]]]] = {}
+
+    def _record_month_metrics(origin: str, salesman: str, yyyymm: str, totals: dict[str, Any]) -> None:
+        month_metrics.setdefault(origin, {}).setdefault(salesman, {})[yyyymm] = {
+            "w3f": float(totals.get("w3_fst") or 0.0),
+            "w3l": float(totals.get("w3_lst") or 0.0),
+            "w3h": float(totals.get("w3_hi_fst") or 0.0),
+            "bsa": float(totals.get("allocated_bsa") or 0.0),
+        }
+
     bsa_groups: dict[tuple[str, str, str], pd.DataFrame] = {}
     if bsa_allocations is not None and not bsa_allocations.empty:
         for key, group in bsa_allocations.groupby(["tab", "Salesman_POR", "YYYYMM"], dropna=False):
@@ -959,6 +972,7 @@ def aggregate_chunks(
             continue
         written_keys.add((origin, salesman, yyyymm))
         chunk = build_chunk(origin, salesman, yyyymm, block, bsa_groups.get((origin, salesman, yyyymm)))
+        _record_month_metrics(origin, salesman, yyyymm, chunk["totals"])
         token = "__".join([safe_filename_token(origin), safe_filename_token(salesman), safe_filename_token(yyyymm)])
         path = chunk_dir / f"{token}.json"
         path.write_text(json.dumps(chunk, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
@@ -977,6 +991,7 @@ def aggregate_chunks(
         if (origin, salesman, yyyymm) in written_keys or not origin or not salesman or not yyyymm:
             continue
         chunk = build_empty_bsa_chunk(origin, salesman, yyyymm, group)
+        _record_month_metrics(origin, salesman, yyyymm, chunk["totals"])
         token = "__".join([safe_filename_token(origin), safe_filename_token(salesman), safe_filename_token(yyyymm)])
         path = chunk_dir / f"{token}.json"
         path.write_text(json.dumps(chunk, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
@@ -992,7 +1007,45 @@ def aggregate_chunks(
 
     manifest["chunk_count"] = chunk_count
     manifest["bkg_rows"] = bkg_total
-    return manifest
+    return manifest, month_metrics
+
+
+def _month_progress_rates(m: dict[str, float]) -> dict[str, float | None]:
+    """Live progress fractions for one month bucket, matching the frontend:
+    booking = w3_fst / allocated_bsa, lifting = w3_lst / w3_fst, hp = w3_hi_fst / w3_fst."""
+    w3f, bsa = m.get("w3f", 0.0), m.get("bsa", 0.0)
+    rnd = lambda x: round(x, 4) if x is not None else None
+    return {
+        "b": rnd(w3f / bsa) if bsa else None,
+        "l": rnd(m.get("w3l", 0.0) / w3f) if w3f else None,
+        "h": rnd(m.get("w3h", 0.0) / w3f) if w3f else None,
+    }
+
+
+def attach_month_progress(rows: list[dict[str, Any]], month_metrics: dict[str, Any]) -> None:
+    """Add row['month_progress'] = {YYYYMM: {b, l, h}} of live W3 progress so the main
+    dashboard's target overlay can show the SELECTED MONTH's progress (matching the
+    Sales Target screen) instead of the workbook's static quarter snapshot."""
+    for row in rows:
+        tab = clean_text(row.get("tab"))
+        per_sales = month_metrics.get(tab)
+        if not per_sales:
+            continue
+        mp: dict[str, dict[str, float | None]] = {}
+        if row.get("row_type") == "SALES":
+            for ym, m in (per_sales.get(clean_text(row.get("name"))) or {}).items():
+                mp[ym] = _month_progress_rates(m)
+        elif row.get("row_type") == "TOTAL":
+            agg: dict[str, dict[str, float]] = {}
+            for byym in per_sales.values():
+                for ym, m in byym.items():
+                    a = agg.setdefault(ym, {"w3f": 0.0, "w3l": 0.0, "w3h": 0.0, "bsa": 0.0})
+                    for k in a:
+                        a[k] += m.get(k, 0.0)
+            for ym, m in agg.items():
+                mp[ym] = _month_progress_rates(m)
+        if mp:
+            row["month_progress"] = mp
 
 
 def serialize_bsa_allocations(bsa_block: pd.DataFrame | None) -> tuple[float, list[dict[str, Any]]]:
@@ -1215,7 +1268,10 @@ def main() -> int:
         args.as_of or data_date,
         allowed_sales_by_origin,
     )
-    manifest = aggregate_chunks(df, out_dir, bsa_allocations, allowed_sales_by_origin)
+    manifest, month_metrics = aggregate_chunks(df, out_dir, bsa_allocations, allowed_sales_by_origin)
+    # Live month-level Progress for the main dashboard's target overlay (selected-month
+    # values that match the Sales Target screen, not the workbook's static quarter snapshot).
+    attach_month_progress(parsed_summary, month_metrics)
 
     index_payload = {
         "_format": "sales-target-index-v1",
