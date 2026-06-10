@@ -367,12 +367,89 @@ def load_2025_base_cells(cache_path: Path, salesman_map: dict[str, str] | None) 
     return out
 
 
+def load_2025_shipper_cells(cache_path: Path, salesman_map: dict[str, str] | None) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """Return {(tab, Salesman_POR): [{dlyc, dly, sk, nlst}]} — each shipper's 2025
+    Normal LST_TEU per (route, owning salesperson).
+
+    This is the per-shipper basis the frontend uses to split a salesperson's
+    allocated 2026 BSA among that salesperson's shippers BY THEIR 2025 SHARE
+    (목표 = 구간BSA × 화주 2025 nlst / 영업사원 구간 2025 nlst 합). Summing the
+    cells of one (tab, salesman, route) reproduces that salesperson's basis_lst in
+    build_allocated_bsa, so the per-shipper targets sum back to allocated_bsa.
+
+    Shipper identity stays as the raw BKG_SHPR_CST_NO (= booking.shipper_no), while
+    Salesman_POR is remapped to the current owner — same scoping as
+    load_allocation_basis / load_2025_base_cells.
+    """
+    if not cache_path.exists():
+        return {}
+    needed_cols = [
+        "BKG_SHPR_CST_NO",
+        "POR_CTR_CD",
+        "POR_PLC_CD",
+        "DLY_CTR_CD",
+        "DLY_PLC_CD",
+        "LST_Status",
+        "team",
+        "Salesman_POR",
+        "LST_TEU",
+    ]
+    try:
+        import pyarrow.parquet as pq
+
+        available_cols = set(pq.read_schema(cache_path).names)
+        read_cols = [c for c in needed_cols if c in available_cols]
+    except Exception:
+        read_cols = needed_cols
+    df = pd.read_parquet(cache_path, columns=read_cols)
+    for col in ["POR_CTR_CD", "POR_PLC_CD", "DLY_CTR_CD", "DLY_PLC_CD", "BKG_SHPR_CST_NO", "Salesman_POR", "LST_Status"]:
+        if col not in df.columns:
+            df[col] = ""
+        df[col] = df[col].fillna("").astype(str).str.strip()
+    if salesman_map:
+        keys = df["BKG_SHPR_CST_NO"].str.upper()
+        df["Salesman_POR"] = keys.map(salesman_map).fillna("").astype(str).str.strip()
+    df["Salesman_POR"] = df["Salesman_POR"].replace("", MISSING_SALES)
+    df["tab"] = [tab_key(o, p) for o, p in zip(df["POR_CTR_CD"], df["POR_PLC_CD"])]
+    if "team" not in df.columns:
+        df["team"] = [classify_team(o, d) for o, d in zip(df["POR_CTR_CD"], df["DLY_CTR_CD"])]
+    else:
+        df["team"] = df["team"].fillna("").astype(str).str.strip()
+    df["lst_num"] = pd.to_numeric(df["LST_TEU"].astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
+    df = df.loc[
+        df["team"].astype(str).eq(TEAM_FILTER)
+        & df["tab"].ne("UNKNOWN")
+        & df["LST_Status"].eq("Normal")
+        & df["lst_num"].gt(0)
+    ].copy()
+    if df.empty:
+        return {}
+    grouped = (
+        df.groupby(["tab", "Salesman_POR", "DLY_CTR_CD", "DLY_PLC_CD", "BKG_SHPR_CST_NO"], dropna=False)["lst_num"]
+        .sum()
+        .reset_index()
+    )
+    out: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in grouped.itertuples(index=False):
+        nlst = round(float(row.lst_num), 3)
+        if nlst <= 0:
+            continue
+        out.setdefault((clean_text(row.tab), clean_text(row.Salesman_POR)), []).append({
+            "dlyc": clean_text(row.DLY_CTR_CD),
+            "dly": clean_text(row.DLY_PLC_CD),
+            "sk": clean_text(row.BKG_SHPR_CST_NO),
+            "nlst": nlst,
+        })
+    return out
+
+
 def build_base2025_payload(
     num_cells: dict[tuple[str, str], list[dict[str, Any]]],
     bsa_df: pd.DataFrame | None,
     data_date: str,
     generated_at: str,
     allowed_sales_by_origin: dict[str, set[str]] | None = None,
+    shipper_cells: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Combine 2025 numerator cells (A1) with 2025 allocated BSA (A2) into the
     base2025.json payload: {tab: {salesman: {"num": [...], "bsa": [...]}}}.
@@ -390,12 +467,17 @@ def build_base2025_payload(
         return salesman in allowed_sales_by_origin.get(tab, set())
 
     def slot(tab: str, salesman: str) -> dict[str, list[dict[str, Any]]]:
-        return base.setdefault(tab, {}).setdefault(salesman, {"num": [], "bsa": []})
+        return base.setdefault(tab, {}).setdefault(salesman, {"num": [], "bsa": [], "shpr": []})
 
     for (tab, salesman), cells in num_cells.items():
         if not allowed(tab, salesman):
             continue
         slot(tab, salesman)["num"] = cells
+    if shipper_cells:
+        for (tab, salesman), cells in shipper_cells.items():
+            if not allowed(tab, salesman):
+                continue
+            slot(tab, salesman)["shpr"] = cells
     if bsa_df is not None and not bsa_df.empty:
         grouped = (
             bsa_df.groupby(["tab", "Salesman_POR", "dest", "dst_port"], dropna=False)["allocated_bsa"]
@@ -1143,8 +1225,9 @@ def main() -> int:
 
     print("      Building 2025 base cells for filter-linked '25/Target columns ...", flush=True)
     base_num_cells = load_2025_base_cells(cache_2025, salesman_map)
+    base_shipper_cells = load_2025_shipper_cells(cache_2025, salesman_map)
     bsa_2025 = build_allocated_bsa(MONTHS_2025, salesman_map, args.as_of or data_date, allowed_sales_by_origin)
-    base2025_payload = build_base2025_payload(base_num_cells, bsa_2025, data_date, index_payload["generated_at"], allowed_sales_by_origin)
+    base2025_payload = build_base2025_payload(base_num_cells, bsa_2025, data_date, index_payload["generated_at"], allowed_sales_by_origin, base_shipper_cells)
     (out_dir / "base2025.json").write_text(
         json.dumps(base2025_payload, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
