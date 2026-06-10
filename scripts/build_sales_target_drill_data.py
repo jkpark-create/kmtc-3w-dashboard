@@ -659,11 +659,37 @@ def load_bsa_routes(path: Path, months: set[str]) -> pd.DataFrame:
     return bsa.groupby(["YYYYMM"] + BSA_ROUTE_KEYS, dropna=False)["route_bsa"].sum().reset_index()
 
 
+def activity_basis_from_snapshot(df: pd.DataFrame, months: set[str]) -> pd.DataFrame:
+    """2026 booking-activity basis (FST_TEU) per (team, tab, dest, dst_port, Salesman_POR)
+    over `months`. Used to allocate BSA on routes with NO 2025 history (new lanes) so
+    their BSA isn't dropped — otherwise the booking rate goes blank for lanes that clearly
+    have bookings (e.g. VN→AE port KLF: 2026 BSA + activity but no 2025 basis)."""
+    cols = BSA_ROUTE_KEYS + ["Salesman_POR", "act_lst"]
+    if df is None or df.empty or not months:
+        return pd.DataFrame(columns=cols)
+    sub = df.loc[
+        df["team"].astype(str).eq(TEAM_FILTER)
+        & df["YYYYMM"].astype(str).isin(months)
+        & df["tab"].ne("UNKNOWN")
+        & df["fst_teu_num"].gt(0)
+    ].copy()
+    if sub.empty:
+        return pd.DataFrame(columns=cols)
+    sub = sub.rename(columns={"DLY_CTR_CD": "dest", "DLY_PLC_CD": "dst_port"})
+    return (
+        sub.groupby(BSA_ROUTE_KEYS + ["Salesman_POR"], dropna=False)["fst_teu_num"]
+        .sum()
+        .reset_index()
+        .rename(columns={"fst_teu_num": "act_lst"})
+    )
+
+
 def build_allocated_bsa(
     months: set[str],
     salesman_map: dict[str, str] | None,
     as_of: str | None,
     allowed_sales_by_origin: dict[str, set[str]] | None = None,
+    fallback_basis: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     columns = ["tab", "Salesman_POR", "YYYYMM", "dest", "dst_port", "allocated_bsa"]
     if not months:
@@ -703,10 +729,39 @@ def build_allocated_bsa(
     if not with_basis.empty:
         with_basis["allocated_bsa"] = with_basis["route_bsa"] * with_basis["basis_lst"] / with_basis["basis_total_lst"]
         pieces.append(with_basis)
-    if not allowed_sales_by_origin and not no_basis.empty:
-        no_basis["Salesman_POR"] = NO_BASIS_SALES
-        no_basis["allocated_bsa"] = no_basis["route_bsa"]
-        pieces.append(no_basis)
+    if not no_basis.empty:
+        # Routes carrying 2026 BSA but with NO 2025 history (new lanes). Allocate by 2026
+        # booking activity so the BSA isn't dropped — otherwise the booking rate is blank
+        # for lanes that clearly have bookings (e.g. VN→AE/KLF). Legacy NO_BASIS pseudo-
+        # salesperson is used only when neither a roster nor an activity basis is available.
+        fb = fallback_basis
+        if fb is not None and not fb.empty:
+            if allowed_sales_by_origin:
+                fb = fb.loc[
+                    [
+                        clean_text(row.Salesman_POR) in allowed_sales_by_origin.get(clean_text(row.tab), set())
+                        for row in fb.itertuples(index=False)
+                    ]
+                ].copy()
+            if not fb.empty:
+                fb_total = (
+                    fb.groupby(BSA_ROUTE_KEYS, dropna=False)["act_lst"]
+                    .sum()
+                    .reset_index()
+                    .rename(columns={"act_lst": "act_total"})
+                )
+                nb_routes = no_basis[["YYYYMM"] + BSA_ROUTE_KEYS + ["route_bsa"]].drop_duplicates()
+                nb = nb_routes.merge(fb, on=BSA_ROUTE_KEYS, how="inner").merge(fb_total, on=BSA_ROUTE_KEYS, how="left")
+                nb["act_total"] = pd.to_numeric(nb["act_total"], errors="coerce").fillna(0.0)
+                nb = nb.loc[nb["act_total"].gt(0)].copy()
+                if not nb.empty:
+                    nb["allocated_bsa"] = nb["route_bsa"] * nb["act_lst"] / nb["act_total"]
+                    pieces.append(nb)
+        elif not allowed_sales_by_origin:
+            no_basis = no_basis.copy()
+            no_basis["Salesman_POR"] = NO_BASIS_SALES
+            no_basis["allocated_bsa"] = no_basis["route_bsa"]
+            pieces.append(no_basis)
     if not pieces:
         return pd.DataFrame(columns=columns)
     alloc = pd.concat(pieces, ignore_index=True)
@@ -1267,6 +1322,7 @@ def main() -> int:
         salesman_map,
         args.as_of or data_date,
         allowed_sales_by_origin,
+        activity_basis_from_snapshot(df, alloc_months),
     )
     manifest, month_metrics = aggregate_chunks(df, out_dir, bsa_allocations, allowed_sales_by_origin)
     # Live month-level Progress for the main dashboard's target overlay (selected-month
