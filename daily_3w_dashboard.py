@@ -1727,7 +1727,7 @@ def upload_to_gdrive():
     # Shipper aggregation (화주별, 주차별) — BKG > 0인 전체 화주
     shpr_keys = ['team','origin','ori_port','dest','dst_port','YYYYMM','week_start_date','BKG_SHPR_CST_NO','BKG_SHPR_CST_ENM','Salesman_POR','고수익태그','grade']
     _shpr_excl = ('w3_ab_fst','w3_ab_norm_lst','w3_cd_fst','w3_cd_norm_lst',
-                  'w2_fst','w2_norm_lst','w1_fst','w1_norm_lst','wos_fst','wos_norm_lst',
+                  'w2_norm_lst','w1_norm_lst','wos_norm_lst',
                   'hi_cm1_norm','hi_lst_norm',
                   'hi_fst','hi_norm_lst',
                   'w3_route_hi_canc_fst',
