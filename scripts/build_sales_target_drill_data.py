@@ -1172,7 +1172,15 @@ def append_supplemental_sales_rows(
             "supplemental_source": "activity_fallback",
             "target_basis": "origin_team_total",
         }
-        rows.append(row)
+        # Insert within the origin's block (after its last existing row) so the
+        # Sales Target table groups it under the correct 선적지 instead of
+        # dangling at the very end of the row list.
+        insert_at = len(rows)
+        for idx in range(len(rows) - 1, -1, -1):
+            if clean_text(rows[idx].get("tab")) == tab:
+                insert_at = idx + 1
+                break
+        rows.insert(insert_at, row)
         added.append(row)
     if added:
         print(
