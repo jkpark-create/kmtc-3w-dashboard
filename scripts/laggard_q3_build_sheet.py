@@ -89,14 +89,20 @@ def load_sales_target_index_kpis():
             q2 = row['kpi'][kpi]['q2']
             return {
                 'target': q1.get('target'),
+                'q1': q1.get('perform'),
                 'q2': q2.get('progress'),
                 'gap': q2.get('gap'),
             }
 
         rec = {
+            'tab': tab,
+            'sp': name,
             'booking': pick('booking'),
             'lifting': pick('lifting'),
             'high_profit': pick('high_profit'),
+            'accounts': row.get('accounts') or {},
+            '_supplemental_source': row.get('supplemental_source'),
+            '_target_basis': row.get('target_basis'),
         }
         by_tab_name[(tab, name)] = rec
         by_name.setdefault(name, []).append((tab, rec))
@@ -130,16 +136,23 @@ def sales_target_tab_candidates(grp, plc):
     return out
 
 
-def lookup_salesperson_kpi(sales_kpi, index_by_tab_name, index_by_name, grp, plc, name, tkey):
-    if (grp, name) in sales_kpi and tkey in sales_kpi[(grp, name)]:
-        return sales_kpi[(grp, name)][tkey]
+def lookup_salesperson_index_record(sales_kpi, index_by_tab_name, index_by_name, grp, plc, name):
+    if (grp, name) in sales_kpi:
+        return sales_kpi[(grp, name)]
     for tab in sales_target_tab_candidates(grp, plc):
         rec = index_by_tab_name.get((tab, name))
-        if rec and tkey in rec:
-            return rec[tkey]
+        if rec:
+            return rec
     name_recs = index_by_name.get(name, [])
     if len(name_recs) == 1:
-        return name_recs[0][1].get(tkey, {})
+        return name_recs[0][1]
+    return {}
+
+
+def lookup_salesperson_kpi(sales_kpi, index_by_tab_name, index_by_name, grp, plc, name, tkey):
+    rec = lookup_salesperson_index_record(sales_kpi, index_by_tab_name, index_by_name, grp, plc, name)
+    if rec and tkey in rec:
+        return rec[tkey]
     return {}
 
 
@@ -152,6 +165,15 @@ def target_source_status(index_by_name, grp, plc, name):
         return 'Sales Target 명단 누락'
     rec_tabs = ', '.join(tab for tab, _rec in name_recs)
     return f"해당 선적지 탭 누락 (후보: {', '.join(tabs)} / 보유: {rec_tabs})"
+
+
+def group_for_sales_target_tab(tab):
+    for grp, tabs in GRP_TABS.items():
+        if tab in tabs:
+            return grp
+    if tab.startswith('CN_'):
+        return tab[3:]
+    return tab
 
 # ---------------- Tab 1: 저조구간·영업사원 ----------------
 HDR1 = ['구분', '구간/영업사원', '선적항', '도착', '목표율', '실적', 'GAP(%p)',
@@ -199,13 +221,13 @@ def build_tab1():
 
 # ---------------- Tab 5: 목표누락 점검 ----------------
 HDR5 = ['KPI', '구간', '영업사원', '선적항', 'Sales Target 상태',
-        '3주전부킹(TEU)', '부킹비중', '고수익비중', '실선적전환율',
-        '실선적(WOS-3)', '소석률(전체)', '비고']
+        '목표율', '실적', 'GAP(%p)', '3주전부킹(TEU)', '부킹비중', '고수익비중',
+        '실선적전환율', '실선적(WOS-3)', '소석률(전체)', '비고']
 
 
 def build_tab5():
     rows = [HDR5[:]]
-    meta = {'missing': []}
+    meta = {'missing': [], 'supplemental': []}
     sales_kpi = {
         (grp, s['sp']): s
         for grp, sales in DATA.get('salesman_targets', {}).items()
@@ -220,23 +242,30 @@ def build_tab5():
             m = DATA['route'][key]
             sps = [s for s in DATA['route_salesman'][key] if s['bkg'] and s['bkg'] > 0]
             for s in sps:
-                sk = lookup_salesperson_kpi(sales_kpi, index_by_tab_name, index_by_name, grp, s['plc'], s['sp'], tkey)
-                if sk.get('target') is not None or sk.get('q2') is not None or sk.get('gap') is not None:
+                rec = lookup_salesperson_index_record(sales_kpi, index_by_tab_name, index_by_name, grp, s['plc'], s['sp'])
+                sk = rec.get(tkey, {}) if rec else {}
+                has_kpi = sk.get('target') is not None or sk.get('q2') is not None or sk.get('gap') is not None
+                is_supplemental = rec.get('_supplemental_source') == 'activity_fallback' if rec else False
+                if has_kpi and not is_supplemental:
                     continue
                 dedupe_key = (kpi, key, s['sp'], s['plc'])
                 if dedupe_key in seen:
                     continue
                 seen.add(dedupe_key)
-                status = target_source_status(index_by_name, grp, s['plc'], s['sp'])
+                status = 'Sales Target 보강 완료(선적지 Team Total 목표)' if is_supplemental else target_source_status(index_by_name, grp, s['plc'], s['sp'])
+                note = ('Sales Target & Progress에 보강됨. 목표율은 선적지 Team Total 목표 fallback'
+                        if is_supplemental else
+                        'H:K raw 실적은 존재하나 E:G 목표/2Q진척/GAP 소스가 없음')
                 rows.append([
                     kpi_label, key, s['sp'], s['plc'], status,
+                    pct(sk.get('target')), pct(sk.get('q2')), pct(sk.get('gap')),
                     i(s['bkg']), pct(s['bkg_share']), pct(s['hishare']),
                     pct(s['conv']), i(s['w3norm']),
                     pct(s['norm_all'] / m['bsa']) if m['bsa'] else None,
-                    'H:K raw 실적은 존재하나 E:G 목표/2Q진척/GAP 소스가 없음',
+                    note,
                 ])
-                meta['missing'].append(len(rows)-1)
-    if not meta['missing']:
+                meta['supplemental' if is_supplemental else 'missing'].append(len(rows)-1)
+    if not meta['missing'] and not meta['supplemental']:
         rows.append(['누락 없음'] + ['']*(len(HDR5)-1))
     return rows, meta
 
@@ -258,8 +287,20 @@ def build_tab2():
     for g in ['ID', 'SZP', 'TAO', 'NBO', 'TH', 'VN', 'MY']:
         if g in seen_grps and g not in order:
             order.append(g)
+    index_by_tab_name, _index_by_name = load_sales_target_index_kpis()
+    supplemental_by_group = {}
+    for (_tab, _name), rec in index_by_tab_name.items():
+        if rec.get('_supplemental_source') != 'activity_fallback':
+            continue
+        grp = group_for_sales_target_tab(rec.get('tab', ''))
+        supplemental_by_group.setdefault(grp, []).append(rec)
     for grp in order:
-        sps = sbg.get(grp, [])
+        sps = list(sbg.get(grp, []))
+        existing = {s['sp'] for s in sps}
+        for rec in supplemental_by_group.get(grp, []):
+            if rec['sp'] not in existing:
+                sps.append(rec)
+                existing.add(rec['sp'])
         # sort by booking gap ascending (worst first)
         sps = sorted(sps, key=lambda s: (s['booking']['gap'] if s['booking']['gap'] is not None else 0))
         rows.append([f"━ {grp} 선적지 ({len(sps)}명)"] + ['']*8)
@@ -469,19 +510,22 @@ def main():
     reqs.append(header_row(s5, n5))
     for r in m5['missing']:
         reqs.append(fmt_range(s5, r, r+1, 0, n5, {'userEnteredFormat': {'backgroundColor': RED}}))
-        for c0, c1 in [(6, 9), (10, 11)]:
+    for r in m5['supplemental']:
+        reqs.append(fmt_range(s5, r, r+1, 0, n5, {'userEnteredFormat': {'backgroundColor': YEL}}))
+    for r in m5['missing'] + m5['supplemental']:
+        for c0, c1 in [(5, 8), (9, 12), (13, 14)]:
             reqs.append({'repeatCell': {'range': {'sheetId': s5, 'startRowIndex': r, 'endRowIndex': r+1,
                 'startColumnIndex': c0, 'endColumnIndex': c1},
                 'cell': {'userEnteredFormat': {'numberFormat': {'type': 'PERCENT', 'pattern': '0%'}}},
                 'fields': 'userEnteredFormat.numberFormat'}})
-        for c in [5, 9]:
+        for c in [8, 12]:
             reqs.append({'repeatCell': {'range': {'sheetId': s5, 'startRowIndex': r, 'endRowIndex': r+1,
                 'startColumnIndex': c, 'endColumnIndex': c+1},
                 'cell': {'userEnteredFormat': {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}}},
                 'fields': 'userEnteredFormat.numberFormat'}})
-    for c, w in [(0, 110), (1, 80), (2, 110), (3, 60), (4, 210), (11, 360)]:
+    for c, w in [(0, 110), (1, 80), (2, 110), (3, 60), (4, 250), (5, 70), (6, 70), (7, 70), (14, 430)]:
         reqs.append({'updateDimensionProperties': {'range': {'sheetId': s5, 'dimension': 'COLUMNS', 'startIndex': c, 'endIndex': c+1}, 'properties': {'pixelSize': w}, 'fields': 'pixelSize'}})
-    reqs.append(fmt_range(s5, 1, len(t5), 11, 12, {'userEnteredFormat': {'wrapStrategy': 'WRAP'}}))
+    reqs.append(fmt_range(s5, 1, len(t5), 14, 15, {'userEnteredFormat': {'wrapStrategy': 'WRAP'}}))
 
     sh.spreadsheets().batchUpdate(spreadsheetId=sid, body={'requests': reqs}).execute()
 

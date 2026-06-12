@@ -57,6 +57,14 @@ TEAM_FILTER = "OBT"
 BSA_ROUTE_KEYS = ["team", "tab", "dest", "dst_port"]
 NO_BASIS_SALES = "(no 2025 basis)"
 MONTHS_2025 = frozenset(f"2025{m:02d}" for m in range(1, 13))
+SUPPLEMENTAL_SALES_TARGET_ROWS = {
+    ("CN_SHK_DCB", "TOMSONG"),
+    ("JKT", "MUMPUNI"),
+}
+QUARTER_MONTHS = {
+    "q1": frozenset({"202601", "202602", "202603"}),
+    "q2": frozenset({"202604", "202605", "202606"}),
+}
 CN_NKG_PORTS = frozenset({
     "AIA", "AQG", "CGD", "CGS", "CKG", "CKQ", "CSX", "CZH",
     "CZX", "FLG", "HFE", "HSI", "JIA", "JIN", "JJG", "LUZ",
@@ -1103,6 +1111,110 @@ def attach_month_progress(rows: list[dict[str, Any]], month_metrics: dict[str, A
             row["month_progress"] = mp
 
 
+def _empty_kpi_with_targets(total_row: dict[str, Any], kpi: str) -> dict[str, Any]:
+    out: dict[str, dict[str, float | None]] = {}
+    for quarter in ("q1", "q2"):
+        target = total_row.get("kpi", {}).get(kpi, {}).get(quarter, {}).get("target")
+        out[quarter] = {
+            "target": target,
+            "perform": None,
+            "progress": None,
+            "gap": None,
+        }
+    return out
+
+
+def append_supplemental_sales_rows(
+    rows: list[dict[str, Any]],
+    df: pd.DataFrame,
+    w3_2025_by_pair: dict[tuple[str, str], float],
+) -> list[dict[str, Any]]:
+    """Add explicitly approved activity-backed sales rows missing from the target workbook.
+
+    These rows are not present in Sales_Owner_Input/Summary_All, but they have current
+    booking activity and need to be visible in Sales Target & Progress. Their target
+    percentages fall back to the origin Team Total target; live progress is attached
+    later from generated chunk totals.
+    """
+    existing = {(clean_text(r.get("tab")), clean_text(r.get("name"))) for r in rows if r.get("row_type") == "SALES"}
+    totals = {clean_text(r.get("tab")): r for r in rows if r.get("row_type") == "TOTAL"}
+    scoped = df.loc[sales_target_scope_mask(df)].copy()
+    added: list[dict[str, Any]] = []
+    for tab, name in sorted(SUPPLEMENTAL_SALES_TARGET_ROWS):
+        if (tab, name) in existing:
+            continue
+        total_row = totals.get(tab)
+        if not total_row:
+            continue
+        pair_df = scoped.loc[scoped["tab"].eq(tab) & scoped["Salesman_POR"].eq(name)]
+        if pair_df.empty:
+            continue
+        q1 = pair_df.loc[pair_df["YYYYMM"].isin(QUARTER_MONTHS["q1"])]
+        ac_total = int(q1["BKG_SHPR_CST_NO"].replace("", pd.NA).dropna().nunique())
+        ac_w3 = int(q1.loc[q1["is_w3"], "BKG_SHPR_CST_NO"].replace("", pd.NA).dropna().nunique())
+        row = {
+            "tab": tab,
+            "name": name,
+            "row_type": "SALES",
+            "share_2025": None,
+            "booking_base_2025": None,
+            "w3_2025_teu": float(w3_2025_by_pair.get((tab, name), 0.0)),
+            "kpi": {
+                "booking": _empty_kpi_with_targets(total_row, "booking"),
+                "lifting": _empty_kpi_with_targets(total_row, "lifting"),
+                "high_profit": _empty_kpi_with_targets(total_row, "high_profit"),
+            },
+            "accounts": {
+                "total": ac_total,
+                "w3": ac_w3,
+                "pct": (ac_w3 / ac_total) if ac_total else None,
+            },
+            "supplemental_source": "activity_fallback",
+            "target_basis": "origin_team_total",
+        }
+        rows.append(row)
+        added.append(row)
+    if added:
+        print(
+            "      Supplemental Sales Target rows: "
+            + ", ".join(f"{r['tab']}/{r['name']}" for r in added),
+            flush=True,
+        )
+    return added
+
+
+def _period_metrics(per_month: dict[str, dict[str, float]], months: frozenset[str]) -> dict[str, float | None]:
+    agg = {"w3f": 0.0, "w3l": 0.0, "w3h": 0.0, "bsa": 0.0}
+    for ym, vals in (per_month or {}).items():
+        if ym not in months:
+            continue
+        for key in agg:
+            agg[key] += float(vals.get(key) or 0.0)
+    w3f = agg["w3f"]
+    return {
+        "booking": (agg["w3f"] / agg["bsa"]) if agg["bsa"] else None,
+        "lifting": (agg["w3l"] / w3f) if w3f else None,
+        "high_profit": (agg["w3h"] / w3f) if w3f else None,
+    }
+
+
+def attach_supplemental_quarter_progress(rows: list[dict[str, Any]], month_metrics: dict[str, Any]) -> None:
+    for row in rows:
+        if row.get("supplemental_source") != "activity_fallback":
+            continue
+        tab = clean_text(row.get("tab"))
+        name = clean_text(row.get("name"))
+        per_month = month_metrics.get(tab, {}).get(name, {})
+        for quarter, months in QUARTER_MONTHS.items():
+            rates = _period_metrics(per_month, months)
+            perform_key = "perform" if quarter == "q1" else "progress"
+            for kpi, actual in rates.items():
+                cell = row["kpi"][kpi][quarter]
+                target = cell.get("target")
+                cell[perform_key] = actual
+                cell["gap"] = (actual - target) if actual is not None and target is not None else None
+
+
 def serialize_bsa_allocations(bsa_block: pd.DataFrame | None) -> tuple[float, list[dict[str, Any]]]:
     if bsa_block is None or bsa_block.empty:
         return 0.0, []
@@ -1310,6 +1422,7 @@ def main() -> int:
         matched = int((df["Salesman_POR"] != MISSING_SALES).sum())
         print(f"      Remap coverage: {matched:,} / {len(df):,} rows matched (others -> {MISSING_SALES}).", flush=True)
     print(f"      Loaded {len(df):,} booking rows.", flush=True)
+    append_supplemental_sales_rows(parsed_summary, df, w3_2025_by_pair)
 
     print("[3/3] Writing chunk JSONs ...", flush=True)
     alloc_months = set(df.loc[sales_target_scope_mask(df), "YYYYMM"].dropna().astype(str))
@@ -1328,6 +1441,7 @@ def main() -> int:
     # Live month-level Progress for the main dashboard's target overlay (selected-month
     # values that match the Sales Target screen, not the workbook's static quarter snapshot).
     attach_month_progress(parsed_summary, month_metrics)
+    attach_supplemental_quarter_progress(parsed_summary, month_metrics)
 
     index_payload = {
         "_format": "sales-target-index-v1",
