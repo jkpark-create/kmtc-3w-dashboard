@@ -142,6 +142,17 @@ def lookup_salesperson_kpi(sales_kpi, index_by_tab_name, index_by_name, grp, plc
         return name_recs[0][1].get(tkey, {})
     return {}
 
+
+def target_source_status(index_by_name, grp, plc, name):
+    if name == '(미지정)':
+        return '담당자 미지정'
+    tabs = sales_target_tab_candidates(grp, plc)
+    name_recs = index_by_name.get(name, [])
+    if not name_recs:
+        return 'Sales Target 명단 누락'
+    rec_tabs = ', '.join(tab for tab, _rec in name_recs)
+    return f"해당 선적지 탭 누락 (후보: {', '.join(tabs)} / 보유: {rec_tabs})"
+
 # ---------------- Tab 1: 저조구간·영업사원 ----------------
 HDR1 = ['구분', '구간/영업사원', '선적항', '도착', '목표율', '실적', 'GAP(%p)',
         '3주전부킹(TEU)', '부킹비중', '고수익비중', '실선적전환율', '실선적(WOS-3)', '소석률(전체)']
@@ -150,7 +161,7 @@ HDR1 = ['구분', '구간/영업사원', '선적항', '도착', '목표율', '�
 def build_tab1():
     rows = [HDR1[:]]
     meta = {'section': [], 'route': [], 'sales': [], 'note': []}
-    rows.append([f"기간: {DATA['period']}  ·  기준일: {DATA['data_date']}  ·  OBT 기준  ·  구간행=선적지 KPI 목표/실적, 영업사원행=영업사원 KPI 목표/2Q진척"]
+    rows.append([f"기간: {DATA['period']}  ·  기준일: {DATA['data_date']}  ·  OBT 기준  ·  구간행=선적지 KPI 목표/실적, 영업사원행=영업사원 KPI 목표/2Q진척 · 목표 소스 누락자는 '목표누락 점검' 탭 참조"]
                 + ['']*12)
     meta['note'].append(len(rows)-1)
     sales_kpi = {
@@ -183,6 +194,50 @@ def build_tab1():
                              pct(s['conv']), i(s['w3norm']), pct(s['norm_all'] / m['bsa']) if m['bsa'] else None])
                 meta['sales'].append(len(rows)-1)
         rows.append(['']*13)
+    return rows, meta
+
+
+# ---------------- Tab 5: 목표누락 점검 ----------------
+HDR5 = ['KPI', '구간', '영업사원', '선적항', 'Sales Target 상태',
+        '3주전부킹(TEU)', '부킹비중', '고수익비중', '실선적전환율',
+        '실선적(WOS-3)', '소석률(전체)', '비고']
+
+
+def build_tab5():
+    rows = [HDR5[:]]
+    meta = {'missing': []}
+    sales_kpi = {
+        (grp, s['sp']): s
+        for grp, sales in DATA.get('salesman_targets', {}).items()
+        for s in sales
+    }
+    index_by_tab_name, index_by_name = load_sales_target_index_kpis()
+    seen = set()
+    for kpi, title, tkey, _formula, _mkey in KPIS:
+        kpi_label = title.split(' ', 1)[0]
+        for grp, dly in LAGGARD_ROUTES[kpi]:
+            key = f"{grp}->{dly}"
+            m = DATA['route'][key]
+            sps = [s for s in DATA['route_salesman'][key] if s['bkg'] and s['bkg'] > 0]
+            for s in sps:
+                sk = lookup_salesperson_kpi(sales_kpi, index_by_tab_name, index_by_name, grp, s['plc'], s['sp'], tkey)
+                if sk.get('target') is not None or sk.get('q2') is not None or sk.get('gap') is not None:
+                    continue
+                dedupe_key = (kpi, key, s['sp'], s['plc'])
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                status = target_source_status(index_by_name, grp, s['plc'], s['sp'])
+                rows.append([
+                    kpi_label, key, s['sp'], s['plc'], status,
+                    i(s['bkg']), pct(s['bkg_share']), pct(s['hishare']),
+                    pct(s['conv']), i(s['w3norm']),
+                    pct(s['norm_all'] / m['bsa']) if m['bsa'] else None,
+                    'H:K raw 실적은 존재하나 E:G 목표/2Q진척/GAP 소스가 없음',
+                ])
+                meta['missing'].append(len(rows)-1)
+    if not meta['missing']:
+        rows.append(['누락 없음'] + ['']*(len(HDR5)-1))
     return rows, meta
 
 # ---------------- Tab 2: 영업사원 KPI 목표·실적 ----------------
@@ -264,6 +319,7 @@ def build_tab4():
         ['  VN / MY 목표', 'VN=HPH+SGN, MY=PKG/PKW+PEN 탭을 2025 3주전물량 가중평균으로 결합'],
         ['저조 구간/국가 선정', '대시보드 저조 위젯(이미지)과 동일 — 각 KPI 하위 구간/선적지'],
         ['영업사원 목표/실적', 'Tab1 영업사원 E:G는 index.json(목표워크북) 영업사원 KPI 목표/2Q진척/GAP. H:M은 2~5월 구간 raw 집계'],
+        ['목표 소스 누락', 'Sales Target & Progress 원본(Sales_Owner_Input/Summary_All)에 없는 영업사원은 E:G가 공란. 상세는 목표누락 점검 탭 참조'],
         ['주의', '영업사원 BSA는 구간에 직접 배분되지 않음 → 구간내 영업사원은 절대 TEU·비중·전환율로 비교'],
     ]
     return L
@@ -285,8 +341,9 @@ def main():
     t2, m2 = build_tab2()
     t3, m3 = build_tab3()
     t4 = build_tab4()
+    t5, m5 = build_tab5()
 
-    titles = ['①②③ 저조구간·영업사원', '영업사원 KPI 목표·실적', '선적지(국가) 요약', '기준·정의']
+    titles = ['①②③ 저조구간·영업사원', '영업사원 KPI 목표·실적', '선적지(국가) 요약', '기준·정의', '목표누락 점검']
     created = sh.spreadsheets().create(body={
         'properties': {'title': '저조구간 Q3목표·영업사원 실적 분석 (2~5월)'},
         'sheets': [{'properties': {'title': t, 'sheetId': idx, 'gridProperties': {'frozenRowCount': 1}}}
@@ -298,7 +355,7 @@ def main():
 
     # write values
     data = []
-    for title, vals in [(titles[0], t1), (titles[1], t2), (titles[2], t3), (titles[3], t4)]:
+    for title, vals in [(titles[0], t1), (titles[1], t2), (titles[2], t3), (titles[3], t4), (titles[4], t5)]:
         ncol = max(len(r) for r in vals)
         rng = f"'{title}'!A1:{col_letter(ncol-1)}{len(vals)}"
         norm = [[('' if v is None else v) for v in r] + ['']*(ncol-len(r)) for r in vals]
@@ -406,6 +463,25 @@ def main():
     reqs.append({'updateDimensionProperties': {'range': {'sheetId': s4, 'dimension': 'COLUMNS', 'startIndex': 0, 'endIndex': 1}, 'properties': {'pixelSize': 170}, 'fields': 'pixelSize'}})
     reqs.append({'updateDimensionProperties': {'range': {'sheetId': s4, 'dimension': 'COLUMNS', 'startIndex': 1, 'endIndex': 2}, 'properties': {'pixelSize': 650}, 'fields': 'pixelSize'}})
     reqs.append(fmt_range(s4, 1, len(t4), 1, 2, {'userEnteredFormat': {'wrapStrategy': 'WRAP'}}))
+
+    # Tab5
+    s5 = sheet_ids[titles[4]]; n5 = len(HDR5)
+    reqs.append(header_row(s5, n5))
+    for r in m5['missing']:
+        reqs.append(fmt_range(s5, r, r+1, 0, n5, {'userEnteredFormat': {'backgroundColor': RED}}))
+        for c0, c1 in [(6, 9), (10, 11)]:
+            reqs.append({'repeatCell': {'range': {'sheetId': s5, 'startRowIndex': r, 'endRowIndex': r+1,
+                'startColumnIndex': c0, 'endColumnIndex': c1},
+                'cell': {'userEnteredFormat': {'numberFormat': {'type': 'PERCENT', 'pattern': '0%'}}},
+                'fields': 'userEnteredFormat.numberFormat'}})
+        for c in [5, 9]:
+            reqs.append({'repeatCell': {'range': {'sheetId': s5, 'startRowIndex': r, 'endRowIndex': r+1,
+                'startColumnIndex': c, 'endColumnIndex': c+1},
+                'cell': {'userEnteredFormat': {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}}},
+                'fields': 'userEnteredFormat.numberFormat'}})
+    for c, w in [(0, 110), (1, 80), (2, 110), (3, 60), (4, 210), (11, 360)]:
+        reqs.append({'updateDimensionProperties': {'range': {'sheetId': s5, 'dimension': 'COLUMNS', 'startIndex': c, 'endIndex': c+1}, 'properties': {'pixelSize': w}, 'fields': 'pixelSize'}})
+    reqs.append(fmt_range(s5, 1, len(t5), 11, 12, {'userEnteredFormat': {'wrapStrategy': 'WRAP'}}))
 
     sh.spreadsheets().batchUpdate(spreadsheetId=sid, body={'requests': reqs}).execute()
 
