@@ -335,14 +335,21 @@ def set_yyyymm_filter_members(filter_el, yyyymm_values):
         })
 
 
-def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_name=None, view2_yyyymm=None):
+def ensure_temp_workbook(
+    s, api_ver, site_id, start=None, end=None, workbook_name=None,
+    view2_yyyymm=None, view2_date_filter=None
+):
     """Download original TWB, modify filter, publish as temp workbook."""
     import xml.etree.ElementTree as ET
     start = start or BKG_SCHEDULE_START
     end = end or BKG_SCHEDULE_END
     workbook_name = workbook_name or TEMP_WB_NAME
     view2_yyyymm = normalize_yyyymm_values(view2_yyyymm or os.environ.get('FILTER_VIEW2_YYYYMM'))
-    need_view2_date_filter = os.environ.get('FILTER_VIEW2_DATE') == '1'
+    need_view2_date_filter = (
+        bool(view2_date_filter)
+        if view2_date_filter is not None
+        else os.environ.get('FILTER_VIEW2_DATE') == '1'
+    )
     need_view2_yyyymm_filter = bool(view2_yyyymm)
 
     # Check if temp workbook exists (search by name; contentUrl may have suffix)
@@ -498,7 +505,7 @@ def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_nam
             f'{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/workbooks',
             params={'overwrite': 'true'}, data=payload,
             headers={'Content-Type': f'multipart/mixed; boundary={boundary}'},
-            timeout=600)
+            timeout=int(os.environ.get('TABLEAU_PUBLISH_TIMEOUT_SECONDS', '600')))
         if resp.status_code in (200, 201):
             print(f"  Published successfully")
             # Extract actual contentUrl from response (Tableau may append suffix)
@@ -511,6 +518,9 @@ def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_nam
                     actual_content_url = wb_el.get('contentUrl', workbook_name)
             except Exception:
                 pass
+        else:
+            snippet = resp.text[:1000].replace('\n', ' ')
+            raise RuntimeError(f"Publish failed HTTP {resp.status_code}: {snippet}")
     except requests.exceptions.ReadTimeout:
         print(f"  Publish timed out (likely succeeded)")
         time.sleep(5)
@@ -518,6 +528,7 @@ def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_nam
     # Fallback: query by name to get actual contentUrl
     if actual_content_url == workbook_name:
         deadline = time.time() + int(os.environ.get('TABLEAU_PUBLISH_WAIT_SECONDS', '1800'))
+        published_available = False
         while time.time() < deadline:
             resp = s.get(
                 f'{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/workbooks',
@@ -527,9 +538,12 @@ def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_nam
             if found:
                 actual_content_url = found[0].get('contentUrl', workbook_name)
                 print(f"  Published workbook available: {actual_content_url}")
+                published_available = True
                 break
             print("  Waiting for published workbook to become available...")
             time.sleep(30)
+        if not published_available:
+            raise RuntimeError(f"Published workbook not available after waiting: {workbook_name}")
 
     return actual_content_url
 
@@ -567,11 +581,12 @@ def login_tableau_browser(page, attempts=3):
     raise last_error
 
 
-def build_tableau_csv_url(content_url, view_name, vf_params=None):
+def build_tableau_csv_url(content_url, view_name, vf_params=None, prefix_vf=True):
     csv_url = f'{TABLEAU_SERVER}/views/{content_url}/{view_name}.csv'
     if vf_params:
+        query = {f'vf_{k}': v for k, v in vf_params.items()} if prefix_vf else vf_params
         params = urllib.parse.urlencode(
-            {f'vf_{k}': v for k, v in vf_params.items()},
+            query,
             safe=','
         )
         csv_url += '?' + params
@@ -638,12 +653,12 @@ def download_csv_via_browser_event(page, csv_url, tmp_path):
     return os.path.getsize(tmp_path)
 
 
-def download_csv_from_tableau(content_url, view_name, save_path, vf_params=None):
+def download_csv_from_tableau(content_url, view_name, save_path, vf_params=None, prefix_vf=True):
     """Download CSV from Tableau with retry and HTTP fallback protection."""
     from playwright.sync_api import sync_playwright
     save_path = Path(save_path)
     tmp_path = save_path.with_name(f'{save_path.name}.download')
-    csv_url = build_tableau_csv_url(content_url, view_name, vf_params)
+    csv_url = build_tableau_csv_url(content_url, view_name, vf_params, prefix_vf=prefix_vf)
     last_error = None
 
     for attempt in range(1, TABLEAU_CSV_DOWNLOAD_RETRIES + 1):
@@ -739,6 +754,30 @@ def yearly_yyyymm_filter(year):
     return ','.join(f'{year}{month:02d}' for month in range(1, 13))
 
 
+def yyyymm_range_filter(start_dt, end_dt):
+    """Return comma-separated YYYYMM values from start month through end month."""
+    y, m = start_dt.year, start_dt.month
+    end_y, end_m = end_dt.year, end_dt.month
+    values = []
+    while (y, m) <= (end_y, end_m):
+        values.append(f'{y}{m:02d}')
+        m += 1
+        if m == 13:
+            y += 1
+            m = 1
+    return ','.join(values)
+
+
+def daily_view2_yyyymm_filter():
+    """Return View 2 YYYYMM values needed for the daily forward window."""
+    start_dt = datetime(DATASET_YEAR, 1, 1)
+    try:
+        end_dt = datetime.strptime(str(BKG_SCHEDULE_END)[:10], '%Y-%m-%d')
+    except ValueError:
+        end_dt = _end_sat
+    return yyyymm_range_filter(start_dt, end_dt)
+
+
 def download_all_chunked():
     """Download yearly booking views and merge chunked View 1 output."""
     print("[1/3] Downloading yearly booking views...")
@@ -804,6 +843,7 @@ def download_all():
         return
 
     os.chdir(WORK_DIR)
+    view2_yyyymm = os.environ.get('FILTER_VIEW2_YYYYMM') or daily_view2_yyyymm_filter()
     s, api_ver, site_id = tableau_rest_api()
 
     # 1. Ensure temp workbook with correct filter
@@ -819,12 +859,17 @@ def download_all():
     print(f"  {path1.name}: {size:,} bytes ({rows:,} rows)")
 
     # 3. Download View 2 (2.csv)
-    # View 2 is controlled by its own YYYYMM/status filters. Download it from
-    # the original workbook so Tableau-side status/filter edits are not hidden
-    # by a previously published temp workbook.
+    # View 2 supplies Date_vsl/actual departure data. Its existing YYYYMM
+    # filter must cover the daily forward window; otherwise the +3-week
+    # default month can be absent from the dashboard YYYYMM list. Tableau
+    # honors this View 2 filter as a bare CSV parameter, not vf_YYYYMM.
     path2 = dataset_csv_path('2')
-    print(f"[3/3] Downloading View 2 ({path2.name})...")
-    size = download_csv_from_tableau(BKG_WB_CONTENT_URL, '2', path2)
+    print(f"[3/3] Downloading View 2 ({path2.name}) with YYYYMM={view2_yyyymm}...")
+    size = download_csv_from_tableau(
+        BKG_WB_CONTENT_URL, '2', path2,
+        vf_params={'YYYYMM': view2_yyyymm},
+        prefix_vf=False,
+    )
     rows = count_csv_rows(path2)
     print(f"  {path2.name}: {size:,} bytes ({rows:,} rows)")
 
