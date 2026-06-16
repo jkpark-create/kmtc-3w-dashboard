@@ -7,6 +7,8 @@
   const SCOPES = `email profile openid ${DRIVE_READONLY_SCOPE}`;
   const DASHBOARD_ROOT = "/kmtc-3w-dashboard-web/";
   const RETURN_PATH_KEY = "obtReturnPath";
+  const AUTH_TOKEN_KEY = "gtoken";
+  const AUTH_USER_KEY = "guser";
   const LOCAL_AUTH_BYPASS = ["localhost", "127.0.0.1"].includes(location.hostname);
 
   let currentUser = null;
@@ -49,13 +51,16 @@
 
   function doLogin() {
     sessionStorage.setItem(RETURN_PATH_KEY, location.pathname + location.search);
-    const authUrl = "https://accounts.google.com/o/oauth2/v2/auth"
-      + "?client_id=" + encodeURIComponent(GOOGLE_CLIENT_ID)
-      + "&redirect_uri=" + encodeURIComponent(redirectUri())
-      + "&response_type=token"
-      + "&scope=" + encodeURIComponent(SCOPES)
-      + "&include_granted_scopes=true"
-      + "&prompt=select_account";
+    const params = new URLSearchParams({
+      client_id: GOOGLE_CLIENT_ID,
+      redirect_uri: redirectUri(),
+      response_type: "token",
+      scope: SCOPES,
+      include_granted_scopes: "true"
+    });
+    const previous = storedUser();
+    if (previous && previous.email) params.set("login_hint", previous.email);
+    const authUrl = "https://accounts.google.com/o/oauth2/v2/auth?" + params.toString();
     location.href = authUrl;
   }
 
@@ -83,8 +88,28 @@
 
   function saveSession(token, info) {
     currentUser = { email: info.email, name: info.name || info.email, picture: info.picture };
-    sessionStorage.setItem("gtoken", token);
-    sessionStorage.setItem("guser", JSON.stringify(currentUser));
+    const userText = JSON.stringify(currentUser);
+    localStorage.setItem(AUTH_TOKEN_KEY, token);
+    localStorage.setItem(AUTH_USER_KEY, userText);
+    sessionStorage.setItem(AUTH_TOKEN_KEY, token);
+    sessionStorage.setItem(AUTH_USER_KEY, userText);
+  }
+
+  function storedUser() {
+    try {
+      return JSON.parse(localStorage.getItem(AUTH_USER_KEY) || sessionStorage.getItem(AUTH_USER_KEY) || "null");
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function clearSession(keepUser = false) {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    sessionStorage.removeItem(AUTH_TOKEN_KEY);
+    if (!keepUser) {
+      localStorage.removeItem(AUTH_USER_KEY);
+      sessionStorage.removeItem(AUTH_USER_KEY);
+    }
   }
 
   async function handleRedirect() {
@@ -111,19 +136,19 @@
   }
 
   async function validateStoredSession() {
-    const token = sessionStorage.getItem("gtoken");
-    const userText = sessionStorage.getItem("guser");
+    const token = localStorage.getItem(AUTH_TOKEN_KEY) || sessionStorage.getItem(AUTH_TOKEN_KEY);
+    const userText = localStorage.getItem(AUTH_USER_KEY) || sessionStorage.getItem(AUTH_USER_KEY);
     if (!token || !userText) return false;
     try {
       const response = await fetch("https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=" + token);
       if (!response.ok) throw new Error("expired");
       currentUser = JSON.parse(userText);
       if (!domainAllowed(currentUser.email)) throw new Error("domain");
+      saveSession(token, currentUser);
       showApp();
       return true;
     } catch (error) {
-      sessionStorage.removeItem("gtoken");
-      sessionStorage.removeItem("guser");
+      clearSession(true);
       return false;
     }
   }
@@ -147,8 +172,7 @@
   }
 
   function logout() {
-    sessionStorage.removeItem("gtoken");
-    sessionStorage.removeItem("guser");
+    clearSession(false);
     sessionStorage.removeItem(RETURN_PATH_KEY);
     location.reload();
   }
