@@ -4,7 +4,8 @@ Two outputs:
 
   dist/sales-target/index.json
       Small (a few hundred KB) summary used by the drill-down landing view. Carries
-      per-(origin, salesman) Target / Performance / GAP rows for 1Q 2026 and 2Q 2026
+      per-(origin, salesman) Target / Performance / GAP rows for 1Q 2026, 2Q 2026,
+      and 3Q 2026
       across the three KPIs (3W Booking Rate vs BSA, Actual Lifting Rate, High-Profit
       Customer Rate), plus A/C counts. Sourced from the Summary_All tab of the target
       workbook so the numbers match the sheet 1:1.
@@ -57,6 +58,11 @@ TEAM_FILTER = "OBT"
 BSA_ROUTE_KEYS = ["team", "tab", "dest", "dst_port"]
 NO_BASIS_SALES = "(no 2025 basis)"
 MONTHS_2025 = frozenset(f"2025{m:02d}" for m in range(1, 13))
+QUARTER_MONTHS = {
+    "q1": frozenset({"202601", "202602", "202603"}),
+    "q2": frozenset({"202604", "202605", "202606"}),
+    "q3": frozenset({"202607", "202608", "202609"}),
+}
 CN_NKG_PORTS = frozenset({
     "AIA", "AQG", "CGD", "CGS", "CKG", "CKQ", "CSX", "CZH",
     "CZX", "FLG", "HFE", "HSI", "JIA", "JIN", "JJG", "LUZ",
@@ -793,7 +799,7 @@ def fetch_summary_rows(service: Any, workbook_id: str) -> list[list[Any]]:
         .values()
         .get(
             spreadsheetId=workbook_id,
-            range=f"{SUMMARY_SHEET}!A1:Z",
+            range=f"{SUMMARY_SHEET}!A1:AC",
             valueRenderOption="UNFORMATTED_VALUE",
         )
         .execute()
@@ -802,7 +808,7 @@ def fetch_summary_rows(service: Any, workbook_id: str) -> list[list[Any]]:
 
 
 def parse_summary(rows: list[list[Any]]) -> list[dict[str, Any]]:
-    """Sheet header rows live at A2:Z4; data starts at row 5 (1-based). Columns:
+    """Sheet header rows live at A2:AC4; data starts at row 5 (1-based). Columns:
         A Tab, B Name, C 2025_share, D booking_2025_base,
         E booking_q1_target, F booking_q1_perform, G booking_q1_gap,
         H booking_q2_target, I booking_q2_progress, J booking_q2_gap,
@@ -810,7 +816,8 @@ def parse_summary(rows: list[list[Any]]) -> list[dict[str, Any]]:
         N lifting_q2_target, O lifting_q2_progress, P lifting_q2_gap,
         Q hp_q1_target, R hp_q1_perform, S hp_q1_gap,
         T hp_q2_target, U hp_q2_progress, V hp_q2_gap,
-        W ac_total, X ac_w3, Y ac_pct, Z ac_sort
+        W ac_total, X ac_w3, Y ac_pct,
+        Z booking_q3_target, AA lifting_q3_target, AB hp_q3_target, AC row_type
     """
     parsed: list[dict[str, Any]] = []
     for raw in rows[4:]:  # data starts at row 5 (index 4)
@@ -820,7 +827,10 @@ def parse_summary(rows: list[list[Any]]) -> list[dict[str, Any]]:
         name = clean_text(raw[1] if len(raw) > 1 else "")
         if not tab or not name:
             continue
-        row_type = "TOTAL" if name.lower() in {"team total", "total"} else "SALES"
+        sheet_row_type = clean_text(raw[28] if len(raw) > 28 else "").upper()
+        row_type = sheet_row_type if sheet_row_type in {"TOTAL", "SALES"} else (
+            "TOTAL" if name.lower() in {"team total", "total"} else "SALES"
+        )
         parsed.append({
             "tab": tab,
             "name": name,
@@ -840,6 +850,11 @@ def parse_summary(rows: list[list[Any]]) -> list[dict[str, Any]]:
                         "progress": parse_pct(raw[8] if len(raw) > 8 else None),
                         "gap": parse_pct(raw[9] if len(raw) > 9 else None),
                     },
+                    "q3": {
+                        "target": parse_pct(raw[25] if len(raw) > 25 else None),
+                        "progress": None,
+                        "gap": None,
+                    },
                 },
                 "lifting": {
                     "q1": {
@@ -852,6 +867,11 @@ def parse_summary(rows: list[list[Any]]) -> list[dict[str, Any]]:
                         "progress": parse_pct(raw[14] if len(raw) > 14 else None),
                         "gap": parse_pct(raw[15] if len(raw) > 15 else None),
                     },
+                    "q3": {
+                        "target": parse_pct(raw[26] if len(raw) > 26 else None),
+                        "progress": None,
+                        "gap": None,
+                    },
                 },
                 "high_profit": {
                     "q1": {
@@ -863,6 +883,11 @@ def parse_summary(rows: list[list[Any]]) -> list[dict[str, Any]]:
                         "target": parse_pct(raw[19] if len(raw) > 19 else None),
                         "progress": parse_pct(raw[20] if len(raw) > 20 else None),
                         "gap": parse_pct(raw[21] if len(raw) > 21 else None),
+                    },
+                    "q3": {
+                        "target": parse_pct(raw[27] if len(raw) > 27 else None),
+                        "progress": None,
+                        "gap": None,
                     },
                 },
             },
@@ -1103,6 +1128,55 @@ def attach_month_progress(rows: list[dict[str, Any]], month_metrics: dict[str, A
             row["month_progress"] = mp
 
 
+def _period_metrics(per_month: dict[str, dict[str, float]], months: frozenset[str]) -> dict[str, float | None]:
+    agg = {"w3f": 0.0, "w3l": 0.0, "w3h": 0.0, "bsa": 0.0}
+    for ym, vals in (per_month or {}).items():
+        if ym not in months:
+            continue
+        for key in agg:
+            agg[key] += float(vals.get(key) or 0.0)
+    w3f = agg["w3f"]
+    return {
+        "booking": (agg["w3f"] / agg["bsa"]) if agg["bsa"] else None,
+        "lifting": (agg["w3l"] / w3f) if w3f else None,
+        "high_profit": (agg["w3h"] / w3f) if w3f else None,
+    }
+
+
+def _row_month_metrics(row: dict[str, Any], month_metrics: dict[str, Any]) -> dict[str, dict[str, float]]:
+    tab = clean_text(row.get("tab"))
+    per_sales = month_metrics.get(tab, {})
+    if row.get("row_type") == "SALES":
+        return per_sales.get(clean_text(row.get("name")), {}) or {}
+    if row.get("row_type") != "TOTAL":
+        return {}
+    agg: dict[str, dict[str, float]] = {}
+    for by_month in per_sales.values():
+        for ym, vals in by_month.items():
+            bucket = agg.setdefault(ym, {"w3f": 0.0, "w3l": 0.0, "w3h": 0.0, "bsa": 0.0})
+            for key in bucket:
+                bucket[key] += float(vals.get(key) or 0.0)
+    return agg
+
+
+def attach_missing_quarter_progress(rows: list[dict[str, Any]], month_metrics: dict[str, Any]) -> None:
+    """Fill missing quarter perform/progress fields from generated monthly metrics."""
+    for row in rows:
+        per_month = _row_month_metrics(row, month_metrics)
+        if not per_month:
+            continue
+        for quarter, months in QUARTER_MONTHS.items():
+            perform_key = "perform" if quarter == "q1" else "progress"
+            rates = _period_metrics(per_month, months)
+            for kpi, actual in rates.items():
+                cell = row["kpi"][kpi][quarter]
+                if cell.get(perform_key) is not None:
+                    continue
+                target = cell.get("target")
+                cell[perform_key] = actual
+                cell["gap"] = (actual - target) if actual is not None and target is not None else None
+
+
 def serialize_bsa_allocations(bsa_block: pd.DataFrame | None) -> tuple[float, list[dict[str, Any]]]:
     if bsa_block is None or bsa_block.empty:
         return 0.0, []
@@ -1328,6 +1402,7 @@ def main() -> int:
     # Live month-level Progress for the main dashboard's target overlay (selected-month
     # values that match the Sales Target screen, not the workbook's static quarter snapshot).
     attach_month_progress(parsed_summary, month_metrics)
+    attach_missing_quarter_progress(parsed_summary, month_metrics)
 
     index_payload = {
         "_format": "sales-target-index-v1",
