@@ -69,6 +69,8 @@ Sales Target 화면은 `team == OBT`, `route_bsa > 0`, `tab != UNKNOWN`만 사�
 | K:P | Lifting Q1/Q2 target, perform/progress, gap |
 | Q:V | High-Profit Q1/Q2 target, perform/progress, gap |
 | W:Y | A/C total, WOS-3 A/C, WOS-3 A/C ratio |
+| Z:AB | Booking/Lifting/High-Profit Q3 target |
+| AC | Row type (`TOTAL` / `SALES`) |
 
 `Name`이 `Team Total` 또는 `Total`이면 `row_type = TOTAL`, 그 외는 `SALES`로 저장한다.
 
@@ -137,7 +139,7 @@ Sales Target 화면은 `team == OBT`, `route_bsa > 0`, `tab != UNKNOWN`만 사�
 | `share_2025` | 2025 Normal LST 기준 영업사원 비중 |
 | `booking_base_2025` | 2025 WOS-3 Booking / BSA |
 | `w3_2025_teu` | 2025 WOS-3 FST_TEU |
-| `kpi.booking/lifting/high_profit.q1/q2` | target, perform/progress, gap |
+| `kpi.booking/lifting/high_profit.q1/q2/q3` | target, perform/progress, gap. Q3 target comes from the workbook; progress/gap are filled from generated Q3 booking months when available. |
 | `accounts` | 화주 total, WOS-3 화주, 비중 |
 | `month_progress` | 월별 live progress. 메인 대시보드 overlay와 Sales Target 화면 정합성 유지 |
 
@@ -321,4 +323,3 @@ git push
 ```
 
 자동 배포가 아닌 수동 커밋 시에는 `output/`의 대용량 원천 파일은 커밋하지 않는다.
-
