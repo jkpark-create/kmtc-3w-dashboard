@@ -270,6 +270,16 @@ TEMP_WB_NAME = os.environ.get(
 TEMP_WB_PROJECT_ID = '3d94d4a3-1b23-4e39-8c9c-4a3b765c140d'  # OBT AI AGENT
 TABLEAU_CSV_DOWNLOAD_TIMEOUT_MS = int(os.environ.get('TABLEAU_CSV_DOWNLOAD_TIMEOUT_MS', '1800000'))
 TABLEAU_CSV_DOWNLOAD_RETRIES = max(1, int(os.environ.get('TABLEAU_CSV_DOWNLOAD_RETRIES', '2')))
+TABLEAU_HTTP_READ_TIMEOUT_SECONDS = max(60, int(os.environ.get('TABLEAU_HTTP_READ_TIMEOUT_SECONDS', '600')))
+TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS = max(
+    60000,
+    int(os.environ.get(
+        'TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS',
+        str(min(TABLEAU_CSV_DOWNLOAD_TIMEOUT_MS, 300000)),
+    )),
+)
+TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS', '24'))
+TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS', '72'))
 
 
 # ═══════════════════════════════════════════════════════════
@@ -598,7 +608,7 @@ def download_csv_via_authenticated_http(ctx, csv_url, tmp_path):
             'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
         ),
     }
-    timeout_seconds = max(60, TABLEAU_CSV_DOWNLOAD_TIMEOUT_MS // 1000)
+    timeout_seconds = min(max(60, TABLEAU_CSV_DOWNLOAD_TIMEOUT_MS // 1000), TABLEAU_HTTP_READ_TIMEOUT_SECONDS)
     bytes_written = 0
     first_chunk = b''
     with session.get(
@@ -631,7 +641,7 @@ def download_csv_via_authenticated_http(ctx, csv_url, tmp_path):
 
 
 def download_csv_via_browser_event(page, csv_url, tmp_path):
-    with page.expect_download(timeout=TABLEAU_CSV_DOWNLOAD_TIMEOUT_MS) as dl_info:
+    with page.expect_download(timeout=TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS) as dl_info:
         page.evaluate('url => { window.location.href = url; }', csv_url)
     download = dl_info.value
     download.save_as(str(tmp_path))
@@ -669,7 +679,10 @@ def download_csv_from_tableau(content_url, view_name, save_path, vf_params=None)
                     size = download_csv_via_authenticated_http(ctx, csv_url, tmp_path)
                 except Exception as http_exc:
                     print(f"  HTTP stream failed: {http_exc}")
-                    print(f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} (browser event)...")
+                    print(
+                        f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} "
+                        f"(browser event, timeout={TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS // 1000}s)..."
+                    )
                     size = download_csv_via_browser_event(page, csv_url, tmp_path)
 
                 if size <= 0:
@@ -697,6 +710,39 @@ def count_csv_rows(path):
     """Count downloaded UTF-8 CSV rows without materializing the file."""
     with open(path, 'r', encoding='utf-8-sig', newline='') as f:
         return max(sum(1 for _ in csv.reader(f)) - 1, 0)
+
+
+def use_existing_csv_after_tableau_failure(path, label, failure, max_age_hours):
+    """Use a recent existing CSV when Tableau export fails after retries."""
+    path = Path(path)
+    if max_age_hours <= 0:
+        raise failure
+    if not path.exists():
+        raise RuntimeError(f'{label} download failed and fallback file does not exist: {path}') from failure
+
+    stat = path.stat()
+    if stat.st_size <= 0:
+        raise RuntimeError(f'{label} download failed and fallback file is empty: {path}') from failure
+
+    rows = count_csv_rows(path)
+    if rows <= 0:
+        raise RuntimeError(f'{label} download failed and fallback file has no data rows: {path}') from failure
+
+    modified_at = datetime.fromtimestamp(stat.st_mtime)
+    age_hours = (datetime.now() - modified_at).total_seconds() / 3600
+    if age_hours > max_age_hours:
+        raise RuntimeError(
+            f'{label} download failed and fallback file is too old: '
+            f'{path.name}, modified {modified_at:%Y-%m-%d %H:%M:%S}, '
+            f'age {age_hours:.1f}h > {max_age_hours}h'
+        ) from failure
+
+    print(
+        f"  WARNING: {label} download failed; using existing {path.name} "
+        f"from {modified_at:%Y-%m-%d %H:%M:%S} ({rows:,} rows). "
+        f"Original error: {failure}"
+    )
+    return stat.st_size
 
 
 def read_tableau_csv(path):
@@ -814,7 +860,15 @@ def download_all():
     # 2. Download View 1 (1.csv)
     path1 = dataset_csv_path('1')
     print(f"[2/3] Downloading View 1 ({path1.name})...")
-    size = download_csv_from_tableau(wb_url, '1', path1)
+    try:
+        size = download_csv_from_tableau(wb_url, '1', path1)
+    except Exception as exc:
+        size = use_existing_csv_after_tableau_failure(
+            path1,
+            'View 1',
+            exc,
+            TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS,
+        )
     rows = count_csv_rows(path1)
     print(f"  {path1.name}: {size:,} bytes ({rows:,} rows)")
 
@@ -824,7 +878,15 @@ def download_all():
     # by a previously published temp workbook.
     path2 = dataset_csv_path('2')
     print(f"[3/3] Downloading View 2 ({path2.name})...")
-    size = download_csv_from_tableau(BKG_WB_CONTENT_URL, '2', path2)
+    try:
+        size = download_csv_from_tableau(BKG_WB_CONTENT_URL, '2', path2)
+    except Exception as exc:
+        size = use_existing_csv_after_tableau_failure(
+            path2,
+            'View 2',
+            exc,
+            TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS,
+        )
     rows = count_csv_rows(path2)
     print(f"  {path2.name}: {size:,} bytes ({rows:,} rows)")
 
@@ -873,7 +935,7 @@ def download_bsa():
                 download_csv_via_authenticated_http(ctx, csv_url, tmp_path)
             except Exception as http_exc:
                 print(f"HTTP stream failed ({http_exc}); browser event...", end=' ', flush=True)
-                with page.expect_download(timeout=min(TABLEAU_CSV_DOWNLOAD_TIMEOUT_MS, 600000)) as dl_info:
+                with page.expect_download(timeout=TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS) as dl_info:
                     page.evaluate('url => { window.location.href = url; }', csv_url)
                 download = dl_info.value
                 download.save_as(str(tmp_path))
