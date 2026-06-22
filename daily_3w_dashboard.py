@@ -4,7 +4,7 @@
 - booking snapshot 처리 (수식 계산, -3W 필터, 고/저 분류)
 - output/ 폴더에 날짜별 결과 저장
 """
-import sys, re, os, io, csv, json, time, warnings, subprocess
+import sys, re, os, io, csv, json, time, warnings, subprocess, shutil
 import urllib.parse
 import pandas as pd
 import openpyxl
@@ -278,8 +278,9 @@ TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS = max(
         str(min(TABLEAU_CSV_DOWNLOAD_TIMEOUT_MS, 300000)),
     )),
 )
-TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS', '24'))
+TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS', '48'))
 TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS', '72'))
+TABLEAU_BSA_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_BSA_EXISTING_FALLBACK_MAX_HOURS', '72'))
 
 
 # ═══════════════════════════════════════════════════════════
@@ -712,34 +713,94 @@ def count_csv_rows(path):
         return max(sum(1 for _ in csv.reader(f)) - 1, 0)
 
 
-def use_existing_csv_after_tableau_failure(path, label, failure, max_age_hours):
+def _dedupe_paths(paths):
+    """Yield paths once while preserving caller priority."""
+    seen = set()
+    for path in paths:
+        path = Path(path)
+        try:
+            key = str(path.resolve())
+        except OSError:
+            key = str(path.absolute())
+        if key in seen:
+            continue
+        seen.add(key)
+        yield path
+
+
+def use_existing_csv_after_tableau_failure(
+    path,
+    label,
+    failure,
+    max_age_hours,
+    fallback_candidates=None,
+    copy_to_target=False,
+):
     """Use a recent existing CSV when Tableau export fails after retries."""
     path = Path(path)
     if max_age_hours <= 0:
         raise failure
-    if not path.exists():
-        raise RuntimeError(f'{label} download failed and fallback file does not exist: {path}') from failure
 
-    stat = path.stat()
-    if stat.st_size <= 0:
-        raise RuntimeError(f'{label} download failed and fallback file is empty: {path}') from failure
+    candidates = [path]
+    if fallback_candidates:
+        candidates.extend(fallback_candidates)
 
-    rows = count_csv_rows(path)
-    if rows <= 0:
-        raise RuntimeError(f'{label} download failed and fallback file has no data rows: {path}') from failure
+    validation_errors = []
+    selected = None
+    for candidate in _dedupe_paths(candidates):
+        if not candidate.exists():
+            validation_errors.append(f'{candidate.name}: missing')
+            continue
 
-    modified_at = datetime.fromtimestamp(stat.st_mtime)
-    age_hours = (datetime.now() - modified_at).total_seconds() / 3600
-    if age_hours > max_age_hours:
+        stat = candidate.stat()
+        if stat.st_size <= 0:
+            validation_errors.append(f'{candidate.name}: empty')
+            continue
+
+        try:
+            rows = count_csv_rows(candidate)
+        except Exception as row_exc:
+            validation_errors.append(f'{candidate.name}: row count failed ({row_exc})')
+            continue
+        if rows <= 0:
+            validation_errors.append(f'{candidate.name}: no data rows')
+            continue
+
+        modified_at = datetime.fromtimestamp(stat.st_mtime)
+        age_hours = (datetime.now() - modified_at).total_seconds() / 3600
+        if age_hours > max_age_hours:
+            validation_errors.append(
+                f'{candidate.name}: too old, modified {modified_at:%Y-%m-%d %H:%M:%S}, '
+                f'age {age_hours:.1f}h > {max_age_hours}h'
+            )
+            continue
+
+        selected = (candidate, stat, rows, modified_at, age_hours)
+        break
+
+    if selected is None:
+        detail = '; '.join(validation_errors) if validation_errors else 'no fallback candidates'
         raise RuntimeError(
-            f'{label} download failed and fallback file is too old: '
-            f'{path.name}, modified {modified_at:%Y-%m-%d %H:%M:%S}, '
-            f'age {age_hours:.1f}h > {max_age_hours}h'
+            f'{label} download failed and no usable fallback CSV was found ({detail})'
         ) from failure
 
+    source_path, stat, rows, modified_at, age_hours = selected
+    copied_note = ''
+    if copy_to_target:
+        try:
+            same_path = source_path.resolve() == path.resolve()
+        except OSError:
+            same_path = source_path.absolute() == path.absolute()
+        if not same_path:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, path)
+            stat = path.stat()
+            copied_note = f'; copied to {path.name}'
+
     print(
-        f"  WARNING: {label} download failed; using existing {path.name} "
-        f"from {modified_at:%Y-%m-%d %H:%M:%S} ({rows:,} rows). "
+        f"  WARNING: {label} download failed; using existing {source_path.name} "
+        f"from {modified_at:%Y-%m-%d %H:%M:%S} "
+        f"({rows:,} rows, age {age_hours:.1f}h{copied_note}). "
         f"Original error: {failure}"
     )
     return stat.st_size
@@ -1711,6 +1772,12 @@ def upload_to_gdrive():
     bkg['is_cancel'] = cancel.astype(int)
     bkg['is_hi'] = hi.astype(int)
     bkg['is_route_hi'] = route_hi.astype(int)
+    bkg['bl_cnt'] = 1
+    bkg['norm_bl'] = bkg['is_normal']
+    bkg['hi_bl'] = bkg['is_hi']
+    bkg['hi_norm_bl'] = bkg['is_hi'] * bkg['is_normal']
+    bkg['route_hi_bl'] = bkg['is_route_hi']
+    bkg['route_hi_norm_bl'] = bkg['is_route_hi'] * bkg['is_normal']
     # 실선적(norm_lst): 전체 Normal (소석률 계산용)
     bkg['norm_lst'] = bkg['lst'] * bkg['is_normal']
     bkg['hi_fst'] = bkg['fst'] * bkg['is_hi']
@@ -1727,16 +1794,24 @@ def upload_to_gdrive():
     # WOS stage columns (Lead_time 마스크 기반, WOS-3 BKG 등)
     for wos, label in [('WOS-3','w3'),('WOS-2','w2'),('WOS-1','w1'),('Week of Sailing (WOS)','wos')]:
         mask = (lt == wos).astype(int)
+        bkg[f'{label}_bl'] = mask
+        bkg[f'{label}_norm_bl'] = mask * bkg['is_normal']
+        bkg[f'{label}_route_hi_bl'] = mask * bkg['is_route_hi']
+        bkg[f'{label}_route_hi_norm_bl'] = mask * bkg['is_route_hi'] * bkg['is_normal']
         bkg[f'{label}_fst'] = bkg['fst'] * mask
         bkg[f'{label}_norm_lst'] = bkg['lst'] * mask * bkg['is_normal']
         bkg[f'{label}_route_hi_fst'] = bkg['fst'] * mask * bkg['is_route_hi']
     bkg['w3_route_hi_norm_lst'] = bkg['lst'] * (lt == 'WOS-3').astype(int) * bkg['is_route_hi'] * bkg['is_normal']
+    bkg['w3_canc_bl'] = (lt == 'WOS-3').astype(int) * bkg['is_cancel']
+    bkg['w3_route_hi_canc_bl'] = (lt == 'WOS-3').astype(int) * bkg['is_cancel'] * bkg['is_route_hi']
     bkg['w3_canc_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_cancel']
     bkg['w3_route_hi_canc_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_cancel'] * bkg['is_route_hi']
     # W-3 LST: total LST at WOS-3 and LST of those that became Cancel. Used to derive
     # "3주전 BKG (not cancel)" in LST units = w3_lst - w3_canc_lst.
     bkg['w3_lst'] = bkg['lst'] * (lt == 'WOS-3').astype(int)
     bkg['w3_canc_lst'] = bkg['lst'] * (lt == 'WOS-3').astype(int) * bkg['is_cancel']
+    bkg['w3_hi_bl'] = (lt == 'WOS-3').astype(int) * bkg['is_hi']
+    bkg['w3_hi_norm_bl'] = (lt == 'WOS-3').astype(int) * bkg['is_hi'] * bkg['is_normal']
     bkg['w3_hi_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi']
     bkg['w3_hi_norm_lst'] = bkg['lst'] * (lt == 'WOS-3').astype(int) * bkg['is_hi'] * bkg['is_normal']
     # WOS-3 CM1 columns (3주전 BKG 맥락에서 CM1/TEU 계산용)
@@ -1767,6 +1842,14 @@ def upload_to_gdrive():
     gk = ['team','origin','ori_port','dest','dst_port','YYYYMM']
     agg_cols = {'fst':'sum','norm_lst':'sum','hi_fst':'sum','hi_norm_lst':'sum',
                 'route_hi_fst':'sum','route_hi_norm_lst':'sum',
+                'bl_cnt':'sum','norm_bl':'sum','hi_bl':'sum','hi_norm_bl':'sum',
+                'route_hi_bl':'sum','route_hi_norm_bl':'sum',
+                'w3_bl':'sum','w3_norm_bl':'sum','w3_canc_bl':'sum','w3_route_hi_canc_bl':'sum',
+                'w3_hi_bl':'sum','w3_hi_norm_bl':'sum',
+                'w3_route_hi_bl':'sum','w3_route_hi_norm_bl':'sum',
+                'w2_bl':'sum','w2_norm_bl':'sum','w2_route_hi_bl':'sum','w2_route_hi_norm_bl':'sum',
+                'w1_bl':'sum','w1_norm_bl':'sum','w1_route_hi_bl':'sum','w1_route_hi_norm_bl':'sum',
+                'wos_bl':'sum','wos_norm_bl':'sum','wos_route_hi_bl':'sum','wos_route_hi_norm_bl':'sum',
                 'w3_fst':'sum','w3_norm_lst':'sum','w3_canc_fst':'sum','w3_route_hi_canc_fst':'sum',
                 'w3_lst':'sum','w3_canc_lst':'sum',
                 'w3_hi_fst':'sum','w3_hi_norm_lst':'sum',
@@ -2097,7 +2180,25 @@ def main():
         if os.environ.get('SKIP_BSA_DOWNLOAD') == '1':
             print("[Skip] Using existing BSA raw file.")
         else:
-            download_bsa()
+            try:
+                download_bsa()
+            except Exception as exc:
+                bsa_path = WORK_DIR / 'output' / f'BSA_raw_monthly3W_{DATASET_ID}.csv'
+                bsa_candidates = sorted(
+                    (WORK_DIR / 'output').glob('BSA_raw_monthly3W_*.csv'),
+                    key=os.path.getmtime,
+                    reverse=True,
+                )
+                size = use_existing_csv_after_tableau_failure(
+                    bsa_path,
+                    'BSA raw',
+                    exc,
+                    TABLEAU_BSA_EXISTING_FALLBACK_MAX_HOURS,
+                    fallback_candidates=bsa_candidates,
+                    copy_to_target=True,
+                )
+                rows = count_csv_rows(bsa_path)
+                print(f"  {bsa_path.name}: {size:,} bytes ({rows:,} rows)")
 
     print("\n--- Phase 2: Booking Snapshot Processing ---")
     process_snapshot()
