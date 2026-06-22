@@ -841,6 +841,30 @@ def fiscal_quarter_chunks(year):
         yield idx + 1, f'{start:%Y-%m-%d} 00:00:00', f'{end:%Y-%m-%d} 00:00:00'
 
 
+def window_quarter_chunks(start_str, end_str, year):
+    """Split the daily [start, end] window into contiguous fiscal-quarter pieces.
+
+    Uses fiscal-quarter starts that fall inside the window as split points, so
+    each piece is <=3 months and each Tableau CSV export finishes within the
+    download timeout. The union of pieces covers the window exactly (including
+    any boundary days before the fiscal-year start), with no gaps or overlaps.
+    """
+    ws = datetime.strptime(start_str[:10], '%Y-%m-%d')
+    we = datetime.strptime(end_str[:10], '%Y-%m-%d')
+    bounds = [ws]
+    for _qno, qs, _qe in fiscal_quarter_chunks(year):
+        cs = datetime.strptime(qs[:10], '%Y-%m-%d')
+        if ws < cs <= we:
+            bounds.append(cs)
+    bounds.append(we + timedelta(days=1))  # exclusive upper edge
+    chunks = []
+    for i in range(len(bounds) - 1):
+        s = bounds[i]
+        e = bounds[i + 1] - timedelta(days=1)
+        chunks.append((i + 1, f'{s:%Y-%m-%d} 00:00:00', f'{e:%Y-%m-%d} 00:00:00'))
+    return chunks
+
+
 def yearly_yyyymm_filter(year):
     """Return comma-separated YYYYMM values for Tableau multi-select filters."""
     return ','.join(f'{year}{month:02d}' for month in range(1, 13))
@@ -904,6 +928,54 @@ def download_all_chunked():
     print("[3/3] Chunked booking download complete")
 
 
+def download_view1_daily(path1):
+    """Download daily View 1, split into fiscal-quarter chunks to avoid the
+    single-export timeout that hits the full ~7-month window.
+
+    Each chunk is <=3 months so its Tableau CSV export finishes well within the
+    download timeout; chunks are merged and de-duplicated into path1. Set
+    DASHBOARD_DAILY_CHUNKED_VIEW1=0 to fall back to a single full-window export.
+    """
+    if os.environ.get('DASHBOARD_DAILY_CHUNKED_VIEW1', '1') != '1':
+        s, api_ver, site_id = tableau_rest_api()
+        print("[1/3] Ensuring temp workbook...")
+        wb_url = ensure_temp_workbook(s, api_ver, site_id)
+        s.post(f'{TABLEAU_SERVER}/api/{api_ver}/auth/signout', timeout=10)
+        print(f"[2/3] Downloading View 1 single-shot ({path1.name})...")
+        return download_csv_from_tableau(wb_url, '1', path1)
+
+    chunks = list(window_quarter_chunks(BKG_SCHEDULE_START, BKG_SCHEDULE_END, DATASET_YEAR))
+    print(f"[1/3] Downloading View 1 in {len(chunks)} quarter chunk(s) -> {path1.name}...")
+    parts = []
+    for qno, cstart, cend in chunks:
+        print(f"  View 1 chunk Q{qno}: {cstart} ~ {cend}")
+        s, api_ver, site_id = tableau_rest_api()
+        try:
+            wb_name = f'{TEMP_WB_NAME}_q{qno}'
+            wb_url = ensure_temp_workbook(s, api_ver, site_id, start=cstart, end=cend, workbook_name=wb_name)
+        finally:
+            try:
+                s.post(f'{TABLEAU_SERVER}/api/{api_ver}/auth/signout', timeout=10)
+            except Exception:
+                pass
+        part_path = WORK_DIR / f'1_{DATASET_ID}_q{qno}.csv'
+        psize = download_csv_from_tableau(wb_url, '1', part_path)
+        prows = count_csv_rows(part_path)
+        print(f"    {part_path.name}: {psize:,} bytes ({prows:,} rows)")
+        parts.append(part_path)
+
+    frames = [read_tableau_csv(p) for p in parts]
+    combined = pd.concat(frames, ignore_index=True)
+    before = len(combined)
+    combined = combined.drop_duplicates()
+    combined.to_csv(path1, index=False, encoding='utf-8-sig')
+    for p in parts:
+        p.unlink(missing_ok=True)
+    print(f"[2/3] Merged {len(parts)} chunk(s) -> {path1.name} "
+          f"({len(combined):,} rows, dropped {before-len(combined):,} dup)")
+    return os.path.getsize(path1)
+
+
 def download_all():
     """Phase 1: Download all data from Tableau."""
     if DATASET_IS_YEARLY and os.environ.get('DASHBOARD_CHUNKED_DOWNLOAD', '1') == '1':
@@ -911,18 +983,11 @@ def download_all():
         return
 
     os.chdir(WORK_DIR)
-    s, api_ver, site_id = tableau_rest_api()
 
-    # 1. Ensure temp workbook with correct filter
-    print("[1/3] Ensuring temp workbook...")
-    wb_url = ensure_temp_workbook(s, api_ver, site_id)
-    s.post(f'{TABLEAU_SERVER}/api/{api_ver}/auth/signout', timeout=10)
-
-    # 2. Download View 1 (1.csv)
+    # 1+2. Download View 1 (1.csv) — chunked by fiscal quarter to avoid timeouts.
     path1 = dataset_csv_path('1')
-    print(f"[2/3] Downloading View 1 ({path1.name})...")
     try:
-        size = download_csv_from_tableau(wb_url, '1', path1)
+        size = download_view1_daily(path1)
     except Exception as exc:
         size = use_existing_csv_after_tableau_failure(
             path1,
