@@ -1768,16 +1768,60 @@ def upload_to_gdrive():
         hi = bkg['profit_type'].astype(str).str.contains('고수익', na=False)
     route_hi = bkg['profit_type'].astype(str).str.contains('고수익', na=False)
 
+    # BL-basis route profit: compare shipper-route CM1/BL with the route CM1/BL.
+    # This mirrors the existing CM1/TEU route logic, but each BL contributes one unit.
+    bl_basis_keys = ['BKG_SHPR_CST_NO', 'ori_port', 'dst_port']
+    bl_basis_mask = normal & (bkg['cm1v'] != 0)
+    valid_bl_basis = bkg[bl_basis_mask].copy()
+    if valid_bl_basis.empty:
+        bl_route_hi = pd.Series(False, index=bkg.index)
+    else:
+        route_bl_basis = (
+            valid_bl_basis
+            .groupby(['ori_port', 'dst_port'], dropna=False)
+            .agg(route_cm1_bl=('cm1v', 'sum'), route_bl_cnt=('cm1v', 'size'))
+            .reset_index()
+        )
+        route_bl_basis['route_cm1_per_bl'] = route_bl_basis['route_cm1_bl'] / route_bl_basis['route_bl_cnt']
+        shipper_bl_basis = (
+            valid_bl_basis
+            .groupby(bl_basis_keys, dropna=False)
+            .agg(shipper_cm1_bl=('cm1v', 'sum'), shipper_bl_cnt=('cm1v', 'size'))
+            .reset_index()
+        )
+        shipper_bl_basis['shipper_cm1_per_bl'] = shipper_bl_basis['shipper_cm1_bl'] / shipper_bl_basis['shipper_bl_cnt']
+        shipper_bl_basis = shipper_bl_basis.merge(
+            route_bl_basis[['ori_port', 'dst_port', 'route_cm1_per_bl']],
+            on=['ori_port', 'dst_port'],
+            how='left',
+        )
+        shipper_bl_basis['is_hi'] = shipper_bl_basis['shipper_cm1_per_bl'] >= shipper_bl_basis['route_cm1_per_bl']
+        bl_route_hi_lookup = {
+            (str(r['BKG_SHPR_CST_NO']).strip(), str(r['ori_port']).strip(), str(r['dst_port']).strip()): bool(r['is_hi'])
+            for _, r in shipper_bl_basis.iterrows()
+        }
+        shipper_codes_for_bl = (
+            bkg['BKG_SHPR_CST_NO'] if 'BKG_SHPR_CST_NO' in bkg.columns
+            else pd.Series([''] * len(bkg), index=bkg.index)
+        )
+        bl_route_hi = pd.Series([
+            bl_route_hi_lookup.get((str(s).strip(), str(o).strip(), str(d).strip()), False)
+            for s, o, d in zip(shipper_codes_for_bl, bkg['ori_port'], bkg['dst_port'])
+        ], index=bkg.index)
+
     bkg['is_normal'] = normal.astype(int)
     bkg['is_cancel'] = cancel.astype(int)
     bkg['is_hi'] = hi.astype(int)
     bkg['is_route_hi'] = route_hi.astype(int)
+    bkg['is_bl_route_hi'] = bl_route_hi.astype(int)
     bkg['bl_cnt'] = 1
     bkg['norm_bl'] = bkg['is_normal']
     bkg['hi_bl'] = bkg['is_hi']
     bkg['hi_norm_bl'] = bkg['is_hi'] * bkg['is_normal']
     bkg['route_hi_bl'] = bkg['is_route_hi']
     bkg['route_hi_norm_bl'] = bkg['is_route_hi'] * bkg['is_normal']
+    bkg['bl_route_hi_bl'] = bkg['is_bl_route_hi']
+    bkg['bl_route_hi_norm_bl'] = bkg['is_bl_route_hi'] * bkg['is_normal']
     # 실선적(norm_lst): 전체 Normal (소석률 계산용)
     bkg['norm_lst'] = bkg['lst'] * bkg['is_normal']
     bkg['hi_fst'] = bkg['fst'] * bkg['is_hi']
@@ -1798,12 +1842,15 @@ def upload_to_gdrive():
         bkg[f'{label}_norm_bl'] = mask * bkg['is_normal']
         bkg[f'{label}_route_hi_bl'] = mask * bkg['is_route_hi']
         bkg[f'{label}_route_hi_norm_bl'] = mask * bkg['is_route_hi'] * bkg['is_normal']
+        bkg[f'{label}_bl_route_hi_bl'] = mask * bkg['is_bl_route_hi']
+        bkg[f'{label}_bl_route_hi_norm_bl'] = mask * bkg['is_bl_route_hi'] * bkg['is_normal']
         bkg[f'{label}_fst'] = bkg['fst'] * mask
         bkg[f'{label}_norm_lst'] = bkg['lst'] * mask * bkg['is_normal']
         bkg[f'{label}_route_hi_fst'] = bkg['fst'] * mask * bkg['is_route_hi']
     bkg['w3_route_hi_norm_lst'] = bkg['lst'] * (lt == 'WOS-3').astype(int) * bkg['is_route_hi'] * bkg['is_normal']
     bkg['w3_canc_bl'] = (lt == 'WOS-3').astype(int) * bkg['is_cancel']
     bkg['w3_route_hi_canc_bl'] = (lt == 'WOS-3').astype(int) * bkg['is_cancel'] * bkg['is_route_hi']
+    bkg['w3_bl_route_hi_canc_bl'] = (lt == 'WOS-3').astype(int) * bkg['is_cancel'] * bkg['is_bl_route_hi']
     bkg['w3_canc_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_cancel']
     bkg['w3_route_hi_canc_fst'] = bkg['fst'] * (lt == 'WOS-3').astype(int) * bkg['is_cancel'] * bkg['is_route_hi']
     # W-3 LST: total LST at WOS-3 and LST of those that became Cancel. Used to derive
@@ -1844,9 +1891,11 @@ def upload_to_gdrive():
                 'route_hi_fst':'sum','route_hi_norm_lst':'sum',
                 'bl_cnt':'sum','norm_bl':'sum','hi_bl':'sum','hi_norm_bl':'sum',
                 'route_hi_bl':'sum','route_hi_norm_bl':'sum',
+                'bl_route_hi_bl':'sum',
                 'w3_bl':'sum','w3_norm_bl':'sum','w3_canc_bl':'sum','w3_route_hi_canc_bl':'sum',
                 'w3_hi_bl':'sum','w3_hi_norm_bl':'sum',
                 'w3_route_hi_bl':'sum','w3_route_hi_norm_bl':'sum',
+                'w3_bl_route_hi_bl':'sum','w3_bl_route_hi_norm_bl':'sum',
                 'w2_bl':'sum','w2_norm_bl':'sum','w2_route_hi_bl':'sum','w2_route_hi_norm_bl':'sum',
                 'w1_bl':'sum','w1_norm_bl':'sum','w1_route_hi_bl':'sum','w1_route_hi_norm_bl':'sum',
                 'wos_bl':'sum','wos_norm_bl':'sum','wos_route_hi_bl':'sum','wos_route_hi_norm_bl':'sum',
