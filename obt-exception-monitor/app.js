@@ -1588,7 +1588,7 @@ function analyze(currentRows, baselineRows, currentBsaRows, baselineBsaRows, per
   const routeContext = buildRouteContext(currentRoutes, baselineRoutes, currentBsaRoutes, baselineBsaRoutes);
   const paceMap = buildPaceMap(periods, routeContext);
   mergePaceIntoContext(routeContext, paceMap);
-  const weekdayBenchmarks = buildWeekdayBenchmarks(periods);
+  const weekdayBenchmarks = buildWeekdayBenchmarks(periods, baselineRoutes, baselineBsaRoutes);
   mergeWeekdayBenchmarkIntoContext(routeContext, weekdayBenchmarks);
   const originPaceHeadlines = buildOriginPaceHeadlines(routeContext, weekdayBenchmarks);
   const leadTrendScope = leadTimeTrendScope(periods);
@@ -2039,13 +2039,15 @@ function mergePaceIntoContext(routeContext, paceMap) {
   });
 }
 
-function buildWeekdayBenchmarks(periods) {
+function buildWeekdayBenchmarks(periods, baselineRoutes = new Map(), baselineBsaRoutes = new Map()) {
   const scope = weekdayBenchmarkScope(periods);
   if (!scope.enabled) {
     return {
       route: new Map(),
       shipper: new Map(),
       sampleCount: 0,
+      referenceCount: 0,
+      referenceMode: "none",
       weekday: "",
       offsets: [],
       enabled: false,
@@ -2061,6 +2063,8 @@ function buildWeekdayBenchmarks(periods) {
       route: new Map(),
       shipper: new Map(),
       sampleCount: 0,
+      referenceCount: 0,
+      referenceMode: "none",
       weekday: latest ? weekdayLabel(latest) : "",
       offsets: scope.offsets,
       enabled: true,
@@ -2098,10 +2102,22 @@ function buildWeekdayBenchmarks(periods) {
     });
   });
 
+  let referenceCount = samples.length;
+  let referenceMode = samples.length ? "weekday" : "none";
+  if (!samples.length) {
+    const fallbackCount = mergeBaselineBenchmarkRoutes(route, baselineRoutes, baselineBsaRoutes);
+    if (fallbackCount) {
+      referenceCount = 1;
+      referenceMode = "baseline";
+    }
+  }
+
   return {
     route,
     shipper,
     sampleCount: samples.length,
+    referenceCount,
+    referenceMode,
     weekday: weekdayLabel(latest),
     offsets,
     enabled: true,
@@ -2111,6 +2127,23 @@ function buildWeekdayBenchmarks(periods) {
     windowLabelKo: window.labelKo,
     windowLabelEn: window.labelEn
   };
+}
+
+function mergeBaselineBenchmarkRoutes(target, baselineRoutes, baselineBsaRoutes) {
+  const keys = new Set([
+    ...((baselineRoutes && baselineRoutes.keys && Array.from(baselineRoutes.keys())) || []),
+    ...((baselineBsaRoutes && baselineBsaRoutes.keys && Array.from(baselineBsaRoutes.keys())) || [])
+  ]);
+  keys.forEach((routeKey) => {
+    const base = baselineRoutes && baselineRoutes.get ? baselineRoutes.get(routeKey) : null;
+    const bsa = baselineBsaRoutes && baselineBsaRoutes.get ? baselineBsaRoutes.get(routeKey) : null;
+    const found = target.get(routeKey) || { teu: 0, w3Teu: 0, bsaTeu: 0 };
+    found.teu += base ? base.teu || 0 : 0;
+    found.w3Teu += base ? base.w3Teu || 0 : 0;
+    found.bsaTeu += bsa ? bsa.bsaTeu || 0 : 0;
+    if (found.teu || found.w3Teu || found.bsaTeu) target.set(routeKey, found);
+  });
+  return target.size;
 }
 
 function weekdaySampleWindow(compare, latest) {
@@ -2213,6 +2246,12 @@ function weekdayBenchmarkHasSamples(benchmarks) {
   return Boolean(benchmarks && benchmarks.enabled !== false && benchmarks.sampleCount > 0);
 }
 
+function weekdayBenchmarkReferenceCount(benchmarks) {
+  if (!benchmarks || benchmarks.enabled === false) return 0;
+  if (benchmarks.referenceCount != null) return Number(benchmarks.referenceCount) || 0;
+  return Number(benchmarks.sampleCount) || 0;
+}
+
 function leadTimeTrendScope(periods) {
   return weekdayBenchmarkScope(periods);
 }
@@ -2249,13 +2288,20 @@ function leadTimeTrendText(scope, format = "short") {
 
 function mergeWeekdayBenchmarkIntoContext(routeContext, benchmarks) {
   const sampleCount = benchmarks && benchmarks.sampleCount || 0;
+  const referenceCount = weekdayBenchmarkReferenceCount(benchmarks);
   routeContext.forEach((context, routeKey) => {
-    const expected = weekdayExpected(benchmarks && benchmarks.route, routeKey, sampleCount);
+    const expected = weekdayExpected(benchmarks && benchmarks.route, routeKey, referenceCount);
     const gap = Math.max(0, expected.w3Teu - (context.currentW3Teu || 0));
     const ratio = expected.w3Teu ? (context.currentW3Teu || 0) / expected.w3Teu : null;
     const sample = (benchmarks && benchmarks.route && benchmarks.route.get(routeKey)) || null;
-    const sampleBsaTotal = sample ? sample.bsaTeu || 0 : 0;
-    const sampleW3Total = sample ? sample.w3Teu || 0 : 0;
+    let sampleBsaTotal = sample ? sample.bsaTeu || 0 : 0;
+    let sampleW3Total = sample ? sample.w3Teu || 0 : 0;
+    if (!sampleBsaTotal && (context.baseBsaTeu || 0) > 0) {
+      sampleBsaTotal = (context.baseBsaTeu || 0) * Math.max(1, referenceCount);
+    }
+    if (!sampleW3Total && referenceCount && benchmarks && benchmarks.referenceMode === "baseline") {
+      sampleW3Total = (context.baseW3Teu || 0) * referenceCount;
+    }
     const currentBsaTeu = context.bsaTeu || 0;
     const currentW3Teu = context.currentW3Teu || 0;
     const bsaRatioCurrent = currentBsaTeu ? (currentW3Teu / currentBsaTeu) * 100 : null;
@@ -2269,6 +2315,8 @@ function mergeWeekdayBenchmarkIntoContext(routeContext, benchmarks) {
       weekdayW3Delta: currentW3Teu - expected.w3Teu,
       weekdayW3Ratio: ratio,
       weekdaySamples: sampleCount,
+      weekdayReferenceCount: referenceCount,
+      weekdayReferenceMode: benchmarks && benchmarks.referenceMode || "",
       weekdayLabel: benchmarks && benchmarks.weekday || "",
       weekdayStatus: weekdayStatus(ratio, expected.w3Teu, gap).code,
       weekdayBsaRatioCurrent: bsaRatioCurrent,
@@ -2356,7 +2404,8 @@ function originPaceBucketLabel(origin, pol) {
 
 function buildOriginPaceHeadlines(routeContext, weekdayBenchmarks) {
   const sampleCount = weekdayBenchmarks && weekdayBenchmarks.sampleCount || 0;
-  const enabled = Boolean(weekdayBenchmarks && weekdayBenchmarks.enabled && sampleCount > 0);
+  const referenceCount = weekdayBenchmarkReferenceCount(weekdayBenchmarks);
+  const enabled = Boolean(weekdayBenchmarks && weekdayBenchmarks.enabled && referenceCount > 0);
   const totals = new Map();
   routeContext.forEach((context) => {
     const origin = context.origin || "";
@@ -2379,7 +2428,7 @@ function buildOriginPaceHeadlines(routeContext, weekdayBenchmarks) {
     found.currentTeu += context.currentTeu || 0;
     found.sampleBsa += context.weekdayBsaSampleBsa || 0;
     found.sampleW3 += context.weekdayBsaSampleW3 || 0;
-    found.sampleTeu += (context.weekdayExpectedTeu || 0) * sampleCount;
+    found.sampleTeu += (context.weekdayExpectedTeu || 0) * referenceCount;
     found.routeCount += 1;
     totals.set(label, found);
   });
@@ -2400,8 +2449,10 @@ function buildOriginPaceHeadlines(routeContext, weekdayBenchmarks) {
       gap,
       status,
       sampleCount,
+      referenceCount,
+      referenceMode: weekdayBenchmarks && weekdayBenchmarks.referenceMode || "",
       enabled,
-      sampleAvgW3: sampleCount ? row.sampleW3 / sampleCount : 0
+      sampleAvgW3: referenceCount ? row.sampleW3 / referenceCount : 0
     });
   });
   const statusOrder = { slow: 0, "normal-low": 1, normal: 2, fast: 3, "no-bsa": 4 };
@@ -2418,7 +2469,15 @@ function buildOriginPaceHeadlines(routeContext, weekdayBenchmarks) {
     if (ia !== ib) return ia - ib;
     return (b.currentBsa || 0) - (a.currentBsa || 0);
   });
-  return { enabled, sampleCount, weekday: weekdayBenchmarks && weekdayBenchmarks.weekday || "", reason: weekdayBenchmarks && weekdayBenchmarks.reason || "", rows: headlines };
+  return {
+    enabled,
+    sampleCount,
+    referenceCount,
+    referenceMode: weekdayBenchmarks && weekdayBenchmarks.referenceMode || "",
+    weekday: weekdayBenchmarks && weekdayBenchmarks.weekday || "",
+    reason: weekdayBenchmarks && weekdayBenchmarks.reason || "",
+    rows: headlines
+  };
 }
 
 function periodLeadOffsets(period) {
@@ -3826,20 +3885,23 @@ function renderOriginPaceHeadlines(analysis) {
   }
   els.originPaceHeadline.classList.remove("hidden");
 
+  const benchmarks = analysis.weekdayBenchmarks || {};
+  const windowKo = benchmarks.windowLabelKo || "";
+  const windowEn = benchmarks.windowLabelEn || "";
+  const hasSameWeekdaySamples = (headline.sampleCount || 0) > 0;
   const weekdayKo = headline.weekday ? `${headline.weekday}요일` : "같은 요일";
   const weekdayEn = headline.weekday ? `${headline.weekday} W+3` : "Same-weekday W+3";
+  const referenceKo = hasSameWeekdaySamples ? weekdayKo : (windowKo || "기준");
+  const referenceEn = hasSameWeekdaySamples ? weekdayEn : (windowEn || "Reference");
   const labels = {
-    fast: en ? `${weekdayEn} faster` : `${weekdayKo} W+3 빠름`,
-    slow: en ? `${weekdayEn} slower` : `${weekdayKo} W+3 느림`,
-    "normal-low": en ? `${weekdayEn} usual range · absolute low` : `${weekdayKo} W+3 평균권 · 절대수준 낮음`,
-    normal: en ? `${weekdayEn} usual range` : `${weekdayKo} W+3 평균권`,
+    fast: en ? `${referenceEn} faster` : `${referenceKo} W+3 빠름`,
+    slow: en ? `${referenceEn} slower` : `${referenceKo} W+3 느림`,
+    "normal-low": en ? `${referenceEn} usual range · absolute low` : `${referenceKo} W+3 평균권 · 절대수준 낮음`,
+    normal: en ? `${referenceEn} usual range` : `${referenceKo} W+3 평균권`,
     "no-bsa": en ? "No BSA reference" : "BSA 기준 없음"
   };
   const tones = { fast: "pos", slow: "neg", "normal-low": "warn", normal: "pos", "no-bsa": "neutral" };
   const headerTitle = en ? "Origin W+3 Pace vs Same-Weekday Average" : "선적지별 W+3 페이스 (같은 요일 평균 대비)";
-  const benchmarks = analysis.weekdayBenchmarks || {};
-  const windowKo = benchmarks.windowLabelKo || "";
-  const windowEn = benchmarks.windowLabelEn || "";
   const compareWindowKo = windowKo ? ` · ${windowKo} 기준` : "";
   const compareWindowEn = windowEn ? ` · ${windowEn} window` : "";
   const sampleNote = headline.sampleCount
@@ -3856,9 +3918,12 @@ function renderOriginPaceHeadlines(analysis) {
     const currentText = row.currentPct == null
       ? "-"
       : `${row.currentPct.toFixed(1)}%`;
+    const referenceTextLabel = hasSameWeekdaySamples
+      ? (en ? "avg" : "평균")
+      : (en ? "base" : "기준");
     const avgText = row.avgPct == null
       ? (en ? "no BSA avg" : "평균 BSA 없음")
-      : `${en ? "avg" : "평균"} ${row.avgPct.toFixed(1)}%`;
+      : `${referenceTextLabel} ${row.avgPct.toFixed(1)}%`;
     const gapText = row.gap == null
       ? "-"
       : `${row.gap >= 0 ? "+" : ""}${row.gap.toFixed(1)}%p`;
