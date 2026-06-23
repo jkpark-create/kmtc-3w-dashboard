@@ -42,6 +42,7 @@
 - 소스: 동일 워크북의 View 2
 - 포함: BKG_NO, Booking_status, CM1_Booking, LST_TEU, LST_Route, Date_vsl 등
 - Base 데이터 (모든 부킹 포함)
+- 원본 workbook의 View 2는 저장된 YYYYMM 필터가 늦게 갱신될 수 있다. daily run은 temp workbook을 재발행하면서 대시보드 조회 윈도우에 필요한 YYYYMM(예: 202601~202607)을 명시적으로 설정해 미래 445 주차가 누락되지 않게 한다.
 
 **BSA raw (월간회의3주전)**: BSA(Booking Space Allocation) 데이터
 - 소스: `Q_17363223877520/BSArawBKGpattern` 뷰

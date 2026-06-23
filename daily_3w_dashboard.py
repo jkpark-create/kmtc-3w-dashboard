@@ -870,6 +870,24 @@ def yearly_yyyymm_filter(year):
     return ','.join(f'{year}{month:02d}' for month in range(1, 13))
 
 
+def daily_view2_yyyymm_filter():
+    """YYYYMM members needed for the daily View 2 export.
+
+    The source workbook can lag behind the operational window because worksheet
+    2 has an explicit YYYYMM filter. Keep View 2 aligned with the dashboard
+    window instead of relying on the workbook's saved filter state.
+    """
+    start_ym = f'{DATASET_YEAR}01'
+    end_dt = datetime.strptime(BKG_SCHEDULE_END[:10], '%Y-%m-%d')
+    fiscal_map = build_445_map()
+    end_ym = fiscal_map.get(end_dt.strftime('%Y-%m-%d'), f'{end_dt.year}{end_dt.month:02d}')
+    if not end_ym.startswith(str(DATASET_YEAR)):
+        end_ym = f'{DATASET_YEAR}12'
+    start_month = int(start_ym[-2:])
+    end_month = max(start_month, min(12, int(end_ym[-2:])))
+    return ','.join(f'{DATASET_YEAR}{month:02d}' for month in range(start_month, end_month + 1))
+
+
 def download_all_chunked():
     """Download yearly booking views and merge chunked View 1 output."""
     print("[1/3] Downloading yearly booking views...")
@@ -999,13 +1017,29 @@ def download_all():
     print(f"  {path1.name}: {size:,} bytes ({rows:,} rows)")
 
     # 3. Download View 2 (2.csv)
-    # View 2 is controlled by its own YYYYMM/status filters. Download it from
-    # the original workbook so Tableau-side status/filter edits are not hidden
-    # by a previously published temp workbook.
+    # View 2 has its own saved YYYYMM filter in Tableau. Re-publish a temp
+    # workbook with the dashboard window's YYYYMM members so future operational
+    # weeks (e.g. July WW27/28 during late June) are included in the export.
     path2 = dataset_csv_path('2')
     print(f"[3/3] Downloading View 2 ({path2.name})...")
     try:
-        size = download_csv_from_tableau(BKG_WB_CONTENT_URL, '2', path2)
+        view2_yyyymm = normalize_yyyymm_values(os.environ.get('FILTER_VIEW2_YYYYMM') or daily_view2_yyyymm_filter())
+        print(f"  Preparing View 2 workbook with YYYYMM={','.join(view2_yyyymm)}...")
+        s, api_ver, site_id = tableau_rest_api()
+        try:
+            wb_url = ensure_temp_workbook(
+                s,
+                api_ver,
+                site_id,
+                workbook_name=f'{TEMP_WB_NAME}_view2_daily',
+                view2_yyyymm=view2_yyyymm,
+            )
+        finally:
+            try:
+                s.post(f'{TABLEAU_SERVER}/api/{api_ver}/auth/signout', timeout=10)
+            except Exception:
+                pass
+        size = download_csv_from_tableau(wb_url, '2', path2)
     except Exception as exc:
         size = use_existing_csv_after_tableau_failure(
             path2,
