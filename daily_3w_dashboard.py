@@ -1981,8 +1981,6 @@ def upload_to_gdrive():
     shipper = bkg.groupby(shpr_keys).agg(shpr_agg_cols).reset_index()
     shipper = shipper.merge(route_profit_basis, on=basis_keys, how='left')
     shipper[['basis_cm1', 'basis_lst']] = shipper[['basis_cm1', 'basis_lst']].fillna(0)
-    if 'route_hi_fst' in shipper.columns:
-        shipper = shipper.drop(columns=['route_hi_fst'])
     shipper = shipper.rename(columns={
         '고수익태그': 'tag',
         'w3_route_hi_norm_lst': 'rhn',
