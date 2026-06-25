@@ -2162,6 +2162,27 @@ def upload_to_gdrive():
             # One-off/yearly backfills are loaded from the historical selector.
             _upload_file(headers, jf[0], f'dashboard_summary_{DATASET_ID}.json')
 
+    # Full OBT pace history is kept in Drive as a rolling backup.  The Pages
+    # copy can be size-capped to avoid GitHub's 100 MB file limit.
+    if PUBLISH_LATEST and os.environ.get('SKIP_OBT_HISTORY_DRIVE_UPLOAD') != '1':
+        history_path = WORK_DIR / 'obt-exception-monitor' / 'history.json'
+        if history_path.exists():
+            try:
+                with open(history_path, encoding='utf-8') as fh:
+                    history = _json.load(fh)
+                latest = max((str(s.get('data_date') or '') for s in history.get('snapshots') or []), default='')
+                if latest == DATASET_ID:
+                    _upload_file(headers, history_path, 'obt_exception_history.json')
+                else:
+                    print(
+                        f"  WARN: OBT history Drive upload skipped "
+                        f"(latest {latest or 'missing'}, expected {DATASET_ID})"
+                    )
+            except (OSError, _json.JSONDecodeError) as exc:
+                print(f"  WARN: OBT history Drive upload skipped ({exc})")
+        else:
+            print("  WARN: OBT history Drive upload skipped (history.json not found)")
+
     print("[Upload] Done.")
 
 
@@ -2177,26 +2198,59 @@ def build_obt_exception_history():
     script_path = WORK_DIR / 'obt-exception-monitor' / 'build_history.py'
     data_path = WORK_DIR / 'dist' / 'data.json'
     history_path = WORK_DIR / 'dist' / 'obt-exception-monitor' / 'history.json'
+    strict = os.environ.get('OBT_HISTORY_STRICT') == '1'
 
     if not script_path.exists():
-        raise FileNotFoundError(f"OBT history builder not found: {script_path}")
+        message = f"OBT history builder not found: {script_path}"
+        if strict:
+            raise FileNotFoundError(message)
+        print(f"[OBT History] WARN: {message}")
+        print("[OBT History] Continuing update; existing history will be used if available.")
+        return
     if not data_path.exists():
-        raise FileNotFoundError(f"Dashboard data not found for OBT history: {data_path}")
+        message = f"Dashboard data not found for OBT history: {data_path}"
+        if strict:
+            raise FileNotFoundError(message)
+        print(f"[OBT History] WARN: {message}")
+        print("[OBT History] Continuing update; existing history will be used if available.")
+        return
 
     print("[OBT History] Building daily pace history from dist/data.json...")
-    subprocess.run([sys.executable, str(script_path)], cwd=WORK_DIR, check=True)
+    try:
+        subprocess.run([sys.executable, str(script_path)], cwd=WORK_DIR, check=True)
+    except subprocess.CalledProcessError as exc:
+        if strict:
+            raise
+        print(f"[OBT History] WARN: history build failed ({exc}).")
+        print("[OBT History] Continuing update; existing history will be used if available.")
+        return
 
     if not history_path.exists():
-        raise FileNotFoundError(f"OBT history was not written: {history_path}")
+        message = f"OBT history was not written: {history_path}"
+        if strict:
+            raise FileNotFoundError(message)
+        print(f"[OBT History] WARN: {message}")
+        print("[OBT History] Continuing update; existing history will be used if available.")
+        return
 
-    with open(history_path, encoding='utf-8') as fh:
-        history = json.load(fh)
+    try:
+        with open(history_path, encoding='utf-8') as fh:
+            history = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        if strict:
+            raise
+        print(f"[OBT History] WARN: history validation skipped ({exc}).")
+        print("[OBT History] Continuing update; existing history will be used if available.")
+        return
     snapshots = history.get('snapshots') or []
     latest = max((str(s.get('data_date') or '') for s in snapshots), default='')
     if latest != DATASET_ID:
-        raise RuntimeError(
-            f"OBT history latest snapshot is {latest or 'missing'}, expected {DATASET_ID}"
-        )
+        message = f"OBT history latest snapshot is {latest or 'missing'}, expected {DATASET_ID}"
+        if strict:
+            raise RuntimeError(message)
+        print(f"[OBT History] WARN: {message}.")
+        print("[OBT History] Continuing update; existing history will be used if available.")
+        return
     print(f"[OBT History] Ready: {history_path.name} ({len(snapshots):,} snapshots, latest {latest}).")
 
 
@@ -2242,32 +2296,69 @@ def _upload_file(headers, local_path, filename):
         retry_label=f'Drive lookup {filename}',
         headers=headers, params={'q': q, 'fields': 'files(id)'}, timeout=30)
     existing = r.json().get('files', [])
-
-    with open(local_path, 'rb') as fh:
-        data = fh.read()
-    size = len(data)
+    size = os.path.getsize(local_path)
 
     if existing:
         # Update existing
         fid = existing[0]['id']
-        _drive_request('PATCH', f'https://www.googleapis.com/upload/drive/v3/files/{fid}',
+        _drive_upload_media('PATCH', f'https://www.googleapis.com/upload/drive/v3/files/{fid}',
             retry_label=f'Drive update {filename}',
             headers={**headers, 'Content-Type': 'application/octet-stream'},
-            params={'uploadType': 'media'}, data=data)
+            params={'uploadType': 'media'}, local_path=local_path)
         print(f"  Updated: {filename} ({size:,} bytes)")
     else:
-        # Create new
+        # Create metadata first, then stream media. This avoids building a large
+        # multipart body in memory for cache/history files.
         metadata = _json.dumps({'name': filename, 'parents': [GDRIVE_FOLDER_ID]})
-        import email.mime.multipart
-        boundary = '===boundary==='
-        body = (f'--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'
-                f'{metadata}\r\n--{boundary}\r\nContent-Type: application/octet-stream\r\n\r\n').encode()
-        body += data + f'\r\n--{boundary}--'.encode()
-        _drive_request('POST', 'https://www.googleapis.com/upload/drive/v3/files',
-            retry_label=f'Drive create {filename}',
-            headers={**headers, 'Content-Type': f'multipart/related; boundary={boundary}'},
-            params={'uploadType': 'multipart'}, data=body)
+        created = _drive_request('POST', 'https://www.googleapis.com/drive/v3/files',
+            retry_label=f'Drive create metadata {filename}',
+            headers={**headers, 'Content-Type': 'application/json; charset=UTF-8'},
+            params={'fields': 'id'}, data=metadata)
+        fid = created.json()['id']
+        _drive_upload_media('PATCH', f'https://www.googleapis.com/upload/drive/v3/files/{fid}',
+            retry_label=f'Drive upload {filename}',
+            headers={**headers, 'Content-Type': 'application/octet-stream'},
+            params={'uploadType': 'media'}, local_path=local_path)
         print(f"  Created: {filename} ({size:,} bytes)")
+
+
+def _drive_upload_media(method, url, *, retry_label, local_path, **kwargs):
+    """Upload file media with retries, reopening the file for each attempt."""
+    kwargs.setdefault('timeout', GDRIVE_REQUEST_TIMEOUT_SECONDS)
+    headers = kwargs.pop('headers', {})
+    params = kwargs.pop('params', None)
+    size = os.path.getsize(local_path)
+    retries = max(1, GDRIVE_UPLOAD_RETRIES)
+    last_error = None
+
+    for attempt in range(1, retries + 1):
+        try:
+            with open(local_path, 'rb') as fh:
+                response = requests.request(
+                    method,
+                    url,
+                    headers={**headers, 'Content-Length': str(size)},
+                    params=params,
+                    data=fh,
+                    **kwargs,
+                )
+            response.raise_for_status()
+            return response
+        except requests.RequestException as exc:
+            last_error = exc
+            status = getattr(getattr(exc, 'response', None), 'status_code', None)
+            retryable = status is None or status == 408 or status == 429 or status >= 500
+            if attempt >= retries or not retryable:
+                raise
+
+            wait_seconds = min(60, 5 * attempt)
+            print(
+                f"  WARN: {retry_label} failed on attempt {attempt}/{retries}: "
+                f"{exc}. Retrying in {wait_seconds}s..."
+            )
+            time.sleep(wait_seconds)
+
+    raise RuntimeError(f"{retry_label} failed after {retries} attempts: {last_error}")
 
 
 def _drive_request(method, url, *, retry_label, **kwargs):

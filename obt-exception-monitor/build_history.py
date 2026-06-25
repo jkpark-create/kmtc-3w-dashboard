@@ -16,6 +16,7 @@ earlier.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -34,6 +35,7 @@ HISTORY_SCHEMA = 2
 GIT_COMMIT_LIMIT = int(os.environ.get("OBT_HISTORY_GIT_COMMIT_LIMIT", "240"))
 HISTORY_RETENTION_DAYS = int(os.environ.get("OBT_HISTORY_RETENTION_DAYS", "120"))
 HISTORY_MAX_LEAD_OFFSET = int(os.environ.get("OBT_HISTORY_MAX_LEAD_OFFSET", "4"))
+DEPLOY_HISTORY_MAX_BYTES = int(os.environ.get("OBT_HISTORY_DEPLOY_MAX_BYTES", "90000000"))
 REBUILD_EXISTING_DATES = os.environ.get("OBT_HISTORY_REBUILD_EXISTING_DATES", "0") == "1"
 DATA_DATE_RE = re.compile(rb'"data_date"\s*:\s*"(\d{8})"')
 
@@ -43,11 +45,15 @@ def git(args: list[str]) -> bytes:
 
 
 def git_blob_prefix(commit: str, size: int = 8192) -> bytes:
-    process = subprocess.Popen(
-        ["git", "-C", str(DIST), "show", f"{commit}:data.json"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        process = subprocess.Popen(
+            ["git", "-C", str(DIST), "show", f"{commit}:data.json"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        print(f"WARNING: cannot read git blob prefix for {commit[:7]}: {exc}")
+        return b""
     try:
         return process.stdout.read(size) if process.stdout else b""
     finally:
@@ -57,7 +63,11 @@ def git_blob_prefix(commit: str, size: int = 8192) -> bytes:
 
 
 def commits(limit: int = GIT_COMMIT_LIMIT) -> list[str]:
-    raw = git(["log", f"--max-count={limit}", "--format=%H", "--", "data.json"])
+    try:
+        raw = git(["log", f"--max-count={limit}", "--format=%H", "--", "data.json"])
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"WARNING: cannot read dist/data.json git history: {exc}")
+        return []
     return [line.strip() for line in raw.decode("utf-8").splitlines() if line.strip()]
 
 
@@ -71,6 +81,14 @@ def parse_week_date(value: str):
 
 def business_week(day: date) -> int:
     return ((day - date(day.year, 1, 1)).days // 7) + 1
+
+
+def number(value) -> float:
+    try:
+        found = float(str(value).replace(",", "")) if value not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+    return found if math.isfinite(found) else 0.0
 
 
 def iter_section(data: dict, section: str):
@@ -123,7 +141,7 @@ def route_snapshot(data: dict, target_weeks: set[str] | None = None) -> list[lis
             week = f"{week_start.year}년 {week_start.month:02d}월 {week_start.day:02d}일"
         if week_filter and week not in week_filter:
             continue
-        bsa_map[(f"{origin}|{pol}|{dest}|{dst}", week)] += float(row.get("teu_bsa") or 0)
+        bsa_map[(f"{origin}|{pol}|{dest}|{dst}", week)] += number(row.get("teu_bsa"))
 
     for row in iter_section(data, "shipper"):
         if row.get("team") != "OBT":
@@ -141,8 +159,8 @@ def route_snapshot(data: dict, target_weeks: set[str] | None = None) -> list[lis
 
         key = (f"{origin}|{pol}|{dest}|{dst}", week)
         found = routes.setdefault(key, {"teu": 0.0, "w3": 0.0, "active": set(), "w3_active": set()})
-        teu = float(row.get("fst") or 0)
-        w3 = float(row.get("w3_fst") or 0)
+        teu = number(row.get("fst"))
+        w3 = number(row.get("w3_fst"))
         shipper = str(row.get("BKG_SHPR_CST_NO") or row.get("BKG_SHPR_CST_ENM") or "").strip()
 
         found["teu"] += teu
@@ -167,7 +185,7 @@ def route_snapshot(data: dict, target_weeks: set[str] | None = None) -> list[lis
 
 
 def target_history_weeks(data_date: str, max_offset: int = HISTORY_MAX_LEAD_OFFSET) -> set[str]:
-    if not data_date or len(data_date) != 8:
+    if not data_date or not re.fullmatch(r"\d{8}", data_date):
         return set()
     current = datetime.strptime(data_date, "%Y%m%d").date()
     week_start = current - timedelta(days=(current.weekday() + 1) % 7)
@@ -200,8 +218,8 @@ def shipper_snapshot(data: dict, target_weeks: set[str]) -> list[list]:
         route_key = f"{origin}|{pol}|{dest}|{dst}"
         key = (shipper, route_key, week, sales)
         found = shippers.setdefault(key, {"teu": 0.0, "w3": 0.0})
-        found["teu"] += float(row.get("fst") or 0)
-        found["w3"] += float(row.get("w3_fst") or 0)
+        found["teu"] += number(row.get("fst"))
+        found["w3"] += number(row.get("w3_fst"))
 
     rows = []
     for (shipper, route_key, week, sales), values in shippers.items():
@@ -286,7 +304,7 @@ def load_existing_snapshots() -> list[dict]:
 def current_dist_commit() -> str:
     try:
         return git(["rev-parse", "--short=12", "HEAD"]).decode("utf-8").strip()
-    except subprocess.CalledProcessError:
+    except (OSError, subprocess.CalledProcessError):
         return "working-tree"
 
 
@@ -326,6 +344,47 @@ def merge_snapshot(by_date: dict[str, dict], priorities: dict[str, int], snapsho
         priorities[data_date] = priority
 
 
+def snapshot_content_equal(left: dict | None, right: dict | None) -> bool:
+    if not left or not right:
+        return False
+    keys = ("schema", "data_date", "lead_offsets", "routes", "shippers")
+    return all(left.get(key) == right.get(key) for key in keys)
+
+
+def history_payload(snapshots: list[dict], generated_at: str | None = None) -> str:
+    history = {
+        "schema": HISTORY_SCHEMA,
+        "generated_at": generated_at or existing_generated_at(snapshots) or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "source": f"existing history + dist/data.json git/current; retention {HISTORY_RETENTION_DAYS} days; W+1..W+{HISTORY_MAX_LEAD_OFFSET}",
+        "snapshots": snapshots,
+    }
+    return json.dumps(history, ensure_ascii=False, separators=(",", ":"))
+
+
+def fit_snapshots_to_bytes(snapshots: list[dict], max_bytes: int, generated_at: str) -> tuple[list[dict], int, int]:
+    if max_bytes <= 0:
+        payload_size = len(history_payload(snapshots, generated_at).encode("utf-8"))
+        return snapshots, 0, payload_size
+
+    kept = list(snapshots)
+    trimmed = 0
+    while kept:
+        payload_size = len(history_payload(kept, generated_at).encode("utf-8"))
+        if payload_size <= max_bytes:
+            return kept, trimmed, payload_size
+        kept = kept[1:]
+        trimmed += 1
+    payload_size = len(history_payload(kept, generated_at).encode("utf-8"))
+    return kept, trimmed, payload_size
+
+
+def write_text_atomic(path: Path, payload: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    tmp_path.write_text(payload, encoding="utf-8")
+    tmp_path.replace(path)
+
+
 def main() -> None:
     by_date: dict[str, dict] = {}
     priorities: dict[str, int] = {}
@@ -341,30 +400,34 @@ def main() -> None:
     backfilled = 0
     seen_git_dates = set()
     for commit in commits():
-        data_date = data_date_from_bytes(git_blob_prefix(commit))
-        if data_date and data_date in seen_git_dates:
+        try:
+            data_date = data_date_from_bytes(git_blob_prefix(commit))
+            if data_date and data_date in seen_git_dates:
+                continue
+            day = parse_data_date(data_date) if data_date else None
+            if day and cutoff_day and day < cutoff_day:
+                continue
+            if data_date and data_date in by_date and not REBUILD_EXISTING_DATES:
+                seen_git_dates.add(data_date)
+                continue
+            payload = git(["show", f"{commit}:data.json"])
+            if not data_date:
+                data_date = data_date_from_bytes(payload)
+            if data_date and data_date in seen_git_dates:
+                continue
+            day = parse_data_date(data_date) if data_date else None
+            if day and cutoff_day and day < cutoff_day:
+                continue
+            if data_date and data_date in by_date and not REBUILD_EXISTING_DATES:
+                seen_git_dates.add(data_date)
+                continue
+            if data_date:
+                seen_git_dates.add(data_date)
+            data = json.loads(payload)
+            snapshot = snapshot_from_data(data, commit[:7], "dist/data.json git")
+        except (OSError, subprocess.CalledProcessError, json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+            print(f"WARNING: skipping git snapshot {commit[:7]}: {exc}")
             continue
-        day = parse_data_date(data_date) if data_date else None
-        if day and cutoff_day and day < cutoff_day:
-            continue
-        if data_date and data_date in by_date and not REBUILD_EXISTING_DATES:
-            seen_git_dates.add(data_date)
-            continue
-        payload = git(["show", f"{commit}:data.json"])
-        if not data_date:
-            data_date = data_date_from_bytes(payload)
-        if data_date and data_date in seen_git_dates:
-            continue
-        day = parse_data_date(data_date) if data_date else None
-        if day and cutoff_day and day < cutoff_day:
-            continue
-        if data_date and data_date in by_date and not REBUILD_EXISTING_DATES:
-            seen_git_dates.add(data_date)
-            continue
-        if data_date:
-            seen_git_dates.add(data_date)
-        data = json.loads(payload)
-        snapshot = snapshot_from_data(data, commit[:7], "dist/data.json git")
         merge_snapshot(by_date, priorities, snapshot, 20)
         if snapshot:
             backfilled += 1
@@ -372,22 +435,40 @@ def main() -> None:
 
     if current_data:
         snapshot = snapshot_from_data(current_data, current_dist_commit(), "dist/data.json current")
-        merge_snapshot(by_date, priorities, snapshot, 30)
         if snapshot:
-            print(f"Added current snapshot {snapshot['data_date']}")
+            existing = by_date.get(str(snapshot.get("data_date") or ""))
+            if snapshot_content_equal(existing, snapshot):
+                print(f"Current snapshot {snapshot['data_date']} unchanged; kept existing metadata")
+            else:
+                merge_snapshot(by_date, priorities, snapshot, 30)
+                print(f"Added current snapshot {snapshot['data_date']}")
 
     snapshots = prune_snapshots(list(by_date.values()))
-    history = {
-        "schema": HISTORY_SCHEMA,
-        "generated_at": existing_generated_at(snapshots) or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "source": f"existing history + dist/data.json git/current; retention {HISTORY_RETENTION_DAYS} days; W+1..W+{HISTORY_MAX_LEAD_OFFSET}",
-        "snapshots": snapshots,
-    }
-    payload = json.dumps(history, ensure_ascii=False, separators=(",", ":"))
-    for out in (SOURCE_OUT, DEPLOY_OUT):
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(payload, encoding="utf-8")
-        print(f"Wrote {out} with {len(snapshots)} snapshots (backfilled {backfilled})")
+    if not snapshots:
+        print("WARNING: no usable OBT history snapshots; existing history files were not changed")
+        return
+
+    generated_at = existing_generated_at(snapshots) or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    source_payload = history_payload(snapshots, generated_at)
+    write_text_atomic(SOURCE_OUT, source_payload)
+    print(
+        f"Wrote {SOURCE_OUT} with {len(snapshots)} snapshots "
+        f"({len(source_payload.encode('utf-8')):,} bytes, backfilled {backfilled})"
+    )
+
+    deploy_generated_at = existing_generated_at(snapshots) or generated_at
+    deploy_snapshots, trimmed, deploy_size = fit_snapshots_to_bytes(
+        snapshots,
+        DEPLOY_HISTORY_MAX_BYTES,
+        deploy_generated_at,
+    )
+    deploy_payload = history_payload(deploy_snapshots, existing_generated_at(deploy_snapshots) or deploy_generated_at)
+    write_text_atomic(DEPLOY_OUT, deploy_payload)
+    trim_note = f", trimmed {trimmed} old snapshots for deploy cap" if trimmed else ""
+    print(
+        f"Wrote {DEPLOY_OUT} with {len(deploy_snapshots)} snapshots "
+        f"({deploy_size:,} bytes{trim_note}, backfilled {backfilled})"
+    )
 
 
 if __name__ == "__main__":
