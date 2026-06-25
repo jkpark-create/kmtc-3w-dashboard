@@ -30,6 +30,10 @@ const RISK_DEFS = {
     meaning: "WOS-3 부킹이 BSA 대비 낮아 선복 예측 리스크가 있습니다.",
     approach: "미유입 주요 화주의 선적 계획과 경쟁사 전환 여부를 확인합니다."
   },
+  "BSA/3W 확인 후보": {
+    meaning: "리스크 구간에 참여한 화주로, 개별 감소 조건이 없더라도 구간 회복 또는 선행확보 확인 대상입니다.",
+    approach: "현재/기준 선적 계획과 추가 부킹 가능성을 확인하고, 필요하면 대체 물량 또는 BSA 조정을 판단합니다."
+  },
   "리드타임 트렌드 부족": {
     meaning: "해당 출항 시점(W+1/W+2/W+3)의 포트별 부킹 성숙도보다 낮습니다.",
     approach: "아직 덜 들어와도 정상인 구간과 실제로 늦은 구간을 구분해 조치합니다."
@@ -205,6 +209,11 @@ const RISK_EN = {
     label: "Declining Customer in BSA Target Gap",
     meaning: "A customer is declining in a route where total BKG maturity is within range but the BSA target is still high.",
     approach: "Check whether the recoverable TEU can materially contribute to the BSA gap."
+  },
+  "BSA/3W 확인 후보": {
+    label: "BSA/W+3 Route Candidate",
+    meaning: "A customer participates in a risk route and should be checked even without an individual decline trigger.",
+    approach: "Confirm current and planned shipments, possible additional bookings, and substitute volume or BSA adjustment needs."
   },
   "리드타임 트렌드 부족": {
     label: "Lead-Time Trend Shortfall",
@@ -742,7 +751,7 @@ function guideHtmlKo() {
         <li><strong>확인 필요 구간</strong>: 전체 BKG 진행이 기준보다 낮거나, 최근 pickup으로 BSA Gap을 채우기 어렵거나, W+3/BSA 선행확보율이 낮은 Route 수입니다. 카드 보조문구에서 BKG진행, BSA속도, 3W부족, 예상 Gap을 함께 확인합니다.</li>
         <li><strong>P1 구간</strong>: 오늘 먼저 원인을 확인해야 하는 우선 Route 수입니다.</li>
         <li><strong>3W Booking TEU</strong>: <code>w3_fst</code> 기반 3주전 선행 부킹량입니다.</li>
-        <li><strong>감소/이탈 화주</strong>: 회복 또는 재확보가 필요한 화주 단위 후보입니다.</li>
+        <li><strong>화주 Action 후보</strong>: 감소/이탈 화주와 리스크 구간에 참여한 확인 대상 화주입니다.</li>
       </ul>
     </section>
     <section>
@@ -822,7 +831,7 @@ function guideHtmlEn() {
         <li><strong>Routes To Check</strong>: route count where total BKG maturity is behind benchmark, recent pickup pace is unlikely to close the projected gap, or W+3/BSA advance coverage is low. The card note splits BKG pace, pickup pace, W+3 coverage, and projected gap.</li>
         <li><strong>P1 Routes</strong>: priority routes that should be checked first today.</li>
         <li><strong>3W Booking TEU</strong>: advance-booked TEU from <code>w3_fst</code>.</li>
-        <li><strong>Declining/Lost Customers</strong>: customer-level candidates for recovery or win-back.</li>
+        <li><strong>Customer Action Rows</strong>: customer-level action candidates, including recovery/win-back and risk-route participants.</li>
       </ul>
     </section>
     <section>
@@ -1586,8 +1595,12 @@ function analyze(currentRows, baselineRows, currentBsaRows, baselineBsaRows, per
   const leadTrendMap = buildLeadTrendMap(periods, currentRows, baselineRows, currentBsaRows, routeContext, leadTrendScope);
   mergeLeadTrendIntoContext(routeContext, leadTrendMap, leadTrendScope);
 
-  const allShipperExceptions = buildShipperExceptions(currentShippers, baselineShippers, routeContext);
-  const allRouteExceptions = buildRouteExceptions(currentRoutes, baselineRoutes, allShipperExceptions, routeContext, currentBsaRoutes, baselineBsaRoutes);
+  const baseShipperExceptions = buildShipperExceptions(currentShippers, baselineShippers, routeContext);
+  const allRouteExceptions = buildRouteExceptions(currentRoutes, baselineRoutes, baseShipperExceptions, routeContext, currentBsaRoutes, baselineBsaRoutes);
+  const allShipperExceptions = mergeShipperActionCandidates(
+    baseShipperExceptions,
+    buildRouteActionCandidates(currentShippers, baselineShippers, allRouteExceptions, routeContext, baseShipperExceptions)
+  );
   const shipperExceptions = applyPriorityFilter(allShipperExceptions);
   const routeExceptions = applyPriorityFilter(allRouteExceptions);
   const importantRouteExceptions = allRouteExceptions.filter((row) => row.isImportant && row.priority !== "P3");
@@ -2908,6 +2921,132 @@ function buildShipperExceptions(currentMap, baselineMap, routeContext) {
   return rows.sort((a, b) => b.score - a.score || b.impactTeu - a.impactTeu);
 }
 
+function mergeShipperActionCandidates(baseRows, routeRows) {
+  if (!routeRows.length) return baseRows;
+  const map = new Map();
+  baseRows.forEach((row) => map.set(row.key, row));
+  routeRows.forEach((row) => {
+    if (!map.has(row.key)) map.set(row.key, row);
+  });
+  return Array.from(map.values()).sort((a, b) => b.score - a.score || b.impactTeu - a.impactTeu);
+}
+
+function buildRouteActionCandidates(currentMap, baselineMap, routeExceptions, routeContext, baseRows) {
+  const existing = new Set(baseRows.map((row) => row.key));
+  const routeByKey = new Map(routeExceptions.map((row) => [row.routeKey || row.key, row]));
+  const candidates = [];
+  const keys = new Set([...currentMap.keys(), ...baselineMap.keys()]);
+
+  keys.forEach((key) => {
+    if (existing.has(key)) return;
+    const current = currentMap.get(key);
+    const base = baselineMap.get(key);
+    const template = current || base;
+    if (!template) return;
+    const route = routeByKey.get(template.routeKey);
+    if (!route) return;
+    const context = routeContext.get(template.routeKey) || {};
+    const currentTeu = current ? current.teu : 0;
+    const baseTeu = base ? base.teu : 0;
+    const currentW3Teu = current ? current.w3Teu : 0;
+    const baseW3Teu = base ? base.w3Teu : 0;
+    const exposure = Math.max(currentTeu, baseTeu, currentW3Teu, baseW3Teu);
+    if (exposure <= 0) return;
+
+    const currentW3NormTeu = current ? current.w3NormTeu : 0;
+    const baseW3NormTeu = base ? base.w3NormTeu : 0;
+    const currentW3CancelTeu = current ? current.w3CancelTeu : 0;
+    const baseW3CancelTeu = base ? base.w3CancelTeu : 0;
+    const currentW3HiTeu = current ? current.w3HiTeu : 0;
+    const baseW3HiTeu = base ? base.w3HiTeu : 0;
+    const delta = currentTeu - baseTeu;
+    const deltaPct = baseTeu ? delta / baseTeu : currentTeu ? 1 : 0;
+    const w3Delta = currentW3Teu - baseW3Teu;
+    const w3DeltaPct = baseW3Teu ? w3Delta / baseW3Teu : currentW3Teu ? 1 : 0;
+    const impactTeu = Math.max(0, baseTeu - currentTeu, baseW3Teu - currentW3Teu);
+    const bsaShortfall = Math.max(0, (route.bsaTeu || context.bsaTeu || 0) - (route.currentTeu || context.currentTeu || 0));
+    const routeBsaUtil = (route.bsaTeu || context.bsaTeu) ? (route.currentTeu || context.currentTeu || 0) / (route.bsaTeu || context.bsaTeu) : 0;
+    const focus = routeActionCandidateFocus(route, context, exposure, impactTeu);
+    const issue = {
+      type: "BSA/3W 확인 후보",
+      level: route.level === "high" ? "high" : "mid",
+      score: 45,
+      reason: route.focusReason || (route.issues || [])[0] || "구간 리스크 확인",
+      action: focus.action
+    };
+
+    candidates.push({
+      ...template,
+      bsaTeu: route.bsaTeu || context.bsaTeu || 0,
+      bsaShortfall,
+      routeBsaUtil,
+      routeCurrentTeu: route.currentTeu || context.currentTeu || 0,
+      isImportant: Boolean(route.isImportant || context.isImportant),
+      priority: focus.priority,
+      focusReason: focus.reason,
+      focusAction: focus.action,
+      paceStatus: route.paceStatus || context.status || "no-history",
+      pace3: route.pace3 ?? context.pace3,
+      pickup3: route.pickup3 ?? context.pickup3,
+      w3Pickup3: route.w3Pickup3 ?? context.w3Pickup3,
+      w3Pace3: route.w3Pace3 ?? context.w3Pace3,
+      requiredDaily: route.requiredDaily ?? context.requiredDaily,
+      projectedGap: route.projectedGap || context.projectedGap || 0,
+      currentTeu,
+      baseTeu,
+      delta,
+      deltaPct,
+      currentW3Teu,
+      baseW3Teu,
+      currentW3NormTeu,
+      baseW3NormTeu,
+      currentW3CancelTeu,
+      baseW3CancelTeu,
+      currentW3HiTeu,
+      baseW3HiTeu,
+      w3Delta,
+      w3DeltaPct,
+      issue: issue.type,
+      signals: uniqueSorted([issue.type, ...(route.issues || []).slice(0, 3)]),
+      level: issue.level,
+      reason: issue.reason,
+      action: issue.action,
+      impactTeu,
+      score: issue.score + Math.min(30, exposure) + Math.min(30, route.score || 0) + focus.bonus
+    });
+  });
+
+  return candidates;
+}
+
+function routeActionCandidateFocus(route, context, exposure, impactTeu) {
+  const routePriority = route.priority === "P1" ? "P1" : "P2";
+  const hasW3Risk = (route.issues || []).some((issue) => /3W|선행|확보/.test(issue));
+  const speedBad = ["stalled", "slow", "short"].includes(route.paceStatus || context.status);
+  if (hasW3Risk) {
+    return {
+      priority: routePriority,
+      reason: "BSA/3W 확인 후보",
+      action: "선적 계획과 W+3 선행부킹 가능성 확인",
+      bonus: routePriority === "P1" ? 20 : 12
+    };
+  }
+  if (speedBad || (route.bsaShortfall || 0) > 0 || (route.projectedGap || 0) > 0) {
+    return {
+      priority: routePriority,
+      reason: "BSA/3W 확인 후보",
+      action: impactTeu > 0 ? "회복 가능 TEU 및 추가 부킹 가능성 확인" : "추가 부킹 가능성과 BSA 조정 필요 확인",
+      bonus: routePriority === "P1" ? 18 : 10
+    };
+  }
+  return {
+    priority: exposure >= Math.max(10, context.portImpactThreshold || 30) ? "P2" : "P3",
+    reason: "BSA/3W 확인 후보",
+    action: "선적 계획 변동 여부 확인",
+    bonus: 6
+  };
+}
+
 function classifyShipper(metrics) {
   const {
     currentTeu,
@@ -3870,7 +4009,7 @@ function renderKpis(analysis) {
     },
     {
       key: "issueCustomers",
-      label: state.lang === "en" ? "Declining/Lost Customers" : "감소/이탈 화주",
+      label: state.lang === "en" ? "Customer Action Rows" : "화주 Action 후보",
       value: fmt(t.issueShippers),
       note: state.lang === "en" ? `actionable out of ${fmt(t.allIssueShippers)} total` : `전체 ${fmt(t.allIssueShippers)}건 중 조치대상`,
       tone: t.issueShippers ? "warn" : "pos"
@@ -4606,6 +4745,7 @@ function historyShipperKey(routeKey, shipperKey) {
 }
 
 function actionTypeForCandidate(row) {
+  if (row.issue === "BSA/3W 확인 후보" && /3W|선행|확보/.test((row.signals || []).join(" "))) return "advance";
   if (hasSignal(row, "3W 이탈") || hasSignal(row, "3W 감소") || hasSignal(row, "3W 급감") || hasSignal(row, "3W TEU 감소")) return "advance";
   if (row.issue === "이탈" || hasSignal(row, "이탈")) return "winback";
   if (row.issue === "감소" || row.issue === "급감" || hasSignal(row, "감소") || hasSignal(row, "급감")) return "recovery";
@@ -5233,7 +5373,11 @@ function actionText(text) {
     "조기 부킹 유도와 선복 예측 리스크 확인": "Encourage early booking and review space-forecast risk.",
     "거래 조건과 반복 가능성 확인": "Check deal terms and whether the volume will recur.",
     "선복과 장비 대응 가능 여부 확인": "Check whether space and equipment can support it.",
-    "반복 물량 여부와 선복 대응 가능성 확인": "Check whether the volume recurs and whether space can support it."
+    "반복 물량 여부와 선복 대응 가능성 확인": "Check whether the volume recurs and whether space can support it.",
+    "선적 계획과 W+3 선행부킹 가능성 확인": "Confirm shipment plans and possible W+3 advance bookings.",
+    "회복 가능 TEU 및 추가 부킹 가능성 확인": "Check recoverable TEU and possible additional bookings.",
+    "추가 부킹 가능성과 BSA 조정 필요 확인": "Check possible additional bookings and whether BSA needs adjustment.",
+    "선적 계획 변동 여부 확인": "Check whether the shipment plan changed."
   };
   return map[text] || text || "";
 }
@@ -5283,7 +5427,7 @@ function kpiHelp(key) {
     w3Teu: "shipper.w3_fst 기반 3주전 선행 부킹 TEU 합계입니다.",
     w3TeuNotCancel: "LST 기준으로 본 3주전 BKG에서 Cancel 상태로 전환된 부분(w3_canc_lst)을 제외한 값입니다. 계산식: w3_lst − w3_canc_lst. 실제 선적된 LST_TEU 기반이라 FST 기준 대비 정밀합니다.",
     w3Bsa: "3W Booking TEU를 같은 선택기간 BSA로 나눈 비율입니다.",
-    issueCustomers: "감소, 급감, 이탈 등 화주 단위 조치 대상 수입니다.",
+    issueCustomers: "감소/이탈 화주와 리스크 구간 참여 화주를 포함한 화주 단위 조치 대상 수입니다.",
     impactTeu: "기준 대비 회복이 필요한 영향 TEU 합계입니다.",
     salesOwners: "조치 대상 화주/구간을 보유한 영업사원 수입니다."
   };
@@ -5296,7 +5440,7 @@ function kpiHelp(key) {
     w3Teu: "Sum of 3W advance-booked TEU from shipper.w3_fst.",
     w3TeuNotCancel: "LST-basis W-3 booking volume after removing the cancelled portion (w3_canc_lst). Formula: w3_lst − w3_canc_lst. Uses actual LST_TEU values, so it tracks loaded volume more precisely than the FST view.",
     w3Bsa: "3W booking TEU divided by BSA for the same selected period.",
-    issueCustomers: "Customer-level action targets such as decline, sharp decline, or churn.",
+    issueCustomers: "Customer-level action targets, including declining/lost customers and customers participating in risk routes.",
     impactTeu: "Recoverable impact TEU compared with the baseline.",
     salesOwners: "Sales owners with actionable customer or route issues."
   };
