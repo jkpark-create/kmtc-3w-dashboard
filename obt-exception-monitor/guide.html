@@ -915,7 +915,7 @@
             <tr><td>구간</td><td>Origin/POL -> 도착국가/도착포트, P1/P2/P3, 기준 BKG, 증감, 영향 TEU</td><td>P1은 당일 확인, P2는 우선 확인입니다.</td></tr>
             <tr><td>BKG</td><td>현재 전체 BKG와 Active 화주 수 변화</td><td>BL 수보다 TEU와 화주 기반 변화를 더 중요하게 봅니다.</td></tr>
             <tr><td>BSA</td><td>선택기간 BSA TEU, BSA활용률, 예상 Gap</td><td>트렌드가 정상이어도 BSA 목표가 높으면 Gap이 남을 수 있습니다.</td></tr>
-            <tr><td>트렌드/속도</td><td>리드타임 성숙도, 최근 일별 증가속도, 필요속도</td><td>해당 W+시점에서 정상 속도인지 판단합니다.</td></tr>
+            <tr><td>트렌드/속도/선행확보</td><td>리드타임 성숙도, 최근 일별 증가속도, 필요속도, W+3/BSA</td><td>전체 BKG 흐름과 W+3 선행확보율을 분리해서 판단합니다.</td></tr>
             <tr><td>3W Signal</td><td>3W TEU, 3W 화주 수, 실선적률, Late 의존</td><td>3주전 선행 부킹의 양과 품질을 봅니다.</td></tr>
             <tr><td>권장 조치</td><td>회복, 재확보, 선행전환, 방어, 대체 필요</td><td>영업 행동으로 바로 옮길 수 있는 방향입니다.</td></tr>
             <tr><td>판단</td><td>대표 리스크 유형과 설명</td><td>마우스 오버로 정의와 접근 방식을 확인합니다.</td></tr>
@@ -928,7 +928,7 @@
             <tr><td>Route</td><td>Origin/POL -> destination country/port, P1/P2/P3, baseline TEU, delta, impact TEU</td><td>P1 means same-day action; P2 means priority check.</td></tr>
             <tr><td>BKG</td><td>Current total BKG and active customer count change</td><td>TEU and customer-base change matter more than BL count alone.</td></tr>
             <tr><td>BSA</td><td>Selected-period BSA TEU, utilization, projected gap</td><td>Even with normal trend, a high BSA target may leave a gap.</td></tr>
-            <tr><td>Trend / Pace</td><td>Lead-time maturity, recent daily pickup, required pace</td><td>Checks whether the route is normal for the current W+ timing.</td></tr>
+            <tr><td>Trend / Pace / W+3</td><td>Lead-time maturity, recent daily pickup, required pace, W+3/BSA</td><td>Separates total booking flow from advance-booking coverage.</td></tr>
             <tr><td>3W Signal</td><td>3W TEU, 3W customer count, LFT rate, Late dependency</td><td>Reads both quantity and quality of advance bookings.</td></tr>
             <tr><td>Recommended Action</td><td>Recovery, win-back, advance conversion, protection, substitute need</td><td>Designed to translate into immediate sales actions.</td></tr>
             <tr><td>Judgment</td><td>Primary risk type and explanation</td><td>Hover over the chip to see definition and approach.</td></tr>
@@ -938,28 +938,28 @@
       </section>
 
       <section class="section" id="pace-headline">
-        <h2 class="ko">5-1. 선적지별 W+3 페이스 헤드라인</h2>
-        <h2 class="en">5-1. Origin W+3 Pace Headlines</h2>
+        <h2 class="ko">5-1. 선적지별 W+3 선행확보율 헤드라인</h2>
+        <h2 class="en">5-1. Origin W+3 Coverage Headlines</h2>
         <div class="ko">
-          <p>상단 KPI 바로 아래의 카드 스트립은 <strong>같은 요일 과거 스냅샷 평균</strong>과 비교한 W+3 부킹 페이스를 한눈에 보기 위한 영역입니다. 절대 TEU가 아니라 <code>W+3 부킹 TEU / BSA</code> <strong>비율</strong>을 비교하므로, 라우트별 BSA가 분기마다 바뀌어도 페이스 판단이 왜곡되지 않습니다.</p>
+          <p>상단 KPI 바로 아래의 카드 스트립은 <strong>같은 요일 과거 스냅샷 평균</strong>과 비교한 W+3 선행확보율을 한눈에 보기 위한 영역입니다. 절대 TEU가 아니라 <code>W+3 부킹 TEU / BSA</code> <strong>비율</strong>을 비교하므로, 라우트별 BSA가 분기마다 바뀌어도 판단이 왜곡되지 않습니다.</p>
           <p>아직 같은 요일 스냅샷이 없으면 헤드라인은 상단 <strong>비교</strong> 필터의 기준기간을 임시 대체 기준으로 사용합니다. 이때 제목과 노트에 <strong>기준 대체</strong>라고 표시되며, 같은 요일 평균 판정이 아니라 전월/전주차/최근 3개월 기준 W+3/BSA 비교로 읽어야 합니다.</p>
           <table>
             <tr><th>항목</th><th>계산</th><th>해석</th></tr>
             <tr><td>현재 비율</td><td><code>sum(currentW3Teu) / sum(currentBsaTeu) * 100</code></td><td>버킷 안 모든 라우트를 합쳐 오늘 시점의 W+3/BSA 비율을 구합니다.</td></tr>
             <tr><td>평균 비율</td><td><code>sum(sampleW3) / sum(sampleBsa) * 100</code></td><td>같은 요일 과거 스냅샷에서 동일 리드타임 offset(W+1/W+2/W+3)에 해당하는 주차 합산 비율입니다.</td></tr>
-            <tr><td>차이 (%p)</td><td><code>현재 비율 − 평균 비율</code></td><td>+면 평소보다 빠름, −면 평소보다 느림입니다.</td></tr>
+            <tr><td>차이 (%p)</td><td><code>현재 비율 − 평균 비율</code></td><td>+면 기준보다 선행확보율이 높고, −면 낮습니다.</td></tr>
           </table>
 
           <h3>상태 판정 기준</h3>
           <table>
             <tr><th>상태</th><th>조건</th><th>의미와 권장 액션</th></tr>
-            <tr><td>빠름</td><td>차이 ≥ +10%p</td><td>같은 요일 평균보다 W+3가 빠르게 채워졌습니다. 과집중/과소석 가능성을 같이 봅니다. 고수익 화주 선별이나 운임 방어 검토 시점입니다.</td></tr>
-            <tr><td>평균권</td><td>−10%p &lt; 차이 &lt; +10%p, 그리고 현재 비율 ≥ 60%</td><td>같은 요일 평균과 유사한 정상 페이스입니다.</td></tr>
-            <tr><td>평균권 · 절대낮음</td><td>−10%p &lt; 차이 &lt; +10%p, 그리고 <strong>현재 비율 &lt; 60%</strong></td><td>평균과 비슷한 페이스라도 W+3가 BSA의 60%를 못 채우는 상태입니다. 평균이 원래 낮은 구간일 수 있으므로 “평균권”이라는 표현이 안심 신호로 해석되지 않도록 보조 경고가 붙습니다.</td></tr>
-            <tr><td>느림</td><td>차이 ≤ −10%p</td><td>같은 요일 평균보다 W+3 흐름이 약합니다. 회복/스팟/BSA 조정 후보입니다.</td></tr>
+            <tr><td>선행확보 높음</td><td>차이 ≥ +10%p</td><td>같은 요일 평균 또는 대체 기준보다 W+3/BSA가 높습니다. 과집중/과소석 가능성을 같이 봅니다.</td></tr>
+            <tr><td>선행확보 평균권</td><td>−10%p &lt; 차이 &lt; +10%p, 그리고 현재 비율 ≥ 60%</td><td>기준과 유사한 선행확보율입니다.</td></tr>
+            <tr><td>확보율 평균권 · 절대낮음</td><td>−10%p &lt; 차이 &lt; +10%p, 그리고 <strong>현재 비율 &lt; 60%</strong></td><td>기준과 비슷하더라도 W+3가 BSA의 60%를 못 채우는 상태입니다. 기준 자체가 낮은 구간일 수 있으므로 보조 경고가 붙습니다.</td></tr>
+            <tr><td>선행확보 낮음</td><td>차이 ≤ −10%p</td><td>기준보다 W+3/BSA가 낮습니다. 회복/스팟/BSA 조정 후보입니다.</td></tr>
             <tr><td>BSA 기준 없음</td><td>현재 BSA 또는 참조 BSA가 0</td><td>BSA가 없거나 같은 요일/대체 기준의 BSA가 없어 비율을 계산할 수 없습니다.</td></tr>
           </table>
-          <div class="formula">절대낮음 임계 = 60%<br>±10%p band = weekly_report의 같은 요일 W+3 페이스 판단 임계와 동일</div>
+          <div class="formula">절대낮음 임계 = 60%<br>±10%p band = W+3/BSA 선행확보율 판단 임계</div>
 
           <h3>버킷 분할</h3>
           <p>선적국가 단위가 너무 굵어서 한 라우트의 페이스 변화가 묻히는 것을 막기 위해 다음 선적지 단위로 나눠 표시합니다.</p>
@@ -986,22 +986,22 @@
               </table>
             </li>
             <li><strong>샘플 수</strong>: 1~2개면 평균 기준이 아직 안정적이지 않으므로 보조 신호로만 사용합니다. 안정적인 평균을 원하면 "최근 3개월 평균"을 선택하세요.</li>
-            <li><strong>대체 기준</strong>: 같은 요일 샘플이 0개일 때만 사용합니다. 카드에는 <code>기준</code> 비율로 표시되고, 라우트 테이블의 같은 요일 BSA-ratio 라인은 표시하지 않습니다.</li>
+            <li><strong>대체 기준</strong>: 같은 요일 샘플이 0개일 때만 사용합니다. 카드와 라우트 테이블에는 <code>기준</code> 비율로 표시되며, 같은 요일 평균이 아니라 선택된 비교 기준의 W+3/BSA로 읽어야 합니다.</li>
           </ul>
 
           <h3>정렬 순서</h3>
           <ol>
-            <li>상태 우선: 느림 → 평균권 · 절대낮음 → 평균권 → 빠름 → BSA 기준 없음</li>
+            <li>상태 우선: 선행확보 낮음 → 확보율 평균권 · 절대낮음 → 선행확보 평균권 → 선행확보 높음 → BSA 기준 없음</li>
             <li>같은 상태 내에서는 위 버킷 표 순서대로(CN SHA부터)</li>
             <li>그 다음 BSA 큰 순</li>
           </ol>
 
-          <h3>라우트 테이블 트렌드/속도 셀의 BSA-ratio 라인</h3>
-          <p>같은 판단 로직이 라우트 단위로도 표시됩니다. 트렌드/속도 컬럼 마지막 줄에 "페이스 빠름/느림/평균권 · 절대낮음/평균권 평균권" 라벨과 함께 <code>현재 X% · 평균 Y% · ±Z%p</code> 가 출력됩니다. 이 라인은 같은 요일 샘플이 있고 BSA가 있는 라우트에만 표시되며, 헤드라인이 대체 기준을 쓰는 동안에는 숨깁니다.</p>
+          <h3>라우트 테이블 트렌드/속도/선행확보 셀의 BSA-ratio 라인</h3>
+          <p>같은 판단 로직이 라우트 단위로도 표시됩니다. 컬럼 마지막 줄에 "선행확보 높음/낮음/평균권" 라벨과 함께 <code>현재 X% · 평균/기준 Y% · ±Z%p</code> 가 출력됩니다. 따라서 리드타임 트렌드가 정상이어도 W+3/BSA가 낮으면 별도 신호로 확인할 수 있습니다.</p>
         </div>
 
         <div class="en">
-          <p>The card strip below the top KPIs compares the current W+3 booking pace against the <strong>same-weekday historical average</strong>. It uses the <code>W+3 booked TEU / BSA</code> <strong>ratio</strong> instead of absolute TEU so that pace judgment stays correct even when route-level BSA changes between quarters.</p>
+          <p>The card strip below the top KPIs compares current W+3 advance coverage against the <strong>same-weekday historical average</strong>. It uses the <code>W+3 booked TEU / BSA</code> <strong>ratio</strong> instead of absolute TEU so that judgment stays correct even when route-level BSA changes between quarters.</p>
           <p>When no same-weekday snapshot exists yet, the headline temporarily falls back to the baseline period from the top <strong>Compare</strong> filter. In that case, the title and note say <strong>fallback</strong>; read it as a previous-month/week/3-month W+3/BSA comparison, not as a same-weekday average.</p>
           <table>
             <tr><th>Metric</th><th>Calculation</th><th>How To Read</th></tr>
@@ -1046,18 +1046,18 @@
               </table>
             </li>
             <li><strong>Sample count</strong>: with one or two samples the baseline is still unstable; treat it as supplementary signal. Use "3-month average" when a stable baseline is needed.</li>
-            <li><strong>Fallback baseline</strong>: used only when there are zero same-weekday samples. Cards show the reference as <code>base</code>, and the route-table same-weekday BSA-ratio line remains hidden.</li>
+            <li><strong>Fallback baseline</strong>: used only when there are zero same-weekday samples. Cards and route-table lines show the reference as <code>base</code>; read it as W+3/BSA from the selected comparison baseline, not as a same-weekday average.</li>
           </ul>
 
           <h3>Sort Order</h3>
           <ol>
-            <li>Status first: slower → usual + absolute low → usual → faster → no BSA</li>
+            <li>Status first: W+3 cover low → cover usual + low level → W+3 cover usual → W+3 cover high → no BSA</li>
             <li>Within the same status, follow the bucket order above (CN SHA first)</li>
             <li>Then by current BSA descending</li>
           </ol>
 
-          <h3>BSA-Ratio Line In The Route Table Pace Cell</h3>
-          <p>The same judgment is applied per route. The last line of the Trend / Pace column reads "Pace fast / slow / usual · absolute low / usual" together with <code>now X% · avg Y% · ±Z%p</code>. It appears only for routes that have same-weekday samples and a valid BSA, and stays hidden while the headline is using a fallback baseline.</p>
+          <h3>BSA-Ratio Line In The Route Table Trend / Pace / W+3 Cell</h3>
+          <p>The same judgment is applied per route. The last line reads "W+3 cover high / low / usual" together with <code>now X% · avg/base Y% · ±Z%p</code>. A route can have a normal lead-time trend while still showing low W+3/BSA coverage.</p>
         </div>
       </section>
 

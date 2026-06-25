@@ -319,7 +319,7 @@ const I18N = {
     },
     headers: {
       route: "구간",
-      trend: "트렌드/속도",
+      trend: "트렌드/속도/선행확보",
       action: "권장 조치",
       judgment: "판단",
       shipper: "화주",
@@ -400,7 +400,7 @@ const I18N = {
     },
     headers: {
       route: "Route",
-      trend: "Trend / Pace",
+      trend: "Trend / Pace / W+3",
       action: "Recommended Action",
       judgment: "Judgment",
       shipper: "Customer",
@@ -767,7 +767,7 @@ function guideHtmlKo() {
       <ul>
         <li><strong>BKG</strong>: 현재 전체 BKG와 현재 Active 화주 수를 보여줍니다.</li>
         <li><strong>BSA</strong>: 선택기간 BSA TEU, BSA활용률, 남은 기간 예상 Gap입니다.</li>
-        <li><strong>트렌드/속도</strong>: W+1/W+2/W+3별 포트 기준 성숙도와 최근 일별 부킹속도입니다.</li>
+        <li><strong>트렌드/속도/선행확보</strong>: W+1/W+2/W+3별 포트 기준 성숙도, 최근 일별 부킹속도, W+3/BSA 선행확보율입니다.</li>
         <li><strong>3W Signal</strong>: <code>w3_fst</code> TEU, 3W 화주 수, <code>w3_norm_lst / w3_fst</code> 기반 실선적률과 Late 의존도를 보여줍니다.</li>
         <li><strong>판단</strong>: 대표 리스크입니다. 마우스를 올리면 정의와 접근 방식이 표시됩니다.</li>
       </ul>
@@ -847,7 +847,7 @@ function guideHtmlEn() {
       <ul>
         <li><strong>BKG</strong>: current total BKG and active customer count.</li>
         <li><strong>BSA</strong>: selected-period BSA TEU, utilization, and projected remaining gap.</li>
-        <li><strong>Trend / Pace</strong>: port-level lead-time maturity benchmark and recent daily pickup.</li>
+        <li><strong>Trend / Pace / W+3</strong>: port-level lead-time maturity, recent daily pickup, and W+3/BSA advance coverage.</li>
         <li><strong>3W Signal</strong>: <code>w3_fst</code> TEU, 3W customer count, LFT rate from <code>w3_norm_lst / w3_fst</code>, and Late dependency.</li>
         <li><strong>Judgment</strong>: primary risk. Hover over a chip to see definition and approach.</li>
       </ul>
@@ -2329,7 +2329,7 @@ function mergeWeekdayBenchmarkIntoContext(routeContext, benchmarks) {
     if (sampleCount >= 1 && gap >= Math.max(30, context.portImpactThreshold || 30) && ratio != null && ratio < .65) {
       context.isImportant = true;
     }
-    if (sampleCount >= 1 && bsaPaceStatus === "slow" && currentBsaTeu >= (context.portBsaThreshold || 100)) {
+    if (referenceCount >= 1 && bsaPaceStatus === "slow" && currentBsaTeu >= (context.portBsaThreshold || 100)) {
       context.isImportant = true;
     }
   });
@@ -3231,6 +3231,8 @@ function buildRouteExceptions(currentRoutes, baselineRoutes, shipperExceptions, 
       weekdayW3Delta: context.weekdayW3Delta || 0,
       weekdayW3Ratio: context.weekdayW3Ratio,
       weekdaySamples: context.weekdaySamples || 0,
+      weekdayReferenceCount: context.weekdayReferenceCount || 0,
+      weekdayReferenceMode: context.weekdayReferenceMode || "",
       weekdayLabel: context.weekdayLabel || "",
       weekdayStatus: context.weekdayStatus || "no-benchmark",
       weekdayBsaRatioCurrent: context.weekdayBsaRatioCurrent ?? null,
@@ -3896,26 +3898,26 @@ function renderOriginPaceHeadlines(analysis) {
   const weekdayKo = headline.weekday ? `${headline.weekday}요일` : "같은 요일";
   const weekdayEn = headline.weekday ? `${headline.weekday} W+3` : "Same-weekday W+3";
   const referenceKo = hasSameWeekdaySamples
-    ? weekdayKo
+    ? `${weekdayKo} 평균`
     : usesBaselineReference
       ? "기준"
       : "같은 요일 기준 없음";
   const referenceEn = hasSameWeekdaySamples
-    ? weekdayEn
+    ? `${weekdayEn} avg`
     : usesBaselineReference
       ? "Baseline"
       : "No same-weekday benchmark";
   const labels = {
-    fast: en ? `${referenceEn} faster` : `${referenceKo} W+3 빠름`,
-    slow: en ? `${referenceEn} slower` : `${referenceKo} W+3 느림`,
-    "normal-low": en ? `${referenceEn} usual range · absolute low` : `${referenceKo} W+3 평균권 · 절대수준 낮음`,
-    normal: en ? `${referenceEn} usual range` : `${referenceKo} W+3 평균권`,
+    fast: en ? `W+3 coverage above ${referenceEn}` : `${referenceKo}보다 W+3 확보율 높음`,
+    slow: en ? `W+3 coverage below ${referenceEn}` : `${referenceKo}보다 W+3 확보율 낮음`,
+    "normal-low": en ? `W+3 coverage near ${referenceEn} · absolute low` : `${referenceKo} 대비 평균권 · 절대수준 낮음`,
+    normal: en ? `W+3 coverage near ${referenceEn}` : `${referenceKo} 대비 W+3 확보율 평균권`,
     "no-bsa": en ? "No BSA reference" : "BSA 기준 없음"
   };
   const tones = { fast: "pos", slow: "neg", "normal-low": "warn", normal: "pos", "no-bsa": "neutral" };
   const headerTitle = usesBaselineReference
-    ? (en ? `Origin W+3 Pace (${baselineLabel} fallback)` : `선적지별 W+3 페이스 (${baselineLabel} 기준 대체)`)
-    : (en ? "Origin W+3 Pace vs Same-Weekday Average" : "선적지별 W+3 페이스 (같은 요일 평균 대비)");
+    ? (en ? `Origin W+3 Coverage (${baselineLabel} fallback)` : `선적지별 W+3 선행확보율 (${baselineLabel} 기준 대체)`)
+    : (en ? "Origin W+3 Coverage vs Same-Weekday Average" : "선적지별 W+3 선행확보율 (같은 요일 평균 대비)");
   const compareWindowKo = windowKo ? ` · ${windowKo} 기준` : "";
   const compareWindowEn = windowEn ? ` · ${windowEn} window` : "";
   const sampleNote = headline.sampleCount
@@ -5353,23 +5355,31 @@ function paceCell(row) {
       <span class="subline">${fmt(row.daysRemaining || 0)}${state.lang === "en" ? " days left" : "일 남음"}</span>
     ` : "";
   const weekday = weekdayStatus(row.weekdayW3Ratio, row.weekdayExpectedW3 || 0, row.weekdayW3Gap || 0);
+  const bsaCoverageReferenceCount = row.weekdayReferenceCount || row.weekdaySamples || 0;
+  const bsaCoverageReferenceMode = row.weekdayReferenceMode || (row.weekdaySamples ? "weekday" : "");
   const weekdayBlock = row.weekdaySamples && row.weekdayExpectedW3 > 0 ? `
       <span class="subline" title="${escapeAttr(state.lang === "en" ? "Same-weekday benchmark from prior snapshots for the same lead offset." : "동일 요일 이전 스냅샷의 같은 리드타임 기준 3W 평균입니다.")}">
         ${state.lang === "en" ? "Weekday" : "요일"} ${row.weekdayW3Ratio == null ? "-" : rpct(row.weekdayW3Ratio)} · ${state.lang === "en" ? "exp" : "기대"} ${fmt(row.weekdayExpectedW3 || 0)} · Gap ${fmt(row.weekdayW3Gap || 0)}
       </span>
     ` : "";
-  const bsaPaceBlock = row.weekdaySamples && row.weekdayBsaRatioAvg != null && row.weekdayBsaRatioCurrent != null ? (() => {
+  const bsaPaceBlock = bsaCoverageReferenceCount && row.weekdayBsaRatioAvg != null && row.weekdayBsaRatioCurrent != null ? (() => {
     const status = row.weekdayBsaPaceStatus || "no-bsa";
     const labelsMap = state.lang === "en"
-      ? { fast: "Pace fast", slow: "Pace slow", "normal-low": "Usual · low level", normal: "Pace usual", "no-bsa": "No BSA ratio" }
-      : { fast: "페이스 빠름", slow: "페이스 느림", "normal-low": "평균권 · 절대낮음", normal: "페이스 평균권", "no-bsa": "BSA 기준 없음" };
+      ? { fast: "W+3 cover high", slow: "W+3 cover low", "normal-low": "Cover usual · low level", normal: "W+3 cover usual", "no-bsa": "No BSA ratio" }
+      : { fast: "선행확보 높음", slow: "선행확보 낮음", "normal-low": "확보율 평균권 · 절대낮음", normal: "선행확보 평균권", "no-bsa": "BSA 기준 없음" };
     const toneMap = { fast: "pos", slow: "neg", "normal-low": "warn", normal: "pos", "no-bsa": "neutral" };
     const sign = row.weekdayBsaRatioGap >= 0 ? "+" : "";
     const gapText = `${sign}${row.weekdayBsaRatioGap.toFixed(1)}%p`;
+    const referenceLabel = bsaCoverageReferenceMode === "baseline"
+      ? (state.lang === "en" ? "base" : "기준")
+      : (state.lang === "en" ? "avg" : "평균");
+    const title = bsaCoverageReferenceMode === "baseline"
+      ? (state.lang === "en" ? "Current W+3/BSA vs fallback baseline W+3/BSA." : "현재 W+3/BSA와 대체 기준기간의 W+3/BSA를 비교합니다.")
+      : (state.lang === "en" ? "Current W+3/BSA vs same-weekday W+3/BSA average." : "현재 W+3/BSA와 같은 요일 평균 W+3/BSA를 비교합니다.");
     return `
-      <span class="${toneMap[status] || "neutral"}" title="${escapeAttr(state.lang === "en" ? "Current W+3/BSA vs same-weekday W+3/BSA average (±10%p band)." : "현재 W+3/BSA와 같은 요일 평균 W+3/BSA를 비교 (±10%p 기준)")}">${labelsMap[status]}</span>
+      <span class="${toneMap[status] || "neutral"}" title="${escapeAttr(title)}">${labelsMap[status]}</span>
       <span class="subline">
-        ${state.lang === "en" ? "now" : "현재"} ${row.weekdayBsaRatioCurrent.toFixed(1)}% · ${state.lang === "en" ? "avg" : "평균"} ${row.weekdayBsaRatioAvg.toFixed(1)}% · ${gapText}
+        ${state.lang === "en" ? "now" : "현재"} ${row.weekdayBsaRatioCurrent.toFixed(1)}% · ${referenceLabel} ${row.weekdayBsaRatioAvg.toFixed(1)}% · ${gapText}
       </span>
     `;
   })() : "";
