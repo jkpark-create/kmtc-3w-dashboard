@@ -15,11 +15,11 @@ const RISK_DEFS = {
     approach: "Gap 규모가 큰 구간부터 회복 가능 물량을 확인합니다."
   },
   "BSA 목표 Gap": {
-    meaning: "리드타임 트렌드는 정상이나 BSA/목표 선복 자체가 현재 부킹 흐름보다 큽니다.",
+    meaning: "전체 BKG 진행은 기준권이나 BSA/목표 선복 자체가 현재 부킹 흐름보다 큽니다.",
     approach: "영업 회복 후보로 채울 수 있는지와 BSA 조정 또는 대체 물량이 필요한지를 분리해 판단합니다."
   },
   "BSA 목표 Gap 구간의 감소 화주": {
-    meaning: "트렌드는 정상인 BSA Gap 구간 안에서 물량이 줄어든 화주입니다.",
+    meaning: "전체 BKG 진행은 기준권인 BSA Gap 구간 안에서 물량이 줄어든 화주입니다.",
     approach: "해당 화주 회복 가능 TEU가 BSA Gap 해소에 실제 기여하는지 확인합니다."
   },
   "3W 확보 부족": {
@@ -202,12 +202,12 @@ const RISK_EN = {
   },
   "BSA 목표 Gap": {
     label: "BSA Target Gap",
-    meaning: "Lead-time trend is normal, but the BSA or target space is larger than the current booking flow.",
+    meaning: "Total BKG maturity is within range, but the BSA or target space is larger than the current booking flow.",
     approach: "Separate customer recovery from substitute volume or BSA adjustment decisions."
   },
   "BSA 목표 Gap 구간의 감소 화주": {
     label: "Declining Customer in BSA Target Gap",
-    meaning: "A customer is declining in a route where the trend is normal but the BSA target is still high.",
+    meaning: "A customer is declining in a route where total BKG maturity is within range but the BSA target is still high.",
     approach: "Check whether the recoverable TEU can materially contribute to the BSA gap."
   },
   "리드타임 트렌드 부족": {
@@ -319,7 +319,7 @@ const I18N = {
     },
     headers: {
       route: "구간",
-      trend: "트렌드/속도/선행확보",
+      trend: "BKG 진행/속도/3W",
       action: "권장 조치",
       judgment: "판단",
       shipper: "화주",
@@ -400,7 +400,7 @@ const I18N = {
     },
     headers: {
       route: "Route",
-      trend: "Trend / Pace / W+3",
+      trend: "BKG Pace / W+3",
       action: "Recommended Action",
       judgment: "Judgment",
       shipper: "Customer",
@@ -722,8 +722,8 @@ function riskFilterHelp(type) {
 function renderGuide() {
   els.guideTitle.textContent = state.lang === "en" ? "OBT Exception Monitor Guide" : "OBT Exception Monitor 사용 가이드";
   els.guideSubtitle.textContent = state.lang === "en"
-    ? "How to read lead-time trend, BSA gap, customer recovery, and sales-owner actions"
-    : "리드타임 트렌드, BSA Gap, 화주 회복, 영업사원 조치를 읽는 방법";
+    ? "How to read BKG pace, W+3 coverage, BSA gap, customer recovery, and sales-owner actions"
+    : "BKG 진행, 3W 선행확보, BSA Gap, 화주 회복, 영업사원 조치를 읽는 방법";
   els.guideBody.innerHTML = state.lang === "en" ? guideHtmlEn() : guideHtmlKo();
 }
 
@@ -748,7 +748,7 @@ function guideHtmlKo() {
       <ul>
         <li><strong>전체 BKG</strong>: 선택된 현재 기간의 <code>fst</code> 합계입니다.</li>
         <li><strong>BSA</strong>: 선택기간 총 BSA TEU입니다. 카드의 보조 문구에 BSA 대비 BKG 비율과 Gap이 함께 표시되며, 비율이 낮으면 선복 미소석 위험이 큽니다.</li>
-        <li><strong>확인 필요 구간</strong>: 리드타임 트렌드가 낮거나 최근 부킹속도로 예상 Gap을 채우기 어려운 Route 수입니다. 카드 보조문구에서 트렌드 원인, 속도 원인, 예상 Gap을 함께 확인합니다.</li>
+        <li><strong>확인 필요 구간</strong>: 전체 BKG 진행이 기준보다 낮거나, 최근 부킹속도로 예상 Gap을 채우기 어렵거나, W+3/BSA 선행확보율이 낮은 Route 수입니다. 카드 보조문구에서 BKG 진행, 속도, 3W 선행확보, 예상 Gap을 함께 확인합니다.</li>
         <li><strong>P1 구간</strong>: 오늘 먼저 원인을 확인해야 하는 우선 Route 수입니다.</li>
         <li><strong>3W Booking TEU</strong>: <code>w3_fst</code> 기반 3주전 선행 부킹량입니다.</li>
         <li><strong>감소/이탈 화주</strong>: 회복 또는 재확보가 필요한 화주 단위 후보입니다.</li>
@@ -757,7 +757,7 @@ function guideHtmlKo() {
     <section>
       <h3>4. P1/P2/P3</h3>
       <ul>
-        <li><strong>P1</strong>: 당일 확인이 필요한 즉시 대응 구간입니다. 리드타임 지연, 큰 BSA Gap, 핵심 화주 감소가 강하게 반영됩니다.</li>
+        <li><strong>P1</strong>: 당일 확인이 필요한 즉시 대응 구간입니다. BKG 진행 지연, 3W 선행확보 부족, 큰 BSA Gap, 핵심 화주 감소가 강하게 반영됩니다.</li>
         <li><strong>P2</strong>: 우선 확인 대상입니다. 아직 회복 시간이 있지만 영업 조치가 필요합니다.</li>
         <li><strong>P3</strong>: 관찰 대상입니다. 영향이 작거나 참고 신호입니다.</li>
       </ul>
@@ -767,7 +767,7 @@ function guideHtmlKo() {
       <ul>
         <li><strong>BKG</strong>: 현재 전체 BKG와 현재 Active 화주 수를 보여줍니다.</li>
         <li><strong>BSA</strong>: 선택기간 BSA TEU, BSA활용률, 남은 기간 예상 Gap입니다.</li>
-        <li><strong>트렌드/속도/선행확보</strong>: W+1/W+2/W+3별 포트 기준 성숙도, 최근 일별 부킹속도, W+3/BSA 선행확보율입니다.</li>
+        <li><strong>BKG 진행/속도/3W</strong>: W+1/W+2/W+3별 전체 BKG 진행률, 최근 일별 부킹속도, W+3/BSA 선행확보율입니다.</li>
         <li><strong>3W Signal</strong>: <code>w3_fst</code> TEU, 3W 화주 수, <code>w3_norm_lst / w3_fst</code> 기반 실선적률과 Late 의존도를 보여줍니다.</li>
         <li><strong>판단</strong>: 대표 리스크입니다. 마우스를 올리면 정의와 접근 방식이 표시됩니다.</li>
       </ul>
@@ -776,8 +776,8 @@ function guideHtmlKo() {
       <h3>6. 리스크 유형</h3>
       <p>세부 태그는 많지만 화면에서는 6개 상위 유형으로 묶습니다. 세부 원인은 칩으로 유지되어 추적할 수 있습니다.</p>
       <ul>
-        <li><strong>리드타임/속도</strong>: 현재 부킹이 같은 시점 기대치보다 느린 상태입니다.</li>
-        <li><strong>BSA/선복 Gap</strong>: 트렌드는 정상이어도 BSA 목표 자체가 높아 Gap이 남는 상태를 포함합니다.</li>
+        <li><strong>BKG 진행/속도/3W</strong>: 현재 부킹이 같은 시점 기대치보다 느리거나 W+3 선행확보가 낮은 상태입니다.</li>
+        <li><strong>BSA/선복 Gap</strong>: 전체 BKG 진행은 기준권이어도 BSA 목표 자체가 높아 Gap이 남는 상태를 포함합니다.</li>
         <li><strong>화주 기반 감소</strong>: 이탈, 급감, 감소, Active 화주수 감소입니다.</li>
         <li><strong>3W 선행 부킹</strong>: 3주전 선행 부킹 약화입니다.</li>
         <li><strong>수익/품질</strong>: 고수익, 취소, Late 의존 리스크입니다.</li>
@@ -786,7 +786,7 @@ function guideHtmlKo() {
     </section>
     <section>
       <h3>7. 영업사원별 조치</h3>
-      <p>담당자별 카드는 상태를 빠르게 읽기 위한 영역입니다. 영향 TEU, 관리 Gap, 트렌드 지연 구간, 회복/재확보 화주 수, 대표 구간을 함께 봅니다.</p>
+      <p>담당자별 카드는 상태를 빠르게 읽기 위한 영역입니다. 영향 TEU, 관리 Gap, BKG 진행/속도 지연 구간, 회복/재확보 화주 수, 대표 구간을 함께 봅니다.</p>
       <ul>
         <li><strong>즉시 대응</strong>: P1이 많거나 Gap/트렌드 위험이 커 당일 대응이 필요합니다.</li>
         <li><strong>우선 확인</strong>: 회복 가능성이 있으나 조치 순위가 높은 상태입니다.</li>
@@ -799,7 +799,7 @@ function guideHtmlKo() {
       <ol>
         <li>대응 시점을 차주, 차차주, 3주뒤로 나눠 확인합니다.</li>
         <li>도착국가/도착포트 필터로 중요 구간을 좁힙니다.</li>
-        <li>구간별 판단이 리드타임 문제인지, BSA 목표 Gap인지 구분합니다.</li>
+        <li>구간별 판단이 BKG 진행 문제인지, 3W 선행확보 부족인지, BSA 목표 Gap인지 구분합니다.</li>
         <li>영업사원별 카드에서 담당자와 조치 방향을 확인합니다.</li>
         <li>화주 단위 Action List에서 실제 접촉 화주를 확인합니다.</li>
       </ol>
@@ -828,7 +828,7 @@ function guideHtmlEn() {
       <ul>
         <li><strong>Total BKG</strong>: selected-period <code>fst</code>.</li>
         <li><strong>BKG vs BSA</strong>: current total BKG divided by selected-period BSA. Lower values indicate space-utilization risk.</li>
-        <li><strong>Routes To Check</strong>: route count where lead-time maturity is behind benchmark or recent pickup pace is unlikely to close the projected gap. The card note splits trend cause, pace cause, and projected gap.</li>
+        <li><strong>Routes To Check</strong>: route count where total BKG maturity is behind benchmark, recent pickup pace is unlikely to close the projected gap, or W+3/BSA advance coverage is low. The card note splits BKG pace, pickup pace, W+3 coverage, and projected gap.</li>
         <li><strong>P1 Routes</strong>: priority routes that should be checked first today.</li>
         <li><strong>3W Booking TEU</strong>: advance-booked TEU from <code>w3_fst</code>.</li>
         <li><strong>Declining/Lost Customers</strong>: customer-level candidates for recovery or win-back.</li>
@@ -837,7 +837,7 @@ function guideHtmlEn() {
     <section>
       <h3>4. P1/P2/P3</h3>
       <ul>
-        <li><strong>P1</strong>: immediate action. Strong lead-time delay, large BSA gap, or key-customer decline.</li>
+        <li><strong>P1</strong>: immediate action. Strong BKG delay, weak W+3 coverage, large BSA gap, or key-customer decline.</li>
         <li><strong>P2</strong>: priority check. There is still time, but sales action is needed.</li>
         <li><strong>P3</strong>: watch. Lower-impact or reference signal.</li>
       </ul>
@@ -847,7 +847,7 @@ function guideHtmlEn() {
       <ul>
         <li><strong>BKG</strong>: current total BKG and active customer count.</li>
         <li><strong>BSA</strong>: selected-period BSA TEU, utilization, and projected remaining gap.</li>
-        <li><strong>Trend / Pace / W+3</strong>: port-level lead-time maturity, recent daily pickup, and W+3/BSA advance coverage.</li>
+        <li><strong>BKG Pace / W+3</strong>: total BKG maturity, recent daily pickup, and W+3/BSA advance coverage.</li>
         <li><strong>3W Signal</strong>: <code>w3_fst</code> TEU, 3W customer count, LFT rate from <code>w3_norm_lst / w3_fst</code>, and Late dependency.</li>
         <li><strong>Judgment</strong>: primary risk. Hover over a chip to see definition and approach.</li>
       </ul>
@@ -856,8 +856,8 @@ function guideHtmlEn() {
       <h3>6. Risk Groups</h3>
       <p>Detailed tags remain available, but the dashboard groups them into six executive risk groups.</p>
       <ul>
-        <li><strong>Lead Time / Pace</strong>: current booking is behind expected maturity for the same timing.</li>
-        <li><strong>BSA / Space Gap</strong>: includes cases where trend is normal but BSA target is still high.</li>
+        <li><strong>BKG Pace / W+3</strong>: current booking is behind expected maturity for the same timing, or W+3 advance coverage is low.</li>
+        <li><strong>BSA / Space Gap</strong>: includes cases where total BKG maturity is within range but the BSA target is still high.</li>
         <li><strong>Customer Base Loss</strong>: churn, sharp decline, decline, or fewer active customers.</li>
         <li><strong>3W Advance Booking</strong>: weakened three-week advance booking.</li>
         <li><strong>Profit / Quality</strong>: high-profit, cancellation, or Late dependency risk.</li>
@@ -3131,6 +3131,15 @@ function buildRouteExceptions(currentRoutes, baselineRoutes, shipperExceptions, 
       issues.push("3W/BSA 낮음");
       score += horizonWeight("w3Bsa", 28);
     }
+    const bsaCoverageReferenceCount = context.weekdayReferenceCount || context.weekdaySamples || 0;
+    const hasBsaCoverageBenchmark = bsaCoverageReferenceCount >= 1 && context.weekdayBsaRatioCurrent != null && context.weekdayBsaRatioAvg != null;
+    if (hasBsaCoverageBenchmark && context.weekdayBsaPaceStatus === "slow" && bsaTeu >= (context.portBsaThreshold || 100) && state.filters.horizon !== "w1") {
+      if (!issues.includes("3W 확보 부족")) issues.push("3W 확보 부족");
+      score += horizonWeight("w3Bsa", 30);
+    } else if (hasBsaCoverageBenchmark && context.weekdayBsaPaceStatus === "normal-low" && bsaTeu >= (context.portBsaThreshold || 100) && !issues.includes("3W/BSA 낮음")) {
+      issues.push("3W/BSA 낮음");
+      score += horizonWeight("w3Bsa", 18);
+    }
     if (baseTeu >= 10 && deltaPct <= -0.25 && Math.abs(delta) >= 8) {
       issues.push("TEU 감소");
       score += (30 + Math.min(20, Math.abs(deltaPct) * 30)) * absoluteFactor;
@@ -3483,7 +3492,7 @@ function salesFocusAction(row) {
   const code = salesStatusCode(row);
   const delayRoutes = row.delayRoutes || row.trendRoutes || row.speedRoutes || 0;
   if (state.lang === "en") {
-    if (delayRoutes && row.bsaGap > 0) return "Start with delayed trend/pace routes and separate recovery from substitute volume.";
+    if (delayRoutes && row.bsaGap > 0) return "Start with delayed BKG pace routes and separate recovery from substitute volume.";
     if (row.bsaGap >= 150) return "Split the BSA gap into recoverable customer volume and substitute volume.";
     if (code === "우선 확인" && row.winBack > row.recovery) return "Prioritize win-back feasibility and confirm competitor-switch reasons.";
     if (code === "우선 확인" && row.recovery > 0) return "Check recoverable residual plans for declining customers first.";
@@ -3492,7 +3501,7 @@ function salesFocusAction(row) {
     if (row.advance > 0) return "Convert missing 3W advance-booking customers earlier.";
     return "Review the top route and customer state before outreach.";
   }
-  if (delayRoutes && row.bsaGap > 0) return "트렌드/속도 지연 구간의 회복/대체 후보를 먼저 확인";
+  if (delayRoutes && row.bsaGap > 0) return "BKG 진행/속도 지연 구간의 회복/대체 후보를 먼저 확인";
   if (row.bsaGap >= 150) return "관련 BSA Gap을 회복 후보와 대체 물량으로 분리";
   if (code === "우선 확인" && row.winBack > row.recovery) return "이탈 화주 재확보 가능성과 경쟁사 전환 사유를 우선 확인";
   if (code === "우선 확인" && row.recovery > 0) return "감소 화주의 회복 가능 잔여 물량을 먼저 확인";
@@ -3648,12 +3657,22 @@ function classifyRouteFocus({ issues, context, impactTeu, bsaShortfall, currentT
   const speedBad = ["stalled", "slow", "short"].includes(context.status);
   const trendNormal = context.leadTrendStatus === "trend-ok";
   const leadOffset = context.leadTrendWorst ? context.leadTrendWorst.leadOffset : null;
+  const bsaCoverageReferenceCount = context.weekdayReferenceCount || context.weekdaySamples || 0;
+  const bsaCoverageSlow = bsaCoverageReferenceCount >= 1 && context.weekdayBsaPaceStatus === "slow";
   if (["trend-short", "trend-slow"].includes(context.leadTrendStatus) && (context.leadTrendGap || 0) >= Math.max(impactThreshold, bsaTeu * .08)) {
     return {
       priority: context.leadTrendStatus === "trend-short" ? "P1" : "P2",
       reason: "리드타임 트렌드 부족",
       action: routeAction(actionProfile, "리드타임별 회복 후보 확인"),
       bonus: context.leadTrendStatus === "trend-short" ? 30 : 18
+    };
+  }
+  if (bsaTeu >= bsaThreshold && bsaCoverageSlow && state.filters.horizon !== "w1") {
+    return {
+      priority: "P2",
+      reason: "3W 확보 부족",
+      action: routeAction(actionProfile, "선행부킹 미유입 화주 확인"),
+      bonus: 22
     };
   }
   if (bsaTeu >= bsaThreshold && trendNormal && speedBad && projectedGap >= Math.max(impactThreshold, bsaTeu * .15)) {
@@ -3999,8 +4018,8 @@ function renderRoutes(analysis) {
       ? `all ${fmt(analysis.routeExceptions.length)} / focus ${fmt(analysis.totals.importantRouteExceptions)}`
       : `전체 ${fmt(analysis.routeExceptions.length)} / 중요 ${fmt(analysis.totals.importantRouteExceptions)}`);
   els.routeSubtitle.textContent = state.lang === "en"
-    ? `${analysis.periods.label} vs ${analysis.periods.baselineLabel} · ${routeCountText} risk routes · ${baselineNote} · lead-time trend + gap judgment · ${routeMode}`
-    : `${analysis.periods.label} vs ${analysis.periods.baselineLabel} · 문제 구간 ${routeCountText} · ${baselineNote} · 리드타임 트렌드+Gap 판단 · ${routeMode}`;
+    ? `${analysis.periods.label} vs ${analysis.periods.baselineLabel} · ${routeCountText} risk routes · ${baselineNote} · BKG pace + W+3 coverage + gap judgment · ${routeMode}`
+    : `${analysis.periods.label} vs ${analysis.periods.baselineLabel} · 문제 구간 ${routeCountText} · ${baselineNote} · BKG 진행+3W 확보+Gap 판단 · ${routeMode}`;
 
   if (!rows.length) {
     els.routeTable.innerHTML = emptyRow(7, state.lang === "en" ? "No exceptions for the selected filters." : "선택 조건에서 특이사항이 없습니다.");
@@ -4070,7 +4089,7 @@ function renderSales(analysis) {
           <strong>${fmt(row.actionGap)}</strong>
         </div>
         <div>
-          <span class="metric-label" title="${escapeAttr(state.lang === "en" ? "Routes behind either lead-time trend benchmarks or recent booking pace. If this is zero, the owner is flagged mainly by customer decline, churn, 3W booking weakness, or BSA target gap." : "리드타임 트렌드 또는 최근 부킹속도 기준보다 느린 구간 수입니다. 0이면 담당자는 주로 화주 감소/이탈, 3W 선행부킹 약화, BSA 목표 Gap 때문에 조치 대상입니다.")}">${t("labels.trend")}</span>
+          <span class="metric-label" title="${escapeAttr(state.lang === "en" ? "Routes behind either total BKG maturity benchmarks or recent booking pace. If this is zero, the owner is flagged mainly by customer decline, churn, W+3 booking weakness, or BSA target gap." : "전체 BKG 진행 또는 최근 부킹속도 기준보다 느린 구간 수입니다. 0이면 담당자는 주로 화주 감소/이탈, 3W 선행부킹 약화, BSA 목표 Gap 때문에 조치 대상입니다.")}">${t("labels.trend")}</span>
           <strong>${fmt(row.delayRoutes || 0)}${state.lang === "en" ? "" : "구간"}</strong>
           <span class="metric-note">${state.lang === "en" ? `trend ${fmt(row.trendRoutes)} · pace ${fmt(row.speedRoutes)}` : `트렌드 ${fmt(row.trendRoutes)} · 속도 ${fmt(row.speedRoutes)}`}</span>
         </div>
@@ -5260,7 +5279,7 @@ function kpiHelp(key) {
   const ko = {
     totalTeu: "현재 선택 기간의 fst 합계입니다. 기존 -3W Dashboard의 전체BKG와 같은 기준입니다.",
     bsaUtil: "현재 선택된 주차/월 조건의 전체 BKG(fst)를 같은 기간 BSA TEU로 나눈 비율입니다.",
-    paceRisk: "현재 선택 조건에서 확인이 필요한 Route 수입니다. 리드타임 트렌드 부족은 같은 W+시점/도착포트 기준보다 현재 BKG 성숙도가 낮은 구간이고, 속도 부족은 최근 일별 증가속도로 남은 BSA Gap을 채우기 어려운 구간입니다. 숫자가 높으면 구간 테이블에서 P1/P2와 예상 Gap이 큰 Route를 먼저 확인하세요.",
+    paceRisk: "현재 선택 조건에서 확인이 필요한 Route 수입니다. BKG 진행 부족은 같은 W+시점/도착포트 기준보다 현재 BKG 성숙도가 낮은 구간이고, 속도 부족은 최근 일별 증가속도로 남은 BSA Gap을 채우기 어려운 구간입니다. 여기에 W+3/BSA 선행확보가 기준보다 낮은 구간도 포함됩니다. 숫자가 높으면 구간 테이블에서 P1/P2, 3W 부킹 부족, 예상 Gap이 큰 Route를 먼저 확인하세요.",
     p1Routes: "오늘 먼저 원인을 확인해야 하는 P1 Route 수입니다. P1 조치 건수에는 구간 이슈와 화주 Action 후보가 함께 포함됩니다.",
     topAction: "현재 필터에서 상위 조치 후보로 노출되는 건수입니다.",
     w3Teu: "shipper.w3_fst 기반 3주전 선행 부킹 TEU 합계입니다.",
@@ -5273,7 +5292,7 @@ function kpiHelp(key) {
   const en = {
     totalTeu: "Sum of fst for the selected current period, matching Total BKG in the existing -3W Dashboard.",
     bsaUtil: "Current total BKG (fst) divided by BSA TEU for the same selected week or month period.",
-    paceRisk: "Number of routes that need checking under the current filters. Lead-time trend means current BKG maturity is behind the same W+ stage and destination-port benchmark; pace means recent daily pickup is unlikely to close the remaining BSA gap. Start with P1/P2 routes and the largest projected gaps in the route table.",
+    paceRisk: "Number of routes that need checking under the current filters. BKG pace means current BKG maturity is behind the same W+ stage and destination-port benchmark; pickup pace means recent daily pickup is unlikely to close the remaining BSA gap. Routes with low W+3/BSA advance coverage are also included. Start with P1/P2 routes, W+3 booking-low rows, and the largest projected gaps in the route table.",
     p1Routes: "Number of priority routes to check first today. P1 actions include both route issues and customer action candidates.",
     topAction: "Number of top action candidates shown under the current filters.",
     w3Teu: "Sum of 3W advance-booked TEU from shipper.w3_fst.",
@@ -5317,8 +5336,8 @@ function guideRiskGroupApproach(group) {
 
 function paceCell(row) {
   const trendLabels = state.lang === "en"
-    ? { "trend-short": "Trend short", "trend-slow": "Trend slow", "trend-ok": "Trend normal" }
-    : { "trend-short": "트렌드 부족", "trend-slow": "트렌드 느림", "trend-ok": "트렌드 정상" };
+    ? { "trend-short": "BKG short", "trend-slow": "BKG slow", "trend-ok": "BKG normal" }
+    : { "trend-short": "BKG 진행 부족", "trend-slow": "BKG 진행 느림", "trend-ok": "BKG 진행 정상" };
   const hasTrend = row.leadTrendStatus && row.leadTrendStatus !== "no-trend";
   const trendDisabledNote = row.leadTrendDisabledReason
     ? leadTimeTrendText({ reason: row.leadTrendDisabledReason }, "short")
@@ -5342,9 +5361,25 @@ function paceCell(row) {
     : row.leadTrendStatus === "trend-slow"
       ? "warn"
       : "pos";
+  const bsaCoverageReferenceCount = row.weekdayReferenceCount || row.weekdaySamples || 0;
+  const bsaCoverageReferenceMode = row.weekdayReferenceMode || (row.weekdaySamples ? "weekday" : "");
+  const hasBsaCoverageSignal = Boolean(bsaCoverageReferenceCount && row.weekdayBsaRatioAvg != null && row.weekdayBsaRatioCurrent != null);
+  const bsaCoverageStatus = hasBsaCoverageSignal ? (row.weekdayBsaPaceStatus || "no-bsa") : "";
+  const coveragePrimaryLabel = bsaCoverageStatus === "slow"
+    ? (state.lang === "en" ? "W+3 booking low" : "3W 부킹 부족")
+    : bsaCoverageStatus === "normal-low"
+      ? (state.lang === "en" ? "W+3 booking low level" : "3W 부킹 낮음")
+      : "";
+  const bkgTrendLabel = trendLabels[row.leadTrendStatus] || (state.lang === "en" ? "BKG check" : "BKG 확인");
+  const primaryTrendLabel = coveragePrimaryLabel || bkgTrendLabel;
+  const primaryTrendTone = bsaCoverageStatus === "slow" ? "neg" : bsaCoverageStatus === "normal-low" ? "warn" : trendTone;
+  const trendSubline = coveragePrimaryLabel ? `${bkgTrendLabel} · ${leadTrendLabelText(row)}` : leadTrendLabelText(row);
+  const trendTitle = coveragePrimaryLabel
+    ? (state.lang === "en" ? "W+3 advance booking is below the reference even if total BKG maturity can be normal." : "전체 BKG 진행이 정상이어도 W+3 선행 부킹이 기준보다 적게 들어온 상태입니다.")
+    : (state.lang === "en" ? "Total BKG maturity compared with destination-port benchmark." : "전체 BKG의 같은 리드타임 진행률을 도착포트 기준과 비교합니다.");
   const trendBlock = hasTrend ? `
-      <span class="${trendTone}" title="${escapeAttr(state.lang === "en" ? "Lead-time maturity compared with destination-port benchmark." : "도착포트별 같은 리드타임 부킹 성숙도 대비 상태입니다.")}">${trendLabels[row.leadTrendStatus] || (state.lang === "en" ? "Trend check" : "트렌드 확인")}</span>
-      <span class="subline">${leadTrendLabelText(row)}</span>
+      <span class="${primaryTrendTone}" title="${escapeAttr(trendTitle)}">${primaryTrendLabel}</span>
+      <span class="subline">${trendSubline}</span>
     ` : "";
   const disabledTrendBlock = trendDisabledNote ? `
       <span class="warn" title="${escapeAttr(leadTimeTrendText({ reason: row.leadTrendDisabledReason }, "detail"))}">${trendDisabledNote}</span>
@@ -5355,8 +5390,6 @@ function paceCell(row) {
       <span class="subline">${fmt(row.daysRemaining || 0)}${state.lang === "en" ? " days left" : "일 남음"}</span>
     ` : "";
   const weekday = weekdayStatus(row.weekdayW3Ratio, row.weekdayExpectedW3 || 0, row.weekdayW3Gap || 0);
-  const bsaCoverageReferenceCount = row.weekdayReferenceCount || row.weekdaySamples || 0;
-  const bsaCoverageReferenceMode = row.weekdayReferenceMode || (row.weekdaySamples ? "weekday" : "");
   const weekdayBlock = row.weekdaySamples && row.weekdayExpectedW3 > 0 ? `
       <span class="subline" title="${escapeAttr(state.lang === "en" ? "Same-weekday benchmark from prior snapshots for the same lead offset." : "동일 요일 이전 스냅샷의 같은 리드타임 기준 3W 평균입니다.")}">
         ${state.lang === "en" ? "Weekday" : "요일"} ${row.weekdayW3Ratio == null ? "-" : rpct(row.weekdayW3Ratio)} · ${state.lang === "en" ? "exp" : "기대"} ${fmt(row.weekdayExpectedW3 || 0)} · Gap ${fmt(row.weekdayW3Gap || 0)}
