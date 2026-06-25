@@ -2,7 +2,7 @@
 
 ## 1. 시스템 개요
 
-**목적**: 3주전(WOS-3) 기준 부킹 현황, 소석률, 수익성 분석 대시보드
+**목적**: 3주전(WOS-3) 기준 부킹 현황, BSA활용률, 수익성 분석 대시보드
 **배포**: GitHub Pages 정적 사이트 (https://jkpark-create.github.io/kmtc-3w-dashboard-web/)
 **데이터 소스**: Tableau Server (tableau.ekmtc.com) → Google Drive → GitHub Pages
 **자동화**: Windows Task Scheduler (평일 10:00 / 매일 10:00)
@@ -124,14 +124,14 @@
 - 글로벌 필터(팀/선적지/선적포트/도착국가/도착포트/월/주차/구간수익/등급/영업사원)는 `filterShipper(month)`를 통해 먼저 적용된다.
 - Tab2/shipper 기반 화면에서 `구간수익=구간별고수익/구간별저수익`은 해당 구간수익을 가진 화주를 선별하는 용도다. BKG/실선적 컬럼은 선별된 화주의 전체 `w3_fst`/`w3_norm_lst`를 보여주고, `구간별고수익` 컬럼은 `w3_route_hi_fst`, CM1/TEU는 구간수익 필터에 맞춘 `rhc/rhn`(또는 route-high/total 차감값)을 사용한다.
 - 매트릭스와 상세 테이블은 같은 파생 rows를 공유한다. 매트릭스는 WOS-3 BKG 규모를 빠르게 보기 위한 요약이고, 상세 테이블은 실선적률/캔슬률/구간별고수익/CM1 확인용이다.
-- BSA는 영업사원 단위로 배분되지 않으므로 `영업사원×도착국가`에는 소석률을 표시하지 않는다. 소석률은 지역별/도착국가별 전체 관점에서만 해석한다.
+- BSA는 영업사원 단위로 배분되지 않으므로 `영업사원×도착국가`에는 BSA활용률을 표시하지 않는다. BSA활용률은 지역별/도착국가별 전체 관점에서만 해석한다.
 
 **집계 메트릭** (monthly/weekly 공통):
 
 | 메트릭 | 의미 |
 |--------|------|
 | fst | 전체 BKG (FST_TEU 기준) |
-| norm_lst | 실선적 — 전체 Normal (LST_TEU 기준, 소석률 계산용) |
+| norm_lst | 실선적 — 전체 Normal (LST_TEU 기준, BSA활용률 계산용) |
 | hi_fst | 고수익화주 BKG (`고수익태그` 기준, FST_TEU) |
 | hi_norm_lst | 고수익화주 실선적 (`고수익태그` 기준, LST_TEU) |
 | route_hi_fst | 구간별 고수익 BKG (`고/저` 기준, FST_TEU) |
@@ -193,8 +193,8 @@ w3Ship   = profitSum(fd, 'w3_norm_lst')
 
 `fd`는 월 전체 선택 시 `filterMonthly(month)`, 주차 선택 시 `filterWeekly(month)` 결과다. 팀/선적지/선적포트/도착지/도착포트/월/주차 필터가 적용된다. `구간수익` 필터는 `profitSum()`에서 `route_hi_*` 메트릭을 기준으로 고수익/저수익 수치를 조정한다. 단, Tab 1의 monthly/weekly 집계에는 화주/영업사원 차원이 없으므로 `등급`과 `영업사원` 필터는 shipper 기반 화면에서 주로 반영된다.
 
-**소석률 계산 기준**:
-- 소석률 = norm_lst(전체 Normal 실선적) / BSA
+**BSA활용률 계산 기준**:
+- BSA활용률 = norm_lst(전체 Normal 실선적) / BSA
 - norm_lst는 Lead_time 무관하게 **모든 Normal 부킹**의 LST_TEU 합계
 - 구간별고수익비중 = w3_route_hi_fst / w3_fst
 - WOS 단계별 실선적률 = LST_TEU / FST_TEU. 최종 선적 TEU가 최초 부킹 TEU보다 커지면 100%를 넘을 수 있음
@@ -323,14 +323,14 @@ WW = diff + 1
 
 ## 8. 대시보드 탭 구조
 
-### Tab 1: 소석률 현황
-- KPI 카드: 전체BKG, 실선적, 3주전BKG, 3주전실선적, BSA, 소석률, 실선적률, CM1/TEU
-- 월별 바차트: 실선적 vs BSA + 소석률/3주전BKG/BSA/구간별고수익비중 라인
-- 도착지별 소석률 수평 바
+### Tab 1: BSA활용률 현황
+- KPI 카드: 전체BKG, 실선적, 3주전BKG, 3주전실선적, BSA, BSA활용률, 실선적률, CM1/TEU
+- 월별 바차트: 실선적 vs BSA + BSA활용률/3주전BKG/BSA/구간별고수익비중 라인
+- 도착지별 BSA활용률 수평 바
 - Image-8 요약 테이블 (최근 3개월 × 도착지별)
 
 ### Tab 2: 부킹 트렌드 (Sub-tabs)
-- **지역별**: 3주전 BKG + BSA/소석률 테이블, 주차별 차트, 구간별 고수익 비중 + 고수익화주 비중 추이
+- **지역별**: 3주전 BKG + BSA/BSA활용률 테이블, 주차별 차트, 구간별 고수익 비중 + 고수익화주 비중 추이
 - **화주별**: 화주별 BKG/실선적/CM1/영업사원 테이블. 화주명은 줄바꿈 없이 한 줄로 표시, 영업사원은 3명 이상일 때 앞 2명 + `...`로 표시
 - **영업사원별**: 영업사원별 BKG/실선적/화주수/CM1 + 영업사원×도착국가 분석
   - `영업사원별 실적`: Salesman_POR 기준 WOS-3 BKG, 실선적, 실선적률, 구간별 고수익, CM1/TEU
@@ -339,7 +339,7 @@ WW = diff + 1
   - `영업사원×도착국가 WOS-3 BKG 매트릭스`: 행=영업사원, 열=도착국가, 셀=WOS-3 BKG TEU. 색상은 셀 값/최대 셀 값 비율로 진하게 표시
   - `영업사원별 도착국가 상세`: Salesman_POR+dest 조합별 화주수, BKG, 실선적, 실선적률, 캔슬, 캔슬률, 구간별고수익, 구간별고수익%, CM1, CM1/TEU
   - 목적: 영업사원별 물량이 어느 도착국가에 집중되어 있는지, 큰 물량 조합의 실선적/캔슬/수익성 리스크가 있는지 확인
-  - 주의: 도착국가 기준(`dest`)이며 도착포트(`dst_port`) 기준이 아님. BSA/소석률은 영업사원별 배분 근거가 없어 표시하지 않음
+  - 주의: 도착국가 기준(`dest`)이며 도착포트(`dst_port`) 기준이 아님. BSA/BSA활용률은 영업사원별 배분 근거가 없어 표시하지 않음
 - **AB vs CD**: A+B/C+D 등급별 BKG/실선적률 비교 + Analysis Guide
 
 ### Tab 3: 전환 퍼널
@@ -464,7 +464,7 @@ WW = diff + 1
   - `해석 방법`: 높거나 낮을 때의 의미, 같이 봐야 할 보조 지표
   - `다음 행동`: 이상치 발견 시 이어서 볼 탭/필터/관리 후보
 - 혼동 가능성이 큰 지표는 반드시 구분해서 설명한다.
-  - 소석률 = 실선적(Normal) / BSA
+  - BSA활용률 = 실선적(Normal) / BSA
   - 3주전BKG/BSA = WOS-3 BKG / BSA
   - 실선적률 = WOS-3 실선적 / WOS-3 BKG
   - 고수익화주 = 선적지 기준 화주 태그
@@ -494,7 +494,7 @@ WW = diff + 1
 2. **data.json 크기**: `columns-v1` 컬럼형 JSON으로 약 47MB 수준(2026-05-12 기준). 생성/배포 시 95MB 안전선을 넘으면 중단해 GitHub 100MB 제한 push 실패를 방지
 3. **445 Calendar 하드코딩**: 2025~2027년 시작일이 코드에 고정. 2028년 이후 추가 필요
 4. **Grade 분기 갱신**: Tableau grade 뷰에서 분기별 자동 다운로드. 뷰 구조 변경 시 컬럼 매칭 로직 수정 필요
-5. **영업사원별 BSA 미배분**: BSA는 루트/도착국가/포트 기준 선복 데이터이며 영업사원별 배분 필드가 없음. 영업사원×도착국가 분석에서는 소석률을 계산하지 않음
+5. **영업사원별 BSA 미배분**: BSA는 루트/도착국가/포트 기준 선복 데이터이며 영업사원별 배분 필드가 없음. 영업사원×도착국가 분석에서는 BSA활용률을 계산하지 않음
 
 ---
 
@@ -505,7 +505,7 @@ WW = diff + 1
 | BSA 팀 필드 연결 | c9a72f8 / fbc3721 | BSA raw의 `Sales Team`을 canonical `team`으로 사용, BSA 재다운로드 및 data.json 배포 |
 | Grade 자동 다운로드 | ef411a5 | `booking snapshot.xlsx` 의존 제거 → Tableau 분기별 다운로드 |
 | Grade 기본값 변경 | a083517 | 미분류 화주: 'C+D' → '' (빈값) |
-| 소석률 계산 수정 | 0b194c0 | norm_lst = 전체 Normal (기존: WOS-3 Normal만) |
+| BSA활용률 계산 수정 | 0b194c0 | norm_lst = 전체 Normal (기존: WOS-3 Normal만) |
 | 고수익태그 수정 | a083517 | 전역 최신월 → 화주+선적지별 최신월 기준 |
 | BSA 집계 수정 | ee0ecba | teu_bsa 필드 누락 처리 + 0값 레코드 제거 |
 | 2025 BSA 백필 | 이번 변경 | BSA CSV export 필터를 `YYYY`/`YYYYMM` 캡션 파라미터로 수정, 2025 summary에 BSA 62,752 rows 반영 |

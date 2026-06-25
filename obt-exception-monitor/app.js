@@ -668,7 +668,7 @@ function applyLanguage() {
   const routeHeadTips = [
     state.lang === "ko" ? "Origin/POL에서 도착국가/도착포트까지의 구간입니다." : "Lane from origin/POL to destination country/port.",
     state.lang === "ko" ? "현재 선택 기간의 fst, 즉 전체 BKG 합계입니다." : "Sum of fst, meaning total BKG for the selected current period.",
-    state.lang === "ko" ? "선택 주차의 BSA TEU와 현재 전체 BKG 대비 소석/예상 Gap입니다." : "BSA TEU, utilization against total BKG, and projected gap for selected weeks.",
+    state.lang === "ko" ? "선택 주차의 BSA TEU와 현재 전체 BKG 대비 BSA활용률/예상 Gap입니다." : "BSA TEU, utilization against total BKG, and projected gap for selected weeks.",
     state.lang === "ko" ? "W+1/W+2/W+3 리드타임 성숙도와 최근 일별 증가속도입니다." : "Lead-time maturity and recent daily pickup.",
     state.lang === "ko" ? "w3_fst 기반 3주전 선행 부킹 신호와 w3_norm_lst 기반 실선적률입니다." : "3W advance-booking signal from w3_fst and LFT rate from w3_norm_lst.",
     state.lang === "ko" ? "회복/재확보/선행/방어/대체 물량 중 우선 조치 방향입니다." : "Primary action across recovery, win-back, advance booking, protection, or substitute volume.",
@@ -766,7 +766,7 @@ function guideHtmlKo() {
       <h3>5. 구간별 특이사항</h3>
       <ul>
         <li><strong>BKG</strong>: 현재 전체 BKG와 현재 Active 화주 수를 보여줍니다.</li>
-        <li><strong>BSA</strong>: 선택기간 BSA TEU, 소석률, 남은 기간 예상 Gap입니다.</li>
+        <li><strong>BSA</strong>: 선택기간 BSA TEU, BSA활용률, 남은 기간 예상 Gap입니다.</li>
         <li><strong>트렌드/속도</strong>: W+1/W+2/W+3별 포트 기준 성숙도와 최근 일별 부킹속도입니다.</li>
         <li><strong>3W Signal</strong>: <code>w3_fst</code> TEU, 3W 화주 수, <code>w3_norm_lst / w3_fst</code> 기반 실선적률과 Late 의존도를 보여줍니다.</li>
         <li><strong>판단</strong>: 대표 리스크입니다. 마우스를 올리면 정의와 접근 방식이 표시됩니다.</li>
@@ -3995,7 +3995,7 @@ function renderRoutes(analysis) {
         </div>
       </td>
       <td class="num">${fmt(row.currentTeu)}<br><span class="subline">${fmt(row.currentShipperCount)}${t("labels.shippers")} ${signed(row.shipperDelta)}</span></td>
-      <td class="num">${row.bsaTeu ? fmt(row.bsaTeu) : "-"}<br><span class="subline">${row.bsaTeu ? (state.lang === "en" ? `Util ${rpct(row.bsaUtil)} · Gap ${fmt(row.projectedGap)}` : `소석 ${rpct(row.bsaUtil)} · 예상Gap ${fmt(row.projectedGap)}`) : ""}</span></td>
+      <td class="num">${row.bsaTeu ? fmt(row.bsaTeu) : "-"}<br><span class="subline">${row.bsaTeu ? (state.lang === "en" ? `Util ${rpct(row.bsaUtil)} · Gap ${fmt(row.projectedGap)}` : `BSA활용률 ${rpct(row.bsaUtil)} · 예상Gap ${fmt(row.projectedGap)}`) : ""}</span></td>
       <td>${paceCell(row)}</td>
       <td>
         <div class="metric-pair">
@@ -4092,7 +4092,7 @@ function renderShippers(analysis) {
       <td>${row.sales}</td>
       <td>
         ${row.origin} ${row.pol} → ${row.dest} ${row.dst}
-        <div class="subline" title="${escapeAttr(state.lang === "en" ? "Route-level BSA, route-level utilization against total BKG, and route-level gap. This is not a customer-specific BSA allocation." : "구간 전체 BSA, 구간 전체 현재 BKG 기준 소석률과 Gap입니다. 화주별 BSA 배정값이 아닙니다.")}">${row.bsaTeu ? (state.lang === "en" ? `Route BSA ${fmt(row.bsaTeu)} · Util ${rpct(row.routeBsaUtil)} · Route Gap ${fmt(row.bsaShortfall)}` : `구간BSA ${fmt(row.bsaTeu)} · 소석 ${rpct(row.routeBsaUtil)} · 구간Gap ${fmt(row.bsaShortfall)}`) : t("labels.bsaNone")}</div>
+        <div class="subline" title="${escapeAttr(state.lang === "en" ? "Route-level BSA, route-level utilization against total BKG, and route-level gap. This is not a customer-specific BSA allocation." : "구간 전체 BSA, 구간 전체 현재 BKG 기준 BSA활용률과 Gap입니다. 화주별 BSA 배정값이 아닙니다.")}">${row.bsaTeu ? (state.lang === "en" ? `Route BSA ${fmt(row.bsaTeu)} · Util ${rpct(row.routeBsaUtil)} · Route Gap ${fmt(row.bsaShortfall)}` : `구간BSA ${fmt(row.bsaTeu)} · BSA활용률 ${rpct(row.routeBsaUtil)} · 구간Gap ${fmt(row.bsaShortfall)}`) : t("labels.bsaNone")}</div>
       </td>
       <td class="num">${fmt(row.currentTeu)}</td>
       <td class="num">${fmt(row.baseTeu)}</td>

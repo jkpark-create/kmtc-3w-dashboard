@@ -1854,7 +1854,7 @@ def upload_to_gdrive():
         m = _re.match(r'(\d{4})\D+(\d{1,2})\D+(\d{1,2})', str(s))
         return f'{int(m.group(1))}-{int(m.group(2)):02d}-{int(m.group(3)):02d}' if m else None
 
-    # 전체 데이터 기준 집계 (소석률 = 전체 Normal, WOS별 = Lead_time 마스크)
+    # 전체 데이터 기준 집계 (BSA활용률 = 전체 Normal, WOS별 = Lead_time 마스크)
     bkg['_ws_key'] = bkg['week_start_date'].apply(_pkd)
     bkg['YYYYMM'] = bkg['_ws_key'].map(_445).fillna('')
 
@@ -1877,7 +1877,7 @@ def upload_to_gdrive():
     bkg['hi_norm_bl'] = bkg['is_hi'] * bkg['is_normal']
     bkg['route_hi_bl'] = bkg['is_route_hi']
     bkg['route_hi_norm_bl'] = bkg['is_route_hi'] * bkg['is_normal']
-    # 실선적(norm_lst): 전체 Normal (소석률 계산용)
+    # 실선적(norm_lst): 전체 Normal (BSA활용률 계산용)
     bkg['norm_lst'] = bkg['lst'] * bkg['is_normal']
     bkg['hi_fst'] = bkg['fst'] * bkg['is_hi']
     bkg['hi_norm_lst'] = bkg['lst'] * bkg['is_hi'] * bkg['is_normal']

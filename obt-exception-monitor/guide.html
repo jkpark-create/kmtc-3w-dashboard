@@ -717,7 +717,7 @@
               <tr><td>증감 TEU</td><td>현재와 기준의 물량 차이 확인</td><td><code>currentTeu - baseTeu</code></td><td>음수이면 기준 대비 부족, 양수이면 증가입니다.</td></tr>
               <tr><td>증감률</td><td>기준 대비 감소 강도 확인</td><td><code>(currentTeu - baseTeu) / baseTeu</code></td><td>기준이 있는 구간에서 감소율을 판단합니다.</td></tr>
               <tr><td>구간 BSA</td><td>Route 전체 목표 물량 확인</td><td><code>sum(teu_bsa)</code> for same route and selected period</td><td>화주별 배정이 아니라 Route 전체 BSA입니다.</td></tr>
-              <tr><td>소석률</td><td>BSA 대비 현재 채움 정도 확인</td><td><code>currentTeu / bsaTeu</code></td><td>75% 미만이면 BSA 미달 이슈가 강하게 표시될 수 있습니다.</td></tr>
+              <tr><td>BSA활용률</td><td>BSA 대비 현재 채움 정도 확인</td><td><code>currentTeu / bsaTeu</code></td><td>75% 미만이면 BSA 미달 이슈가 강하게 표시될 수 있습니다.</td></tr>
               <tr><td>구간 Gap</td><td>현재 부족 물량 확인</td><td><code>max(0, bsaTeu - currentTeu)</code></td><td>현재까지 BSA를 채우기 위해 필요한 TEU입니다.</td></tr>
               <tr><td>예상 BKG</td><td>최근 속도로 기간 종료까지 도달 가능한 물량 추정</td><td><code>currentTeu + max(0, recentPace3) * remainingDays</code></td><td>최근 속도가 유지된다고 가정한 단순 예측입니다.</td></tr>
               <tr><td>예상 Gap</td><td>최근 속도로도 남을 가능성이 있는 부족분</td><td><code>max(0, bsaTeu - projectedTeu)</code></td><td>클수록 회복 물량, 대체 물량, BSA 조정 검토가 필요합니다.</td></tr>
@@ -914,7 +914,7 @@
             <tr><th>열</th><th>표시 내용</th><th>판단 포인트</th></tr>
             <tr><td>구간</td><td>Origin/POL -> 도착국가/도착포트, P1/P2/P3, 기준 BKG, 증감, 영향 TEU</td><td>P1은 당일 확인, P2는 우선 확인입니다.</td></tr>
             <tr><td>BKG</td><td>현재 전체 BKG와 Active 화주 수 변화</td><td>BL 수보다 TEU와 화주 기반 변화를 더 중요하게 봅니다.</td></tr>
-            <tr><td>BSA</td><td>선택기간 BSA TEU, 소석률, 예상 Gap</td><td>트렌드가 정상이어도 BSA 목표가 높으면 Gap이 남을 수 있습니다.</td></tr>
+            <tr><td>BSA</td><td>선택기간 BSA TEU, BSA활용률, 예상 Gap</td><td>트렌드가 정상이어도 BSA 목표가 높으면 Gap이 남을 수 있습니다.</td></tr>
             <tr><td>트렌드/속도</td><td>리드타임 성숙도, 최근 일별 증가속도, 필요속도</td><td>해당 W+시점에서 정상 속도인지 판단합니다.</td></tr>
             <tr><td>3W Signal</td><td>3W TEU, 3W 화주 수, 실선적률, Late 의존</td><td>3주전 선행 부킹의 양과 품질을 봅니다.</td></tr>
             <tr><td>권장 조치</td><td>회복, 재확보, 선행전환, 방어, 대체 필요</td><td>영업 행동으로 바로 옮길 수 있는 방향입니다.</td></tr>
@@ -1173,7 +1173,7 @@
           <ol>
             <li>P1 화주부터 확인합니다.</li>
             <li>구간의 판단이 BSA 목표 Gap인지, 리드타임 부족인지 먼저 봅니다.</li>
-            <li>구간 열의 <strong>구간BSA</strong>는 화주별 배정이 아니라 해당 Route 전체의 BSA이며, <strong>소석</strong>은 Route 전체 BKG/BSA, <strong>구간Gap</strong>은 Route 전체 현재 BKG를 뺀 부족분입니다.</li>
+            <li>구간 열의 <strong>구간BSA</strong>는 화주별 배정이 아니라 해당 Route 전체의 BSA이며, <strong>BSA활용률</strong>은 Route 전체 BKG/BSA, <strong>구간Gap</strong>은 Route 전체 현재 BKG를 뺀 부족분입니다.</li>
             <li>현재 BKG가 0이면 재확보 접근, 일부 남아 있으면 회복 접근을 합니다.</li>
             <li>3W TEU 감소는 차주 이후 선적 계획과 조기 부킹 가능성을 확인합니다.</li>
             <li>Late 의존 또는 3W 취소위험은 부킹 품질과 취소 사유를 확인합니다.</li>
