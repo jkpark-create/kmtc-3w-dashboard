@@ -1691,7 +1691,7 @@ function analyze(currentRows, baselineRows, currentBsaRows, baselineBsaRows, per
       projectedGapTeu,
       p1Actions,
       p1RouteExceptions,
-      topActionCount: Math.min(60, shipperExceptions.length),
+      topActionCount: shipperExceptions.length,
       actionSales: salesActions.length,
       highRoutes: routeExceptions.filter((row) => row.level === "high").length,
       importantRoutes: Array.from(routeContext.values()).filter((row) => row.isImportant).length,
@@ -3840,9 +3840,9 @@ function renderKpis(analysis) {
     },
     {
       key: "topAction",
-      label: state.lang === "en" ? "Top Actions" : "오늘 Top 조치",
+      label: state.lang === "en" ? "Action Targets" : "오늘 조치 대상",
       value: fmt(t.topActionCount),
-      note: state.lang === "en" ? `P1 candidates ${fmt(t.p1Actions)} · top rows shown` : `P1 후보 ${fmt(t.p1Actions)}건 · 상위만 표시`,
+      note: state.lang === "en" ? `P1 candidates ${fmt(t.p1Actions)} · all targets shown` : `P1 후보 ${fmt(t.p1Actions)}건 · 전체 표시`,
       tone: t.topActionCount ? "warn" : "pos"
     },
     {
@@ -4105,7 +4105,7 @@ function renderSales(analysis) {
 }
 
 function renderShippers(analysis) {
-  const rows = analysis.shipperExceptions.slice(0, 60);
+  const rows = analysis.shipperExceptions;
   const shipperCountText = state.filters.priority === "important"
     ? (state.lang === "en"
       ? `focus ${fmt(analysis.shipperExceptions.length)} / all ${fmt(analysis.allShipperExceptions.length)}`
@@ -4114,8 +4114,8 @@ function renderShippers(analysis) {
       ? `all ${fmt(analysis.shipperExceptions.length)} / focus ${fmt(analysis.totals.importantShipperExceptions)}`
       : `전체 ${fmt(analysis.shipperExceptions.length)} / 중요 ${fmt(analysis.totals.importantShipperExceptions)}`);
   els.shipperSubtitle.textContent = state.lang === "en"
-    ? `Top ${fmt(rows.length)} rows · action scope ${shipperCountText} · ${state.filters.priority === "important" ? "BSA/large-volume focus routes" : "all routes"}`
-    : `상위 ${fmt(rows.length)}건 표시 · 조치범위 ${shipperCountText} · ${state.filters.priority === "important" ? "BSA/대형물량 중요구간 기준" : "전체 구간 기준"}`;
+    ? `All ${fmt(rows.length)} target rows · action scope ${shipperCountText} · ${state.filters.priority === "important" ? "BSA/large-volume focus routes" : "all routes"}`
+    : `전체 ${fmt(rows.length)}건 표시 · 조치범위 ${shipperCountText} · ${state.filters.priority === "important" ? "BSA/대형물량 중요구간 기준" : "전체 구간 기준"}`;
 
   if (!rows.length) {
     els.shipperTable.innerHTML = emptyRow(10, state.lang === "en" ? "No customer-level action candidates." : "화주 단위 조치 대상이 없습니다.");
@@ -4506,16 +4506,15 @@ function renderActionSales(monitor, analysis) {
 function renderActionDetails(monitor, analysis) {
   const rows = monitor.actionRows
     .slice()
-    .sort((a, b) => priorityScore(b.priority) - priorityScore(a.priority) || b.weekdayGap - a.weekdayGap || b.w3Gap - a.w3Gap || b.impactTeu - a.impactTeu)
-    .slice(0, 80);
+    .sort((a, b) => priorityScore(b.priority) - priorityScore(a.priority) || b.weekdayGap - a.weekdayGap || b.w3Gap - a.w3Gap || b.impactTeu - a.impactTeu);
   const weekday = analysis.weekdayBenchmarks || {};
   const weekdayHasSamples = weekdayBenchmarkHasSamples(weekday);
   const weekdayNote = weekdayHasSamples
     ? (state.lang === "en" ? "same-weekday benchmark + recent 3W pickup" : "같은 요일 기대치 + 최근 3W Pickup 기준")
     : weekdayBenchmarkText(weekday, weekday.enabled === false ? "detail" : "short");
   els.actionDetailSubtitle.textContent = state.lang === "en"
-    ? `Top ${fmt(rows.length)} candidates · ${weekdayNote}`
-    : `상위 ${fmt(rows.length)}건 · ${weekdayNote}`;
+    ? `All ${fmt(rows.length)} candidates · ${weekdayNote}`
+    : `전체 ${fmt(rows.length)}건 · ${weekdayNote}`;
 
   if (!rows.length) {
     els.actionDetailTable.innerHTML = emptyRow(11, state.lang === "en" ? "No action candidates." : "Action 후보가 없습니다.");
@@ -5280,7 +5279,7 @@ function kpiHelp(key) {
     bsaUtil: "현재 선택된 주차/월 조건의 전체 BKG(fst)를 같은 기간 BSA TEU로 나눈 비율입니다.",
     paceRisk: "현재 선택 조건에서 확인이 필요한 Route 수입니다. BKG 진행 부족은 같은 W+시점/도착포트 기준보다 전체 BKG 성숙도가 낮은 구간이고, BSA속도 부족은 최근 일별 pickup으로 남은 BSA Gap을 채우기 어려운 구간입니다. 3W부족은 W+3/BSA 선행확보율이 기준보다 낮거나 절대 확보율이 낮은 구간입니다.",
     p1Routes: "오늘 먼저 원인을 확인해야 하는 P1 Route 수입니다. P1 조치 건수에는 구간 이슈와 화주 Action 후보가 함께 포함됩니다.",
-    topAction: "현재 필터에서 상위 조치 후보로 노출되는 건수입니다.",
+    topAction: "현재 필터에서 조치 대상으로 노출되는 전체 화주 후보 수입니다.",
     w3Teu: "shipper.w3_fst 기반 3주전 선행 부킹 TEU 합계입니다.",
     w3TeuNotCancel: "LST 기준으로 본 3주전 BKG에서 Cancel 상태로 전환된 부분(w3_canc_lst)을 제외한 값입니다. 계산식: w3_lst − w3_canc_lst. 실제 선적된 LST_TEU 기반이라 FST 기준 대비 정밀합니다.",
     w3Bsa: "3W Booking TEU를 같은 선택기간 BSA로 나눈 비율입니다.",
@@ -5293,7 +5292,7 @@ function kpiHelp(key) {
     bsaUtil: "Current total BKG (fst) divided by BSA TEU for the same selected week or month period.",
     paceRisk: "Number of routes that need checking under the current filters. BKG status means total BKG maturity is behind the same W+ stage and destination-port benchmark; BSA pace means recent BSA-gap pickup is unlikely to close the remaining BSA gap. W+3 low means W+3/BSA advance coverage is below the reference or absolutely low.",
     p1Routes: "Number of priority routes to check first today. P1 actions include both route issues and customer action candidates.",
-    topAction: "Number of top action candidates shown under the current filters.",
+    topAction: "Number of customer action targets shown under the current filters.",
     w3Teu: "Sum of 3W advance-booked TEU from shipper.w3_fst.",
     w3TeuNotCancel: "LST-basis W-3 booking volume after removing the cancelled portion (w3_canc_lst). Formula: w3_lst − w3_canc_lst. Uses actual LST_TEU values, so it tracks loaded volume more precisely than the FST view.",
     w3Bsa: "3W booking TEU divided by BSA for the same selected period.",
