@@ -639,8 +639,8 @@
           <tr class="en"><td>Total BKG</td><td>Sum of <code>fst</code> in selected horizon</td><td>Total booking volume for the selected action horizon.</td></tr>
           <tr class="ko"><td>BSA</td><td>선택기간 총 BSA TEU</td><td>선택한 주차/월/3주 합산 기준의 총 선복 규모. 보조 문구에 BSA 대비 BKG 비율과 Gap이 함께 표시됩니다. 비율이 낮으면 BSA Gap 확인이 필요합니다.</td></tr>
           <tr class="en"><td>BSA</td><td>Selected-period total BSA TEU</td><td>Total allocated space for the selected window. The card note also shows BKG vs BSA ratio and the absolute Gap.</td></tr>
-          <tr class="ko"><td>확인 필요 구간</td><td>BKG 진행/속도 부족 또는 3W 선행확보 부족 Route 수</td><td>먼저 원인을 확인해야 할 구간 수입니다. 카드 보조문구의 BKG 진행/속도/3W/예상 Gap을 보고 구간 테이블의 P1/P2부터 확인합니다.</td></tr>
-          <tr class="en"><td>Routes To Check</td><td>Count of routes with BKG pace, pickup pace, or W+3 coverage shortage</td><td>Routes that need review first. Use the card note's BKG pace, pickup pace, W+3 coverage, and projected gap split, then start with P1/P2 rows in the route table.</td></tr>
+          <tr class="ko"><td>확인 필요 구간</td><td>BKG 진행 부족, BSA 속도 부족, 또는 3W 선행확보 부족 Route 수</td><td>먼저 원인을 확인해야 할 구간 수입니다. 카드 보조문구의 BKG진행/BSA속도/3W부족/예상 Gap을 보고 구간 테이블의 P1/P2부터 확인합니다.</td></tr>
+          <tr class="en"><td>Routes To Check</td><td>Count of routes with BKG status, BSA pace, or W+3 coverage shortage</td><td>Routes that need review first. Use the card note's BKG status, BSA pace, W+3 low, and projected gap split, then start with P1/P2 rows in the route table.</td></tr>
           <tr class="ko"><td>P1 구간</td><td>오늘 우선 확인해야 하는 Route 수</td><td>당일 원인 확인이 필요한 구간입니다. P1 조치 건수는 구간 이슈와 화주 Action 후보를 함께 포함합니다.</td></tr>
           <tr class="en"><td>P1 Routes</td><td>Priority routes to check today</td><td>Routes requiring same-day cause check. P1 actions include both route issues and customer action candidates.</td></tr>
           <tr class="ko"><td>오늘 Top 조치</td><td>우선순위 필터 이후 상위 Action 후보 수</td><td>영업사원이 처리할 수 있는 수준으로 문제를 압축합니다.</td></tr>
@@ -698,7 +698,7 @@
               <tr><th>KPI</th><th>목적</th><th>계산 수식</th><th>해석</th></tr>
               <tr><td>전체 BKG</td><td>선택기간의 현재 부킹 규모 확인</td><td><code>sum(current.fst)</code></td><td>보조문구의 증감은 기준기간 대비 현재 BKG 차이입니다.</td></tr>
               <tr><td>BSA 대비 BKG</td><td>목표 선복 대비 현재 확보율 확인</td><td><code>sum(current.fst) / sum(current BSA)</code></td><td>낮으면 BSA 미달 가능성이 큽니다. BSA 자체가 과도한지도 같이 확인합니다.</td></tr>
-              <tr><td>확인 필요 구간</td><td>지금 원인 확인이 필요한 Route 수 확인</td><td><code>leadTrendStatus in trend-short/trend-slow</code>, <code>paceStatus in stalled/slow/short</code>, 또는 <code>weekdayBsaPaceStatus in slow/normal-low</code>인 Route 수</td><td>카드의 BKG 진행/속도/3W/예상 Gap 분해를 보고 구간 테이블의 P1/P2부터 봅니다.</td></tr>
+              <tr><td>확인 필요 구간</td><td>지금 원인 확인이 필요한 Route 수 확인</td><td><code>leadTrendStatus in trend-short/trend-slow</code>, <code>paceStatus in stalled/slow/short</code>, 또는 <code>weekdayBsaPaceStatus in slow/normal-low</code>인 Route 수</td><td>카드의 BKG진행/BSA속도/3W부족/예상 Gap 분해를 보고 구간 테이블의 P1/P2부터 봅니다.</td></tr>
               <tr><td>P1 구간</td><td>당일 우선 확인 Route 수 확인</td><td>구간 우선순위가 <code>P1</code>인 Route 수</td><td>원인 확인, 회복 가능 물량, 대체 물량, BSA 조정 여부를 당일 판단해야 하는 구간입니다.</td></tr>
               <tr><td>오늘 Top 조치</td><td>실제로 처리할 Action 후보 규모 확인</td><td>중요도 필터 후 상위 화주 Action 후보 수, 최대 60건 표시</td><td>화주/담당자 연락 우선순위를 압축한 숫자입니다.</td></tr>
               <tr><td>3W Booking TEU</td><td>선행 부킹이 충분히 들어왔는지 확인</td><td><code>sum(current.w3_fst)</code></td><td>현재 BKG보다 먼저 움직이는 조기 경고 지표입니다.</td></tr>
@@ -730,22 +730,22 @@
           </div>
 
           <div class="metric-block">
-            <h3>리드타임 트렌드와 속도 계산</h3>
-            <p>이 영역은 “현재 W+ 시점에서 정상적인 속도로 물량이 들어오고 있는가”를 봅니다. 최종 물량이 아니라 같은 리드타임 단계의 성숙도를 비교합니다.</p>
+            <h3>리드타임, BSA속도, 3W 기준 계산</h3>
+            <p>이 영역은 전체 BKG 진행, BSA Gap을 닫을 최근 pickup 속도, 3W 선행확보율을 분리해서 봅니다. 선부킹이 늘었는지의 대표 판단은 W+3/BSA 라인이고, BSA속도는 남은 전체 BSA Gap을 닫을 수 있는지를 보는 별도 지표입니다.</p>
             <table>
               <tr><th>항목</th><th>목적</th><th>계산 수식</th><th>판정</th></tr>
               <tr><td>Target TEU</td><td>트렌드 비교의 목표 기준 설정</td><td><code>max(BSA, baselineTeu, currentTeu)</code></td><td>BSA, 기준 BKG, 현재 BKG 중 가장 큰 값을 기준으로 봅니다.</td></tr>
               <tr><td>현재 성숙률</td><td>현재 W+ 시점의 달성률 확인</td><td><code>currentTeu / targetTeu</code></td><td>같은 시점 대비 얼마나 성숙했는지 보는 비율입니다.</td></tr>
               <tr><td>기대 성숙률</td><td>도착포트/W+ peer 기준 설정</td><td>같은 destination port와 W+ offset의 성숙률 하위 35% 분위값. 표본 5건 미만이면 전체 W+ 기준 사용</td><td>너무 높은 목표가 아니라 “최소한 이 정도는 와야 한다”는 운영 기준입니다.</td></tr>
               <tr><td>트렌드 Gap</td><td>리드타임 기준으로 부족한 TEU</td><td><code>max(0, expectedRate * targetTeu - currentTeu)</code></td><td>같은 W+ 시점 기준으로 뒤처진 물량입니다.</td></tr>
-              <tr><td>요일기대</td><td>오늘 요일 기준의 평균적인 3W 수준 확인</td><td>같은 요일의 과거 snapshot에서 동일 Route 또는 화주+Route, 동일 W+ offset의 <code>w3_fst</code> 평균</td><td>오늘이 월요일이면 과거 월요일 snapshot들의 같은 리드타임 3W 평균과 비교합니다.</td></tr>
-              <tr><td>요일 Gap</td><td>평소 요일 속도보다 부족한 TEU 확인</td><td><code>max(0, weekdayExpectedW3 - currentW3Teu)</code></td><td>화주별로만 보지 않고 <strong>화주+구간</strong> 단위로 계산한 부족분을 합산합니다.</td></tr>
-              <tr><td>평소 대비</td><td>평균적인 요일 수준 대비 현재 위치 확인</td><td><code>currentW3Teu / weekdayExpectedW3</code></td><td>90% 이상이면 평균권, 60~90%는 낮음, 60% 미만은 매우 낮음으로 봅니다.</td></tr>
+              <tr><td>요일기대</td><td>오늘 요일 기준의 평균적인 3W TEU 절대량 확인</td><td>같은 요일의 과거 snapshot에서 동일 Route 또는 화주+Route, 동일 W+ offset의 <code>w3_fst</code> 평균</td><td>오늘이 월요일이면 과거 월요일 snapshot들의 같은 리드타임 3W TEU 절대량과 비교합니다.</td></tr>
+              <tr><td>요일 Gap</td><td>평소 요일 3W TEU 절대량보다 부족한 TEU 확인</td><td><code>max(0, weekdayExpectedW3 - currentW3Teu)</code></td><td>화주별로만 보지 않고 <strong>화주+구간</strong> 단위로 계산한 부족분을 합산합니다. 선행확보율 판단은 W+3/BSA 라인에서 따로 봅니다.</td></tr>
+              <tr><td>평소 대비</td><td>평균적인 요일 3W TEU 절대량 대비 현재 위치 확인</td><td><code>currentW3Teu / weekdayExpectedW3</code></td><td>90% 이상이면 평균권, 60~90%는 낮음, 60% 미만은 매우 낮음으로 봅니다.</td></tr>
               <tr><td>trend-short</td><td>강한 트렌드 부족</td><td><code>trendGap >= max(portImpactThreshold, targetTeu * 12%)</code> and 기대 대비 부족률 25% 이상</td><td>P1/P2 판단에 강하게 반영됩니다.</td></tr>
               <tr><td>trend-slow</td><td>주의가 필요한 트렌드 둔화</td><td><code>trendGap >= max(10, portImpactThreshold * 45%)</code> and 기대 대비 부족률 12% 이상</td><td>아직 회복 가능하지만 확인이 필요한 구간입니다.</td></tr>
-              <tr><td>최근 3일 속도</td><td>최근 부킹 pickup 확인</td><td><code>(latestTeu - prior3Teu) / daysBetween</code></td><td><code>history.json</code>의 최신 snapshot과 3일 전 snapshot을 사용합니다.</td></tr>
+              <tr><td>최근 3일 속도</td><td>최근 전체 BKG pickup 확인</td><td><code>(latestTeu - prior3Teu) / daysBetween</code></td><td><code>history.json</code>의 최신 snapshot과 3일 전 snapshot을 사용합니다.</td></tr>
               <tr><td>필요 일별 속도</td><td>BSA Gap을 닫기 위해 필요한 하루 평균 물량</td><td><code>max(0, bsaTeu - currentTeu) / remainingDays</code></td><td>최근 속도가 이 값보다 낮으면 속도 부족입니다.</td></tr>
-              <tr><td>속도 비율</td><td>현재 속도가 필요한 속도 대비 충분한지 확인</td><td><code>recentPace3 / requiredDaily</code></td><td>50% 미만은 slow, 90% 미만은 short로 판정됩니다.</td></tr>
+              <tr><td>속도 비율</td><td>BSA Gap을 닫는 데 필요한 속도 대비 충분한지 확인</td><td><code>recentPace3 / requiredDaily</code></td><td>50% 미만은 slow, 90% 미만은 short로 판정됩니다.</td></tr>
               <tr><td>stalled</td><td>부킹 정체</td><td>BSA Gap이 있는데 최근 3일 속도가 0 이하</td><td>즉시 원인 확인이 필요한 상태입니다.</td></tr>
             </table>
           </div>
@@ -915,12 +915,12 @@
             <tr><td>구간</td><td>Origin/POL -> 도착국가/도착포트, P1/P2/P3, 기준 BKG, 증감, 영향 TEU</td><td>P1은 당일 확인, P2는 우선 확인입니다.</td></tr>
             <tr><td>BKG</td><td>현재 전체 BKG와 Active 화주 수 변화</td><td>BL 수보다 TEU와 화주 기반 변화를 더 중요하게 봅니다.</td></tr>
             <tr><td>BSA</td><td>선택기간 BSA TEU, BSA활용률, 예상 Gap</td><td>트렌드가 정상이어도 BSA 목표가 높으면 Gap이 남을 수 있습니다.</td></tr>
-            <tr><td>BKG 진행/속도/3W</td><td>전체 BKG 진행률, 최근 일별 증가속도, 필요속도, W+3/BSA</td><td>전체 BKG 흐름과 W+3 선행확보율을 분리해서 판단합니다.</td></tr>
+            <tr><td>BKG 진행/속도/3W</td><td>전체 BKG 진행률, BSA Gap 기준 최근 pickup 속도, 3W TEU 절대량, W+3/BSA</td><td>전체 BKG 흐름, BSA속도, W+3 선행확보율을 분리해서 판단합니다.</td></tr>
             <tr><td>3W Signal</td><td>3W TEU, 3W 화주 수, 실선적률, Late 의존</td><td>3주전 선행 부킹의 양과 품질을 봅니다.</td></tr>
             <tr><td>권장 조치</td><td>회복, 재확보, 선행전환, 방어, 대체 필요</td><td>영업 행동으로 바로 옮길 수 있는 방향입니다.</td></tr>
             <tr><td>판단</td><td>대표 리스크 유형과 설명</td><td>마우스 오버로 정의와 접근 방식을 확인합니다.</td></tr>
           </table>
-          <div class="note">“BKG 진행 정상 + BSA 목표 Gap”은 전체 부킹 흐름 자체는 같은 시점 대비 기준권이나, BSA 또는 목표 물량이 더 큰 상태입니다. 단, W+3/BSA 선행확보율이 낮으면 이 칸의 대표 라벨은 “3W 부킹 부족”으로 올라옵니다. Custom 월 전체, 과거 주차, W+4 이상에서는 리드타임 트렌드가 아니라 기준기간 비교와 최종 실적 비교를 우선합니다.</div>
+          <div class="note">“BKG 진행 정상 + BSA 목표 Gap”은 전체 부킹 흐름 자체는 같은 시점 대비 기준권이나, BSA 또는 목표 물량이 더 큰 상태입니다. W+3/BSA 선행확보율이 낮으면 대표 라벨은 “3W 부킹 부족”으로 올라오고, 선행확보율이 평균권/높음이면 BSA속도 부족 여부는 별도 보조 줄에서 확인합니다. Custom 월 전체, 과거 주차, W+4 이상에서는 리드타임 트렌드가 아니라 기준기간 비교와 최종 실적 비교를 우선합니다.</div>
         </div>
         <div class="en">
           <table>
@@ -928,7 +928,7 @@
             <tr><td>Route</td><td>Origin/POL -> destination country/port, P1/P2/P3, baseline TEU, delta, impact TEU</td><td>P1 means same-day action; P2 means priority check.</td></tr>
             <tr><td>BKG</td><td>Current total BKG and active customer count change</td><td>TEU and customer-base change matter more than BL count alone.</td></tr>
             <tr><td>BSA</td><td>Selected-period BSA TEU, utilization, projected gap</td><td>Even with normal trend, a high BSA target may leave a gap.</td></tr>
-            <tr><td>BKG Pace / W+3</td><td>Total BKG maturity, recent daily pickup, required pace, W+3/BSA</td><td>Separates total booking flow from advance-booking coverage.</td></tr>
+            <tr><td>BKG Pace / W+3</td><td>Total BKG maturity, BSA-gap pickup pace, required pace, absolute W+3 TEU, W+3/BSA</td><td>Separates total booking flow, BSA pace, and advance-booking coverage.</td></tr>
             <tr><td>3W Signal</td><td>3W TEU, 3W customer count, LFT rate, Late dependency</td><td>Reads both quantity and quality of advance bookings.</td></tr>
             <tr><td>Recommended Action</td><td>Recovery, win-back, advance conversion, protection, substitute need</td><td>Designed to translate into immediate sales actions.</td></tr>
             <tr><td>Judgment</td><td>Primary risk type and explanation</td><td>Hover over the chip to see definition and approach.</td></tr>
@@ -997,7 +997,7 @@
           </ol>
 
           <h3>라우트 테이블 BKG 진행/속도/3W 셀의 BSA-ratio 라인</h3>
-          <p>같은 판단 로직이 라우트 단위로도 표시됩니다. 컬럼 마지막 줄에 "선행확보 높음/낮음/평균권" 라벨과 함께 <code>현재 X% · 평균/기준 Y% · ±Z%p</code> 가 출력됩니다. W+3/BSA가 낮으면 대표 라벨도 "3W 부킹 부족"으로 올라오며, 전체 BKG 진행 상태는 보조 줄에서 확인합니다.</p>
+          <p>같은 판단 로직이 라우트 단위로도 표시됩니다. 컬럼 마지막 줄에 "선행확보 높음/낮음/평균권" 라벨과 함께 <code>현재 X% · 평균/기준 Y% · ±Z%p</code> 가 출력됩니다. W+3/BSA가 낮으면 대표 라벨도 "3W 부킹 부족"으로 올라오며, BSA속도는 최근 pickup과 필요속도 보조 줄에서 따로 확인합니다.</p>
         </div>
 
         <div class="en">
@@ -1115,8 +1115,8 @@
         <table>
           <tr class="ko"><th>상위 유형</th><th>포함 태그</th><th>접근 방식</th></tr>
           <tr class="en"><th>Group</th><th>Included Tags</th><th>Approach</th></tr>
-          <tr class="ko"><td>BKG 진행/속도/3W</td><td>BKG 진행 부족, 부킹속도 부족, 3W 선행확보 부족, 예상미달</td><td>같은 W+시점 기준으로 늦은지와 W+3 선행확보가 낮은지 확인하고, 부족분을 회복/대체 후보로 나눕니다.</td></tr>
-          <tr class="en"><td>Lead Time / Pace</td><td>Lead-time trend shortage, booking pace shortage, projected shortfall</td><td>Check whether it is behind the same W+ stage and split gap into recovery and substitute candidates.</td></tr>
+          <tr class="ko"><td>BKG 진행/속도/3W</td><td>BKG 진행 부족, BSA 속도 부족, 3W 선행확보 부족, 예상미달</td><td>같은 W+시점 기준으로 늦은지, BSA Gap을 닫을 pickup 속도가 충분한지, W+3 선행확보가 낮은지 분리해 보고 부족분을 회복/대체 후보로 나눕니다.</td></tr>
+          <tr class="en"><td>Lead Time / Pace</td><td>Lead-time trend shortage, BSA pace shortage, projected shortfall</td><td>Check whether it is behind the same W+ stage, whether BSA pace can close the gap, and split the gap into recovery and substitute candidates.</td></tr>
           <tr class="ko"><td>BSA/선복 Gap</td><td>BSA 미달, BSA 목표 Gap, 3W/BSA 낮음, 3W 확보 부족</td><td>BSA를 채울 수 있는 영업 후보와 BSA 조정 필요성을 분리합니다.</td></tr>
           <tr class="en"><td>BSA / Space Gap</td><td>BSA underfill, BSA target gap, low 3W/BSA, weak 3W coverage</td><td>Separate sales-fill candidates from BSA target adjustment needs.</td></tr>
           <tr class="ko"><td>화주 기반 감소</td><td>이탈, 급감, 감소, 화주수 감소, 핵심 화주 감소</td><td>회복 가능 화주와 재확보 화주를 분리해 담당자가 접촉합니다.</td></tr>
@@ -1144,7 +1144,7 @@
             <tr><td>요일 Gap / 평소 대비</td><td>같은 요일, 같은 W+ offset의 과거 3W 평균 대비 현재 수준</td><td>오늘 수치가 해당 요일의 평균적인 booking 속도보다 느린지 확인합니다.</td></tr>
             <tr><td>최근 3W Pickup</td><td>최근 snapshot 대비 3W booking 증가량</td><td>별도 활동 작성 없이 실행 결과가 부킹으로 나타났는지 보는 지표입니다.</td></tr>
             <tr><td>No Pickup</td><td>관리 Gap이 남았는데 최근 3W 증가가 없는 후보 수</td><td>다음 follow-up이 필요한 담당자를 찾습니다.</td></tr>
-            <tr><td>지연구간</td><td>전체 BKG 진행 또는 최근 부킹속도 기준보다 느린 담당 구간 수</td><td>0이면 해당 담당자는 구간 지연보다 화주 감소/이탈, 3W 약화, BSA 목표 Gap 때문에 표시된 것입니다.</td></tr>
+            <tr><td>지연구간</td><td>전체 BKG 진행 또는 BSA Gap 기준 pickup 속도보다 느린 담당 구간 수</td><td>0이면 해당 담당자는 구간 지연보다 화주 감소/이탈, 3W 약화, BSA 목표 Gap 때문에 표시된 것입니다.</td></tr>
             <tr><td>화주상태</td><td>회복 후보 / 재확보 후보</td><td>감소 화주와 완전 이탈 화주 접근을 다르게 합니다.</td></tr>
             <tr><td>대표 구간</td><td>영향 TEU가 가장 큰 구간</td><td>담당자와 대화할 때 첫 확인 구간입니다.</td></tr>
           </table>
