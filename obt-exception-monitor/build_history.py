@@ -1,12 +1,26 @@
 #!/usr/bin/env python3
-"""Build compact OBT booking pace history from dist/data.json git commits."""
+"""Build compact OBT booking pace history for the exception monitor.
+
+The monitor's same-weekday pace logic needs a durable daily ledger, not only
+whatever recent git commits happen to be in the latest rebuild window. This
+script merges existing history, dist/data.json git history, and the current
+working-tree dist/data.json snapshot, then keeps enough days for the 100-day
+"3-month average" same-weekday window used by the frontend.
+
+History rows are intentionally limited to W+1 through W+4 relative to each
+snapshot date. W+1..W+3 feed the same-weekday benchmark, and W+4 lets the
+frontend compare today's W+3 target against the same target captured 3-7 days
+earlier.
+"""
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from collections import defaultdict
+from contextlib import suppress
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -15,13 +29,34 @@ ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 SOURCE_OUT = ROOT / "obt-exception-monitor" / "history.json"
 DEPLOY_OUT = DIST / "obt-exception-monitor" / "history.json"
+DATA_PATH = DIST / "data.json"
+HISTORY_SCHEMA = 2
+GIT_COMMIT_LIMIT = int(os.environ.get("OBT_HISTORY_GIT_COMMIT_LIMIT", "240"))
+HISTORY_RETENTION_DAYS = int(os.environ.get("OBT_HISTORY_RETENTION_DAYS", "120"))
+HISTORY_MAX_LEAD_OFFSET = int(os.environ.get("OBT_HISTORY_MAX_LEAD_OFFSET", "4"))
+REBUILD_EXISTING_DATES = os.environ.get("OBT_HISTORY_REBUILD_EXISTING_DATES", "0") == "1"
+DATA_DATE_RE = re.compile(rb'"data_date"\s*:\s*"(\d{8})"')
 
 
 def git(args: list[str]) -> bytes:
     return subprocess.check_output(["git", "-C", str(DIST), *args])
 
 
-def commits(limit: int = 12) -> list[str]:
+def git_blob_prefix(commit: str, size: int = 8192) -> bytes:
+    process = subprocess.Popen(
+        ["git", "-C", str(DIST), "show", f"{commit}:data.json"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        return process.stdout.read(size) if process.stdout else b""
+    finally:
+        with suppress(ProcessLookupError):
+            process.kill()
+        process.communicate()
+
+
+def commits(limit: int = GIT_COMMIT_LIMIT) -> list[str]:
     raw = git(["log", f"--max-count={limit}", "--format=%H", "--", "data.json"])
     return [line.strip() for line in raw.decode("utf-8").splitlines() if line.strip()]
 
@@ -55,10 +90,11 @@ def iter_section(data: dict, section: str):
                 yield row
 
 
-def route_snapshot(data: dict) -> list[list]:
+def route_snapshot(data: dict, target_weeks: set[str] | None = None) -> list[list]:
     routes = {}
     bsa_map = defaultdict(float)
     week_label_by_no = {}
+    week_filter = set(target_weeks or [])
 
     for section in ("weekly", "shipper"):
         for row in iter_section(data, section):
@@ -85,6 +121,8 @@ def route_snapshot(data: dict) -> list[list]:
             year = int(yyyymm[:4])
             week_start = datetime.strptime(f"{year}-01-01", "%Y-%m-%d").date() + timedelta(days=(int(ww) - 1) * 7)
             week = f"{week_start.year}년 {week_start.month:02d}월 {week_start.day:02d}일"
+        if week_filter and week not in week_filter:
+            continue
         bsa_map[(f"{origin}|{pol}|{dest}|{dst}", week)] += float(row.get("teu_bsa") or 0)
 
     for row in iter_section(data, "shipper"):
@@ -97,6 +135,8 @@ def route_snapshot(data: dict) -> list[list]:
         dst = str(row.get("dst_port") or "").strip()
         week = str(row.get("week_start_date") or row.get("week") or "").strip()
         if not (origin and pol and dest and dst and week):
+            continue
+        if week_filter and week not in week_filter:
             continue
 
         key = (f"{origin}|{pol}|{dest}|{dst}", week)
@@ -113,24 +153,26 @@ def route_snapshot(data: dict) -> list[list]:
             found["w3_active"].add(shipper)
 
     rows = []
-    for (route_key, week), values in routes.items():
+    route_week_keys = set(routes) | set(bsa_map)
+    for (route_key, week) in route_week_keys:
+        values = routes.get((route_key, week), {"teu": 0.0, "w3": 0.0, "active": set(), "w3_active": set()})
         teu = round(values["teu"], 2)
         w3 = round(values["w3"], 2)
         bsa = round(bsa_map.get((route_key, week), 0.0), 2)
-        if teu <= 0 and w3 <= 0:
+        if teu <= 0 and w3 <= 0 and bsa <= 0:
             continue
         rows.append([route_key, week, teu, w3, len(values["active"]), len(values["w3_active"]), bsa])
     rows.sort(key=lambda item: (item[1], item[0]))
     return rows
 
 
-def target_action_weeks(data_date: str) -> set[str]:
+def target_history_weeks(data_date: str, max_offset: int = HISTORY_MAX_LEAD_OFFSET) -> set[str]:
     if not data_date or len(data_date) != 8:
         return set()
     current = datetime.strptime(data_date, "%Y%m%d").date()
     week_start = current - timedelta(days=(current.weekday() + 1) % 7)
     weeks = set()
-    for offset in (1, 2, 3):
+    for offset in range(1, max(1, max_offset) + 1):
         target = week_start + timedelta(days=offset * 7)
         weeks.add(f"{target.year}년 {target.month:02d}월 {target.day:02d}일")
     return weeks
@@ -185,35 +227,167 @@ def existing_generated_at(snapshots: list[dict]) -> str | None:
     return None
 
 
-def main() -> None:
-    seen_dates = set()
-    snapshots = []
+def snapshot_from_data(data: dict, commit: str, source: str) -> dict | None:
+    data_date = str(data.get("data_date") or "")
+    if not data_date:
+        return None
+    target_weeks = target_history_weeks(data_date)
+    routes = route_snapshot(data, target_weeks)
+    shippers = shipper_snapshot(data, target_weeks)
+    if not routes and not shippers:
+        return None
+    return {
+        "schema": HISTORY_SCHEMA,
+        "data_date": data_date,
+        "commit": commit,
+        "source": source,
+        "lead_offsets": list(range(1, max(1, HISTORY_MAX_LEAD_OFFSET) + 1)),
+        "routes": routes,
+        "shippers": shippers,
+    }
 
-    for commit in commits():
-        payload = git(["show", f"{commit}:data.json"])
-        data = json.loads(payload)
-        data_date = str(data.get("data_date") or "")
-        if not data_date or data_date in seen_dates:
+
+def read_json(path: Path) -> dict | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def valid_snapshot(snapshot: object) -> bool:
+    return (
+        isinstance(snapshot, dict)
+        and snapshot.get("schema") == HISTORY_SCHEMA
+        and bool(str(snapshot.get("data_date") or ""))
+        and isinstance(snapshot.get("routes"), list)
+        and isinstance(snapshot.get("shippers"), list)
+        and bool(snapshot.get("routes") or snapshot.get("shippers"))
+    )
+
+
+def load_existing_snapshots() -> list[dict]:
+    snapshots: list[dict] = []
+    seen = set()
+    for path in (DEPLOY_OUT, SOURCE_OUT):
+        history = read_json(path)
+        if not history:
             continue
-        seen_dates.add(data_date)
-        snapshots.append({
-            "data_date": data_date,
-            "commit": commit[:7],
-            "routes": route_snapshot(data),
-            "shippers": shipper_snapshot(data, target_action_weeks(data_date)),
-        })
+        for snapshot in history.get("snapshots") or []:
+            if not valid_snapshot(snapshot):
+                continue
+            data_date = str(snapshot.get("data_date") or "")
+            if data_date in seen:
+                continue
+            seen.add(data_date)
+            snapshots.append(snapshot)
+    return snapshots
 
-    snapshots.sort(key=lambda item: item["data_date"])
+
+def current_dist_commit() -> str:
+    try:
+        return git(["rev-parse", "--short=12", "HEAD"]).decode("utf-8").strip()
+    except subprocess.CalledProcessError:
+        return "working-tree"
+
+
+def parse_data_date(value: str) -> date | None:
+    text = str(value or "")
+    if len(text) != 8 or not text.isdigit():
+        return None
+    return date(int(text[:4]), int(text[4:6]), int(text[6:8]))
+
+
+def data_date_from_bytes(payload: bytes) -> str:
+    match = DATA_DATE_RE.search(payload)
+    return match.group(1).decode("ascii") if match else ""
+
+
+def prune_snapshots(snapshots: list[dict], retention_days: int = HISTORY_RETENTION_DAYS) -> list[dict]:
+    dated = [(parse_data_date(str(snapshot.get("data_date") or "")), snapshot) for snapshot in snapshots]
+    valid_dates = [day for day, _snapshot in dated if day]
+    if not valid_dates:
+        return sorted(snapshots, key=lambda item: str(item.get("data_date") or ""))
+    latest = max(valid_dates)
+    cutoff = latest - timedelta(days=retention_days)
+    kept = [
+        snapshot
+        for day, snapshot in dated
+        if day is None or day >= cutoff
+    ]
+    return sorted(kept, key=lambda item: str(item.get("data_date") or ""))
+
+
+def merge_snapshot(by_date: dict[str, dict], priorities: dict[str, int], snapshot: dict | None, priority: int) -> None:
+    if not snapshot or not valid_snapshot(snapshot):
+        return
+    data_date = str(snapshot.get("data_date") or "")
+    if priority > priorities.get(data_date, -1):
+        by_date[data_date] = snapshot
+        priorities[data_date] = priority
+
+
+def main() -> None:
+    by_date: dict[str, dict] = {}
+    priorities: dict[str, int] = {}
+
+    for snapshot in load_existing_snapshots():
+        merge_snapshot(by_date, priorities, snapshot, 10)
+    print(f"Loaded {len(by_date)} existing snapshots")
+
+    current_data = read_json(DATA_PATH)
+    current_day = parse_data_date(str(current_data.get("data_date") or "")) if current_data else None
+    cutoff_day = current_day - timedelta(days=HISTORY_RETENTION_DAYS) if current_day else None
+
+    backfilled = 0
+    seen_git_dates = set()
+    for commit in commits():
+        data_date = data_date_from_bytes(git_blob_prefix(commit))
+        if data_date and data_date in seen_git_dates:
+            continue
+        day = parse_data_date(data_date) if data_date else None
+        if day and cutoff_day and day < cutoff_day:
+            continue
+        if data_date and data_date in by_date and not REBUILD_EXISTING_DATES:
+            seen_git_dates.add(data_date)
+            continue
+        payload = git(["show", f"{commit}:data.json"])
+        if not data_date:
+            data_date = data_date_from_bytes(payload)
+        if data_date and data_date in seen_git_dates:
+            continue
+        day = parse_data_date(data_date) if data_date else None
+        if day and cutoff_day and day < cutoff_day:
+            continue
+        if data_date and data_date in by_date and not REBUILD_EXISTING_DATES:
+            seen_git_dates.add(data_date)
+            continue
+        if data_date:
+            seen_git_dates.add(data_date)
+        data = json.loads(payload)
+        snapshot = snapshot_from_data(data, commit[:7], "dist/data.json git")
+        merge_snapshot(by_date, priorities, snapshot, 20)
+        if snapshot:
+            backfilled += 1
+            print(f"Backfilled {snapshot['data_date']} from git {commit[:7]}")
+
+    if current_data:
+        snapshot = snapshot_from_data(current_data, current_dist_commit(), "dist/data.json current")
+        merge_snapshot(by_date, priorities, snapshot, 30)
+        if snapshot:
+            print(f"Added current snapshot {snapshot['data_date']}")
+
+    snapshots = prune_snapshots(list(by_date.values()))
     history = {
+        "schema": HISTORY_SCHEMA,
         "generated_at": existing_generated_at(snapshots) or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "source": "dist/data.json git history",
+        "source": f"existing history + dist/data.json git/current; retention {HISTORY_RETENTION_DAYS} days; W+1..W+{HISTORY_MAX_LEAD_OFFSET}",
         "snapshots": snapshots,
     }
     payload = json.dumps(history, ensure_ascii=False, separators=(",", ":"))
     for out in (SOURCE_OUT, DEPLOY_OUT):
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(payload, encoding="utf-8")
-        print(f"Wrote {out} with {len(snapshots)} snapshots")
+        print(f"Wrote {out} with {len(snapshots)} snapshots (backfilled {backfilled})")
 
 
 if __name__ == "__main__":

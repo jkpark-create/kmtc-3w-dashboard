@@ -3889,10 +3889,22 @@ function renderOriginPaceHeadlines(analysis) {
   const windowKo = benchmarks.windowLabelKo || "";
   const windowEn = benchmarks.windowLabelEn || "";
   const hasSameWeekdaySamples = (headline.sampleCount || 0) > 0;
+  const usesBaselineReference = !hasSameWeekdaySamples && headline.referenceMode === "baseline";
+  const baselineLabel = analysis.periods && analysis.periods.baselineLabel
+    ? analysis.periods.baselineLabel
+    : (en ? "comparison baseline" : "비교 기준");
   const weekdayKo = headline.weekday ? `${headline.weekday}요일` : "같은 요일";
   const weekdayEn = headline.weekday ? `${headline.weekday} W+3` : "Same-weekday W+3";
-  const referenceKo = hasSameWeekdaySamples ? weekdayKo : (windowKo || "기준");
-  const referenceEn = hasSameWeekdaySamples ? weekdayEn : (windowEn || "Reference");
+  const referenceKo = hasSameWeekdaySamples
+    ? weekdayKo
+    : usesBaselineReference
+      ? "기준"
+      : "같은 요일 기준 없음";
+  const referenceEn = hasSameWeekdaySamples
+    ? weekdayEn
+    : usesBaselineReference
+      ? "Baseline"
+      : "No same-weekday benchmark";
   const labels = {
     fast: en ? `${referenceEn} faster` : `${referenceKo} W+3 빠름`,
     slow: en ? `${referenceEn} slower` : `${referenceKo} W+3 느림`,
@@ -3901,13 +3913,19 @@ function renderOriginPaceHeadlines(analysis) {
     "no-bsa": en ? "No BSA reference" : "BSA 기준 없음"
   };
   const tones = { fast: "pos", slow: "neg", "normal-low": "warn", normal: "pos", "no-bsa": "neutral" };
-  const headerTitle = en ? "Origin W+3 Pace vs Same-Weekday Average" : "선적지별 W+3 페이스 (같은 요일 평균 대비)";
+  const headerTitle = usesBaselineReference
+    ? (en ? `Origin W+3 Pace (${baselineLabel} fallback)` : `선적지별 W+3 페이스 (${baselineLabel} 기준 대체)`)
+    : (en ? "Origin W+3 Pace vs Same-Weekday Average" : "선적지별 W+3 페이스 (같은 요일 평균 대비)");
   const compareWindowKo = windowKo ? ` · ${windowKo} 기준` : "";
   const compareWindowEn = windowEn ? ` · ${windowEn} window` : "";
   const sampleNote = headline.sampleCount
     ? (en
       ? `samples ${headline.sampleCount} same-weekday snapshots${headline.weekday ? ` (${headline.weekday})` : ""}${compareWindowEn}`
       : `샘플 ${headline.sampleCount}개 · 같은 요일${headline.weekday ? ` (${headline.weekday})` : ""}${compareWindowKo}`)
+    : usesBaselineReference
+      ? (en
+        ? `no same-weekday samples · fallback baseline: ${baselineLabel}`
+        : `같은 요일 샘플 없음 · ${baselineLabel} 기준으로 대체`)
     : (en
       ? `no same-weekday samples${compareWindowEn}`
       : `같은 요일 샘플 없음${compareWindowKo}`);
@@ -3920,9 +3938,13 @@ function renderOriginPaceHeadlines(analysis) {
       : `${row.currentPct.toFixed(1)}%`;
     const referenceTextLabel = hasSameWeekdaySamples
       ? (en ? "avg" : "평균")
-      : (en ? "base" : "기준");
+      : usesBaselineReference
+        ? (en ? "base" : "기준")
+        : (en ? "avg" : "평균");
     const avgText = row.avgPct == null
-      ? (en ? "no BSA avg" : "평균 BSA 없음")
+      ? (usesBaselineReference
+        ? (en ? "no baseline BSA" : "기준 BSA 없음")
+        : (en ? "no BSA avg" : "평균 BSA 없음"))
       : `${referenceTextLabel} ${row.avgPct.toFixed(1)}%`;
     const gapText = row.gap == null
       ? "-"

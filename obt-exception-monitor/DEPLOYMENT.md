@@ -36,6 +36,8 @@ Minimum files for the dashboard:
 Generated runtime data:
 
 - existing dashboard data: `data.json`
-- optional daily pace history: `history.json`
+- daily pace history: `history.json`
 
 When deployed under the existing Pages root as `/obt-exception-monitor/`, `app.js` reads dashboard data from `../data.json`. In the local project layout, it reads `../dist/data.json`.
+
+The daily automation pre-generates `history.json` immediately after refreshing `dist/data.json` for the latest dataset, so each date change is stored before the monitor reads it.

@@ -2098,6 +2098,9 @@ def upload_to_gdrive():
         if dist_data.parent.exists():
             shutil.copy2(json_path, dist_data)
             print(f"  Copied to {dist_data}")
+        else:
+            raise FileNotFoundError(f"dist directory not found: {dist_data.parent}")
+        build_obt_exception_history()
     else:
         print("  Historical dataset: dist/data.json unchanged")
 
@@ -2160,6 +2163,41 @@ def upload_to_gdrive():
             _upload_file(headers, jf[0], f'dashboard_summary_{DATASET_ID}.json')
 
     print("[Upload] Done.")
+
+
+def build_obt_exception_history():
+    """Pre-generate the OBT monitor pace ledger after dist/data.json changes."""
+    if os.environ.get('SKIP_OBT_HISTORY_BUILD') == '1':
+        print("[OBT History] Skipped by SKIP_OBT_HISTORY_BUILD=1.")
+        return
+    if DATASET_IS_YEARLY or not PUBLISH_LATEST:
+        print("[OBT History] Non-latest/yearly dataset; skipping history build.")
+        return
+
+    script_path = WORK_DIR / 'obt-exception-monitor' / 'build_history.py'
+    data_path = WORK_DIR / 'dist' / 'data.json'
+    history_path = WORK_DIR / 'dist' / 'obt-exception-monitor' / 'history.json'
+
+    if not script_path.exists():
+        raise FileNotFoundError(f"OBT history builder not found: {script_path}")
+    if not data_path.exists():
+        raise FileNotFoundError(f"Dashboard data not found for OBT history: {data_path}")
+
+    print("[OBT History] Building daily pace history from dist/data.json...")
+    subprocess.run([sys.executable, str(script_path)], cwd=WORK_DIR, check=True)
+
+    if not history_path.exists():
+        raise FileNotFoundError(f"OBT history was not written: {history_path}")
+
+    with open(history_path, encoding='utf-8') as fh:
+        history = json.load(fh)
+    snapshots = history.get('snapshots') or []
+    latest = max((str(s.get('data_date') or '') for s in snapshots), default='')
+    if latest != DATASET_ID:
+        raise RuntimeError(
+            f"OBT history latest snapshot is {latest or 'missing'}, expected {DATASET_ID}"
+        )
+    print(f"[OBT History] Ready: {history_path.name} ({len(snapshots):,} snapshots, latest {latest}).")
 
 
 def build_sales_target_payload():

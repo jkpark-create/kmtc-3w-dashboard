@@ -424,6 +424,7 @@ WW = diff + 1
   - `dashboard_summary.json`: 웹 대시보드가 과거 날짜 선택/Drive 조회 시 사용하는 고정 이름 최신 요약.
   - `dashboard_summary_YYYYMMDD.json`: 날짜별 히스토리 조회용 요약 파일.
 - `upload_to_gdrive()`는 원격 업로드 전에 `dist/data.json`도 같은 summary JSON으로 복사한다. 따라서 Google Drive와 GitHub Pages가 같은 집계 결과를 바라보게 된다.
+- 최신 일자(`PUBLISH_LATEST=1`) 실행에서는 `dist/data.json` 복사 직후 `obt-exception-monitor/build_history.py`를 실행해 `dist/obt-exception-monitor/history.json`을 미리 생성/누적한다. 날짜가 바뀌면 이 단계에서 새 snapshot이 적재되며, 예외 모니터는 화면 로딩 시 이미 생성된 history를 읽는다. 운영상 임시 제외가 필요하면 `SKIP_OBT_HISTORY_BUILD=1`을 사용한다.
 - output 폴더는 유형별 최신 2개 파일만 유지하도록 오래된 파일을 정리한다.
 
 ### Gmail 알림
