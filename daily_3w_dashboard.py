@@ -271,16 +271,36 @@ TEMP_WB_PROJECT_ID = '3d94d4a3-1b23-4e39-8c9c-4a3b765c140d'  # OBT AI AGENT
 TABLEAU_CSV_DOWNLOAD_TIMEOUT_MS = int(os.environ.get('TABLEAU_CSV_DOWNLOAD_TIMEOUT_MS', '1800000'))
 TABLEAU_CSV_DOWNLOAD_RETRIES = max(1, int(os.environ.get('TABLEAU_CSV_DOWNLOAD_RETRIES', '2')))
 TABLEAU_HTTP_READ_TIMEOUT_SECONDS = max(60, int(os.environ.get('TABLEAU_HTTP_READ_TIMEOUT_SECONDS', '600')))
+TABLEAU_USE_HTTP_CSV_DOWNLOAD = os.environ.get('TABLEAU_USE_HTTP_CSV_DOWNLOAD', '1') == '1'
 TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS = max(
     60000,
     int(os.environ.get(
         'TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS',
-        str(min(TABLEAU_CSV_DOWNLOAD_TIMEOUT_MS, 300000)),
+        str(min(TABLEAU_CSV_DOWNLOAD_TIMEOUT_MS, 900000)),
     )),
 )
-TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS', '48'))
-TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS', '72'))
-TABLEAU_BSA_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_BSA_EXISTING_FALLBACK_MAX_HOURS', '72'))
+TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS', '0'))
+TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS', '0'))
+TABLEAU_BSA_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_BSA_EXISTING_FALLBACK_MAX_HOURS', '0'))
+DASHBOARD_ALLOW_EXISTING_DATA_REUSE = os.environ.get('DASHBOARD_ALLOW_EXISTING_DATA_REUSE', '0') == '1'
+DASHBOARD_RUN_STARTED_TS = time.time()
+
+
+def require_fresh_file(path, label, *, require_current_run=True):
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f'{label} missing: {path}')
+    stat = path.stat()
+    if stat.st_size <= 0:
+        raise RuntimeError(f'{label} is empty: {path}')
+    if require_current_run and not DASHBOARD_ALLOW_EXISTING_DATA_REUSE:
+        if stat.st_mtime < DASHBOARD_RUN_STARTED_TS - 5:
+            modified_at = datetime.fromtimestamp(stat.st_mtime)
+            raise RuntimeError(
+                f'{label} was not updated in this run: {path.name} '
+                f'(modified {modified_at:%Y-%m-%d %H:%M:%S})'
+            )
+    return path
 
 
 # ═══════════════════════════════════════════════════════════
@@ -675,11 +695,22 @@ def download_csv_from_tableau(content_url, view_name, save_path, vf_params=None)
                           timeout=120000)
                 time.sleep(15)
 
-                print(f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} (HTTP stream)...")
-                try:
-                    size = download_csv_via_authenticated_http(ctx, csv_url, tmp_path)
-                except Exception as http_exc:
-                    print(f"  HTTP stream failed: {http_exc}")
+                if TABLEAU_USE_HTTP_CSV_DOWNLOAD:
+                    print(f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} (HTTP stream)...")
+                    try:
+                        size = download_csv_via_authenticated_http(ctx, csv_url, tmp_path)
+                    except Exception as http_exc:
+                        print(f"  HTTP stream failed: {http_exc}")
+                        print(
+                            f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} "
+                            f"(browser event, timeout={TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS // 1000}s)..."
+                        )
+                        size = download_csv_via_browser_event(page, csv_url, tmp_path)
+                else:
+                    print(
+                        f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} "
+                        "(browser event, HTTP stream disabled)..."
+                    )
                     print(
                         f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} "
                         f"(browser event, timeout={TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS // 1000}s)..."
@@ -738,8 +769,11 @@ def use_existing_csv_after_tableau_failure(
 ):
     """Use a recent existing CSV when Tableau export fails after retries."""
     path = Path(path)
-    if max_age_hours <= 0:
-        raise failure
+    if not DASHBOARD_ALLOW_EXISTING_DATA_REUSE or max_age_hours <= 0:
+        raise RuntimeError(
+            f'{label} download failed and existing CSV reuse is disabled; '
+            f'a fresh Tableau export is required.'
+        ) from failure
 
     candidates = [path]
     if fallback_candidates:
@@ -1014,6 +1048,7 @@ def download_all():
             TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS,
         )
     rows = count_csv_rows(path1)
+    require_fresh_file(path1, 'View 1 CSV')
     print(f"  {path1.name}: {size:,} bytes ({rows:,} rows)")
 
     # 3. Download View 2 (2.csv)
@@ -1048,6 +1083,7 @@ def download_all():
             TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS,
         )
     rows = count_csv_rows(path2)
+    require_fresh_file(path2, 'View 2 CSV')
     print(f"  {path2.name}: {size:,} bytes ({rows:,} rows)")
 
 
@@ -1119,6 +1155,7 @@ def download_bsa():
 
         browser.close()
 
+    require_fresh_file(out_path, 'BSA raw CSV')
     print(f"  {out_path.name}: {os.path.getsize(out_path):,} bytes")
 
 
@@ -1141,7 +1178,7 @@ def process_snapshot():
     _q = (_today.month - 1) // 3 + 1
     _grade_yyyymm = f'{DATASET_YEAR}{_quarter_month[_q]}'
     _need_download = True
-    if grade_csv.exists():
+    if DASHBOARD_ALLOW_EXISTING_DATA_REUSE and grade_csv.exists():
         # 기존 파일의 YYYYMM 확인 (첫 줄 주석 또는 파일 내용)
         _header = grade_csv.read_text(encoding='utf-8').split('\n')[0]
         if _grade_yyyymm in _header:
@@ -1160,6 +1197,10 @@ def process_snapshot():
             print(f"  grade downloaded: {os.path.getsize(grade_csv):,} bytes")
         except Exception as e:
             print(f"  grade download failed: {e}")
+            if not DASHBOARD_ALLOW_EXISTING_DATA_REUSE:
+                raise RuntimeError('Grade download failed and existing grade reuse is disabled.') from e
+    if not DASHBOARD_ALLOW_EXISTING_DATA_REUSE:
+        require_fresh_file(grade_csv, 'Grade CSV')
 
     if grade_csv.exists():
         _gdf = pd.read_csv(grade_csv, comment='#', dtype=str)
@@ -1175,7 +1216,7 @@ def process_snapshot():
         _ab = sum(1 for v in grade_lookup.values() if v == 'A+B')
         _cd = sum(1 for v in grade_lookup.values() if v == 'C+D')
         print(f"  grade: {len(grade_lookup)} shippers (A+B={_ab}, C+D={_cd})")
-    else:
+    elif DASHBOARD_ALLOW_EXISTING_DATA_REUSE:
         # Fallback: grade from existing cache
         cache_files = sorted((WORK_DIR / 'output').glob('_cache_*.parquet'), key=os.path.getmtime, reverse=True)
         if cache_files:
@@ -1184,6 +1225,8 @@ def process_snapshot():
                 if pd.notna(r['BKG_SHPR_CST_NO']):
                     grade_lookup[str(r['BKG_SHPR_CST_NO']).strip()] = str(r['grade']).strip() if pd.notna(r['grade']) else ''
             print(f"  grade loaded from cache: {len(grade_lookup)}")
+    else:
+        raise FileNotFoundError(f'Grade CSV missing after download: {grade_csv}')
 
     # 445 calendar map
     week_month_lookup = build_445_map()
@@ -1193,6 +1236,8 @@ def process_snapshot():
     print("[Process] Reading CSV files...")
     path1 = dataset_csv_path('1')
     path2 = dataset_csv_path('2')
+    require_fresh_file(path1, 'View 1 CSV')
+    require_fresh_file(path2, 'View 2 CSV')
     df1 = read_tableau_csv(path1)
     df2 = read_tableau_csv(path2)
     df1.columns = [re.sub(r'[^\x00-\x7F]+$', '', c).strip() for c in df1.columns]
@@ -1753,9 +1798,11 @@ def process_snapshot():
     output = output.fillna('').astype(str)
     print(f"[Process] Saving {out_path.name}...")
     output.to_csv(out_path, index=False, encoding='utf-8-sig')
+    require_fresh_file(out_path, 'Booking snapshot CSV')
     print(f"  {out_path.name}: {os.path.getsize(out_path):,} bytes, {len(output):,} rows")
     print(f"[Process] Saving {cache_path.name}...")
     output.to_parquet(cache_path, index=False)
+    require_fresh_file(cache_path, 'Booking cache parquet')
     print(f"  {cache_path.name}: {os.path.getsize(cache_path):,} bytes")
 
 
@@ -1765,6 +1812,7 @@ def process_snapshot():
 GDRIVE_FOLDER_ID = '1JIxg6Y-_gRfI1HueXZ1Q9j4-Z5bxvNgv'
 GDRIVE_CREDS_DIR = Path(r'C:\Users\JKPARK\OneDrive\Documents\Claude\.gdrive-mcp')
 DASHBOARD_JSON_SAFE_LIMIT_BYTES = 95_000_000
+PACKED_STRING_DICT_MIN_SAVINGS_BYTES = 512
 
 def upload_to_gdrive():
     """Upload parquet cache + BSA CSV to Google Drive for web dashboard."""
@@ -1778,25 +1826,16 @@ def upload_to_gdrive():
     sf = sorted(out_dir.glob(f'BSA_raw_monthly3W_{DATASET_ID}.csv'), key=os.path.getmtime, reverse=True)
     cache = sorted(out_dir.glob(f'_cache_{DATASET_ID}.parquet'), key=os.path.getmtime, reverse=True)
     if not bf:
-        bf = sorted(out_dir.glob('booking_snapshot_result_*.csv'), key=os.path.getmtime, reverse=True)
+        raise FileNotFoundError(f'Current booking snapshot missing: booking_snapshot_result_{DATASET_ID}.csv')
     if not sf:
-        sf = sorted(out_dir.glob('BSA_raw_monthly3W_*.csv'), key=os.path.getmtime, reverse=True)
+        raise FileNotFoundError(f'Current BSA raw missing: BSA_raw_monthly3W_{DATASET_ID}.csv')
     if not cache:
-        cache = sorted(out_dir.glob('_cache_*.parquet'), key=os.path.getmtime, reverse=True)
+        raise FileNotFoundError(f'Current booking cache missing: _cache_{DATASET_ID}.parquet')
 
-    if cache:
-        bkg = pd.read_parquet(cache[0])
-    elif bf:
-        bkg = pd.read_csv(bf[0], dtype=str, encoding='utf-8-sig')
-        bkg = bkg.rename(columns={'\uace0/\uc800': 'profit_type'})
-        for c in ['FST_TEU','LST_TEU','CM1']:
-            bkg[c] = bkg[c].astype(str).str.replace(',','')
-        bkg['fst'] = pd.to_numeric(bkg['FST_TEU'], errors='coerce').fillna(0)
-        bkg['lst'] = pd.to_numeric(bkg['LST_TEU'], errors='coerce').fillna(0)
-        bkg['cm1v'] = pd.to_numeric(bkg['CM1'], errors='coerce').fillna(0)
-    else:
-        print("  No data to aggregate, skipping JSON build")
-        return
+    require_fresh_file(bf[0], 'Current booking snapshot CSV')
+    require_fresh_file(sf[0], 'Current BSA raw CSV')
+    require_fresh_file(cache[0], 'Current booking cache parquet')
+    bkg = pd.read_parquet(cache[0])
     if DATASET_IS_YEARLY and bkg.empty:
         raise RuntimeError(f"No rows available for yearly dataset {DATASET_ID}; summary JSON was not created.")
 
@@ -2033,6 +2072,9 @@ def upload_to_gdrive():
             compacted.append(out)
         return compacted
 
+    def _json_len(value):
+        return len(_json.dumps(value, ensure_ascii=False, separators=(',',':')).encode('utf-8'))
+
     def pack_records(records):
         """Store sparse record objects as columns + trimmed rows to keep Pages JSON small."""
         counts = {}
@@ -2053,7 +2095,44 @@ def upload_to_gdrive():
                 if idx > last_idx:
                     last_idx = idx
             rows.append(row[:last_idx + 1])
-        return {'c': columns, 'r': rows}
+
+        # Dictionary-encode repeated string dimensions. Metrics stay numeric,
+        # while high-repeat fields like week/team/port/shipper name shrink a lot.
+        dicts = {}
+        for idx, key in enumerate(columns):
+            values = []
+            value_index = {}
+            uniques = []
+            for row in rows:
+                if idx >= len(row):
+                    continue
+                val = row[idx]
+                if not isinstance(val, str) or val == '':
+                    continue
+                values.append(val)
+                if val not in value_index:
+                    value_index[val] = len(uniques)
+                    uniques.append(val)
+            if len(uniques) >= len(values):
+                continue
+            before_bytes = sum(_json_len(val) for val in values)
+            after_bytes = (
+                sum(len(str(value_index[val])) for val in values)
+                + _json_len(uniques)
+                + _json_len(key)
+                + 8
+            )
+            if before_bytes - after_bytes < PACKED_STRING_DICT_MIN_SAVINGS_BYTES:
+                continue
+            dicts[key] = uniques
+            for row in rows:
+                if idx < len(row) and isinstance(row[idx], str) and row[idx] != '':
+                    row[idx] = value_index[row[idx]]
+
+        packed = {'c': columns, 'r': rows}
+        if dicts:
+            packed['d'] = dicts
+        return packed
 
     monthly_records = compact_records(monthly.round(1).to_dict('records'))
     weekly_records = compact_records(weekly.round(1).to_dict('records'))
@@ -2137,21 +2216,22 @@ def upload_to_gdrive():
     # Upload parquet cache built during processing.
     cf = sorted(out_dir.glob(f'_cache_{DATASET_ID}.parquet'), key=os.path.getmtime, reverse=True)
     if not cf:
-        cf = sorted(out_dir.glob('_cache_*.parquet'), key=os.path.getmtime, reverse=True)
-    if cf:
-        _upload_file(headers, cf[0], cf[0].name)
+        raise FileNotFoundError(f'Current booking cache missing before Drive upload: _cache_{DATASET_ID}.parquet')
+    require_fresh_file(cf[0], 'Current booking cache parquet')
+    _upload_file(headers, cf[0], cf[0].name)
 
     # Upload BSA CSV
     sf = sorted(out_dir.glob(f'BSA_raw_monthly3W_{DATASET_ID}.csv'), key=os.path.getmtime, reverse=True)
     if not sf:
-        sf = sorted(out_dir.glob('BSA_raw_monthly3W_*.csv'), key=os.path.getmtime, reverse=True)
-    if sf:
-        _upload_file(headers, sf[0], sf[0].name)
+        raise FileNotFoundError(f'Current BSA raw missing before Drive upload: BSA_raw_monthly3W_{DATASET_ID}.csv')
+    require_fresh_file(sf[0], 'Current BSA raw CSV')
+    _upload_file(headers, sf[0], sf[0].name)
 
     # Upload summary JSON (for static dashboard)
     jf = sorted(out_dir.glob(f'dashboard_summary_{DATASET_ID}.json'), key=os.path.getmtime, reverse=True)
     if not jf:
-        jf = sorted(out_dir.glob('dashboard_summary_*.json'), key=os.path.getmtime, reverse=True)
+        raise FileNotFoundError(f'Current summary JSON missing before Drive upload: dashboard_summary_{DATASET_ID}.json')
+    require_fresh_file(jf[0], 'Current summary JSON')
     if jf:
         if PUBLISH_LATEST:
             # 1. 고정 파일 (GitHub Pages용)
@@ -2400,10 +2480,14 @@ def main():
 
     print("\n--- Phase 1: Tableau Download ---")
     if os.environ.get('SKIP_DOWNLOAD') == '1':
+        if not DASHBOARD_ALLOW_EXISTING_DATA_REUSE:
+            raise RuntimeError('SKIP_DOWNLOAD=1 is disabled; dashboard data must be refreshed.')
         print("[Skip] Using existing 1.csv, 2.csv, and latest BSA raw file.")
     else:
         download_all()
         if os.environ.get('SKIP_BSA_DOWNLOAD') == '1':
+            if not DASHBOARD_ALLOW_EXISTING_DATA_REUSE:
+                raise RuntimeError('SKIP_BSA_DOWNLOAD=1 is disabled; BSA data must be refreshed.')
             print("[Skip] Using existing BSA raw file.")
         else:
             try:

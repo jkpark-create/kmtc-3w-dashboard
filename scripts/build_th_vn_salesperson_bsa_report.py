@@ -163,8 +163,31 @@ def load_2025_basis() -> pd.DataFrame:
     return merged.groupby(keys, dropna=False)["basis_teu"].sum().reset_index()
 
 
-def records_to_frame(records: list[dict]) -> pd.DataFrame:
-    return pd.DataFrame(records) if records else pd.DataFrame()
+def records_to_frame(records) -> pd.DataFrame:
+    if not records:
+        return pd.DataFrame()
+    if isinstance(records, dict):
+        columns = records.get("c") or records.get("columns")
+        rows = records.get("r") or records.get("rows")
+        dicts = records.get("d") or records.get("dicts") or {}
+        if not isinstance(columns, list) or not isinstance(rows, list):
+            return pd.DataFrame()
+        expanded = []
+        for row in rows:
+            out = {}
+            for idx, key in enumerate(columns):
+                if idx >= len(row):
+                    continue
+                value = row[idx]
+                if value is None:
+                    continue
+                dictionary = dicts.get(key)
+                if isinstance(dictionary, list) and isinstance(value, int) and 0 <= value < len(dictionary):
+                    value = dictionary[value]
+                out[key] = value
+            expanded.append(out)
+        return pd.DataFrame(expanded)
+    return pd.DataFrame(records)
 
 
 def current_bsa_routes(data: dict) -> pd.DataFrame:

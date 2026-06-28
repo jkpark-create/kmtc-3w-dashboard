@@ -100,10 +100,20 @@ def iter_section(data: dict, section: str):
                 yield row
         return
     if isinstance(raw, dict):
-        columns = raw.get("c") or []
+        columns = raw.get("c") or raw.get("columns") or []
+        dicts = raw.get("d") or raw.get("dicts") or {}
         for row in raw.get("r") or []:
             if isinstance(row, list):
-                yield dict(zip(columns, row))
+                out = {}
+                for idx, column in enumerate(columns):
+                    if idx >= len(row):
+                        continue
+                    value = row[idx]
+                    dictionary = dicts.get(column)
+                    if isinstance(dictionary, list) and isinstance(value, int) and 0 <= value < len(dictionary):
+                        value = dictionary[value]
+                    out[column] = value
+                yield out
             elif isinstance(row, dict):
                 yield row
 

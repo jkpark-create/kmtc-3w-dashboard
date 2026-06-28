@@ -953,16 +953,17 @@ function toRecordArray(value) {
     ? value.schema.fields.map((field) => typeof field === "string" ? field : field?.name).filter(Boolean)
     : null;
   const columns = Array.isArray(value.columns) ? value.columns : schemaColumns;
+  const dicts = value.d && typeof value.d === "object" ? value.d : value.dicts && typeof value.dicts === "object" ? value.dicts : {};
 
-  if (Array.isArray(value.c) && Array.isArray(value.r)) return rowsToRecords(value.r, value.c);
+  if (Array.isArray(value.c) && Array.isArray(value.r)) return rowsToRecords(value.r, value.c, dicts);
   if (Array.isArray(value.records)) return toRecordArray(value.records);
-  if (Array.isArray(value.rows)) return columns ? rowsToRecords(value.rows, columns) : toRecordArray(value.rows);
+  if (Array.isArray(value.rows)) return columns ? rowsToRecords(value.rows, columns, dicts) : toRecordArray(value.rows);
   if (Array.isArray(value.data)) {
     return columns && value.data.some(Array.isArray)
-      ? rowsToRecords(value.data, columns)
+      ? rowsToRecords(value.data, columns, dicts)
       : toRecordArray(value.data);
   }
-  if (Array.isArray(value.values) && columns) return rowsToRecords(value.values, columns);
+  if (Array.isArray(value.values) && columns) return rowsToRecords(value.values, columns, dicts);
 
   const values = Object.values(value);
   if (values.length && values.every(isRecord) && values.some(hasKnownRowField)) {
@@ -979,13 +980,20 @@ function hasKnownRowField(row) {
   return ["team", "origin", "YYYYMM", "week", "week_start_date", "fst", "teu_bsa"].some((field) => Object.prototype.hasOwnProperty.call(row, field));
 }
 
-function rowsToRecords(rows, columns) {
+function rowsToRecords(rows, columns, dicts = {}) {
   const cleanColumns = columns.map((column) => String(column || "").trim());
   return rows.map((row) => {
     if (isRecord(row)) return row;
     if (!Array.isArray(row)) return null;
     return cleanColumns.reduce((record, column, index) => {
-      if (column) record[column] = row[index];
+      if (column && index < row.length && row[index] !== undefined) {
+        const dictionary = dicts[column];
+        let value = row[index];
+        if (Array.isArray(dictionary) && Number.isInteger(value) && value >= 0 && value < dictionary.length) {
+          value = dictionary[value];
+        }
+        record[column] = value;
+      }
       return record;
     }, {});
   }).filter(isRecord);
