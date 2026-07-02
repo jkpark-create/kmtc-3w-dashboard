@@ -288,6 +288,7 @@ TABLEAU_CSV_DOWNLOAD_TIMEOUT_MS = int(os.environ.get('TABLEAU_CSV_DOWNLOAD_TIMEO
 TABLEAU_CSV_DOWNLOAD_RETRIES = max(1, int(os.environ.get('TABLEAU_CSV_DOWNLOAD_RETRIES', '2')))
 TABLEAU_HTTP_READ_TIMEOUT_SECONDS = max(60, int(os.environ.get('TABLEAU_HTTP_READ_TIMEOUT_SECONDS', '600')))
 TABLEAU_USE_HTTP_CSV_DOWNLOAD = os.environ.get('TABLEAU_USE_HTTP_CSV_DOWNLOAD', '1') == '1'
+TABLEAU_VIEW1_USE_HTTP_CSV_DOWNLOAD = os.environ.get('TABLEAU_VIEW1_USE_HTTP_CSV_DOWNLOAD', '0') == '1'
 TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS = max(
     60000,
     int(os.environ.get(
@@ -686,12 +687,13 @@ def download_csv_via_browser_event(page, csv_url, tmp_path):
     return os.path.getsize(tmp_path)
 
 
-def download_csv_from_tableau(content_url, view_name, save_path, vf_params=None):
+def download_csv_from_tableau(content_url, view_name, save_path, vf_params=None, use_http=None):
     """Download CSV from Tableau with retry and HTTP fallback protection."""
     from playwright.sync_api import sync_playwright
     save_path = Path(save_path)
     tmp_path = save_path.with_name(f'{save_path.name}.download')
     csv_url = build_tableau_csv_url(content_url, view_name, vf_params)
+    use_http = TABLEAU_USE_HTTP_CSV_DOWNLOAD if use_http is None else bool(use_http)
     last_error = None
 
     for attempt in range(1, TABLEAU_CSV_DOWNLOAD_RETRIES + 1):
@@ -712,7 +714,7 @@ def download_csv_from_tableau(content_url, view_name, save_path, vf_params=None)
                           timeout=120000)
                 time.sleep(15)
 
-                if TABLEAU_USE_HTTP_CSV_DOWNLOAD:
+                if use_http:
                     print(f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} (HTTP stream)...")
                     try:
                         size = download_csv_via_authenticated_http(ctx, csv_url, tmp_path)
@@ -987,7 +989,10 @@ def download_all_chunked():
                 wb_url = ensure_temp_workbook(s, api_ver, site_id, start=start, end=end, workbook_name=wb_name)
                 part_path = WORK_DIR / f'1_{DATASET_ID}_q{chunk_no}.csv'
                 print(f"    Downloading View 1 ({part_path.name})...")
-                size = download_csv_from_tableau(wb_url, '1', part_path)
+                size = download_csv_from_tableau(
+                    wb_url, '1', part_path,
+                    use_http=TABLEAU_VIEW1_USE_HTTP_CSV_DOWNLOAD,
+                )
                 rows = count_csv_rows(part_path)
                 print(f"      {part_path.name}: {size:,} bytes ({rows:,} rows)")
                 parts['1'].append(part_path)
@@ -1044,7 +1049,10 @@ def download_view1_daily(path1):
         wb_url = ensure_temp_workbook(s, api_ver, site_id)
         s.post(f'{TABLEAU_SERVER}/api/{api_ver}/auth/signout', timeout=10)
         print(f"[2/3] Downloading View 1 single-shot ({path1.name})...")
-        return download_csv_from_tableau(wb_url, '1', path1)
+        return download_csv_from_tableau(
+            wb_url, '1', path1,
+            use_http=TABLEAU_VIEW1_USE_HTTP_CSV_DOWNLOAD,
+        )
 
     chunks = list(window_quarter_chunks(BKG_SCHEDULE_START, BKG_SCHEDULE_END, DATASET_YEAR))
     print(f"[1/3] Downloading View 1 in {len(chunks)} quarter chunk(s) -> {path1.name}...")
@@ -1068,7 +1076,10 @@ def download_view1_daily(path1):
                 s.post(f'{TABLEAU_SERVER}/api/{api_ver}/auth/signout', timeout=10)
             except Exception:
                 pass
-        psize = download_csv_from_tableau(wb_url, '1', part_path)
+        psize = download_csv_from_tableau(
+            wb_url, '1', part_path,
+            use_http=TABLEAU_VIEW1_USE_HTTP_CSV_DOWNLOAD,
+        )
         prows = count_csv_rows(part_path)
         print(f"    {part_path.name}: {psize:,} bytes ({prows:,} rows)")
         parts.append(part_path)

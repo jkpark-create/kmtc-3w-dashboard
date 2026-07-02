@@ -15,6 +15,7 @@ earlier.
 
 from __future__ import annotations
 
+import gzip
 import json
 import math
 import os
@@ -31,6 +32,9 @@ DIST = ROOT / "dist"
 SOURCE_OUT = ROOT / "obt-exception-monitor" / "history.json"
 DEPLOY_OUT = DIST / "obt-exception-monitor" / "history.json"
 DATA_PATH = DIST / "data.json"
+DATA_GZIP_PATH = DIST / "data.json.gz"
+GIT_DATA_PATHS = ("data.json", "data.json.gz")
+CURRENT_DATA_PATHS = (DATA_PATH, DATA_GZIP_PATH)
 HISTORY_SCHEMA = 2
 GIT_COMMIT_LIMIT = int(os.environ.get("OBT_HISTORY_GIT_COMMIT_LIMIT", "240"))
 HISTORY_RETENTION_DAYS = int(os.environ.get("OBT_HISTORY_RETENTION_DAYS", "120"))
@@ -41,13 +45,21 @@ DATA_DATE_RE = re.compile(rb'"data_date"\s*:\s*"(\d{8})"')
 
 
 def git(args: list[str]) -> bytes:
-    return subprocess.check_output(["git", "-C", str(DIST), *args])
+    return subprocess.check_output(["git", "-C", str(DIST), *args], stderr=subprocess.PIPE)
 
 
-def git_blob_prefix(commit: str, size: int = 8192) -> bytes:
+def git_blob_exists(commit: str, path: str) -> bool:
+    return subprocess.run(
+        ["git", "-C", str(DIST), "cat-file", "-e", f"{commit}:{path}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ).returncode == 0
+
+
+def git_blob_prefix(commit: str, path: str, size: int = 8192) -> bytes:
     try:
         process = subprocess.Popen(
-            ["git", "-C", str(DIST), "show", f"{commit}:data.json"],
+            ["git", "-C", str(DIST), "show", f"{commit}:{path}"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
@@ -62,13 +74,65 @@ def git_blob_prefix(commit: str, size: int = 8192) -> bytes:
         process.communicate()
 
 
+def git_gzip_blob_prefix(commit: str, path: str, size: int = 8192) -> bytes:
+    try:
+        process = subprocess.Popen(
+            ["git", "-C", str(DIST), "show", f"{commit}:{path}"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        print(f"WARNING: cannot read git blob prefix for {commit[:7]}: {exc}")
+        return b""
+    try:
+        if not process.stdout:
+            return b""
+        with gzip.GzipFile(fileobj=process.stdout) as gz:
+            return gz.read(size)
+    except (OSError, EOFError):
+        return b""
+    finally:
+        with suppress(ProcessLookupError):
+            process.kill()
+        process.communicate()
+
+
+def git_data_blob_prefix(commit: str, size: int = 8192) -> bytes:
+    for path in GIT_DATA_PATHS:
+        if not git_blob_exists(commit, path):
+            continue
+        if path.endswith(".gz"):
+            return git_gzip_blob_prefix(commit, path, size)
+        return git_blob_prefix(commit, path, size)
+    return b""
+
+
+def read_git_data_blob(commit: str) -> tuple[str, bytes] | None:
+    for path in GIT_DATA_PATHS:
+        if not git_blob_exists(commit, path):
+            continue
+        payload = git(["show", f"{commit}:{path}"])
+        if path.endswith(".gz"):
+            payload = gzip.decompress(payload)
+        return path, payload
+    return None
+
+
 def commits(limit: int = GIT_COMMIT_LIMIT) -> list[str]:
     try:
-        raw = git(["log", f"--max-count={limit}", "--format=%H", "--", "data.json"])
+        raw = git(["log", f"--max-count={limit}", "--format=%H", "--", *GIT_DATA_PATHS])
     except (OSError, subprocess.CalledProcessError) as exc:
-        print(f"WARNING: cannot read dist/data.json git history: {exc}")
+        print(f"WARNING: cannot read dist/data.json(.gz) git history: {exc}")
         return []
-    return [line.strip() for line in raw.decode("utf-8").splitlines() if line.strip()]
+    seen = set()
+    out = []
+    for line in raw.decode("utf-8").splitlines():
+        commit = line.strip()
+        if not commit or commit in seen:
+            continue
+        seen.add(commit)
+        out.append(commit)
+    return out
 
 
 def parse_week_date(value: str):
@@ -282,6 +346,24 @@ def read_json(path: Path) -> dict | None:
         return None
 
 
+def read_dashboard_data(path: Path) -> dict | None:
+    try:
+        payload = path.read_bytes()
+        if path.name.endswith(".gz"):
+            payload = gzip.decompress(payload)
+        return json.loads(payload)
+    except (OSError, EOFError, json.JSONDecodeError):
+        return None
+
+
+def read_current_dashboard_data() -> tuple[dict | None, str]:
+    for path in CURRENT_DATA_PATHS:
+        data = read_dashboard_data(path)
+        if data:
+            return data, f"dist/{path.name}"
+    return None, "dist/data.json"
+
+
 def valid_snapshot(snapshot: object) -> bool:
     return (
         isinstance(snapshot, dict)
@@ -365,7 +447,7 @@ def history_payload(snapshots: list[dict], generated_at: str | None = None) -> s
     history = {
         "schema": HISTORY_SCHEMA,
         "generated_at": generated_at or existing_generated_at(snapshots) or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "source": f"existing history + dist/data.json git/current; retention {HISTORY_RETENTION_DAYS} days; W+1..W+{HISTORY_MAX_LEAD_OFFSET}",
+        "source": f"existing history + dist/data.json(.gz) git/current; retention {HISTORY_RETENTION_DAYS} days; W+1..W+{HISTORY_MAX_LEAD_OFFSET}",
         "snapshots": snapshots,
     }
     return json.dumps(history, ensure_ascii=False, separators=(",", ":"))
@@ -403,7 +485,7 @@ def main() -> None:
         merge_snapshot(by_date, priorities, snapshot, 10)
     print(f"Loaded {len(by_date)} existing snapshots")
 
-    current_data = read_json(DATA_PATH)
+    current_data, current_source = read_current_dashboard_data()
     current_day = parse_data_date(str(current_data.get("data_date") or "")) if current_data else None
     cutoff_day = current_day - timedelta(days=HISTORY_RETENTION_DAYS) if current_day else None
 
@@ -411,7 +493,7 @@ def main() -> None:
     seen_git_dates = set()
     for commit in commits():
         try:
-            data_date = data_date_from_bytes(git_blob_prefix(commit))
+            data_date = data_date_from_bytes(git_data_blob_prefix(commit))
             if data_date and data_date in seen_git_dates:
                 continue
             day = parse_data_date(data_date) if data_date else None
@@ -420,7 +502,10 @@ def main() -> None:
             if data_date and data_date in by_date and not REBUILD_EXISTING_DATES:
                 seen_git_dates.add(data_date)
                 continue
-            payload = git(["show", f"{commit}:data.json"])
+            blob = read_git_data_blob(commit)
+            if blob is None:
+                continue
+            blob_path, payload = blob
             if not data_date:
                 data_date = data_date_from_bytes(payload)
             if data_date and data_date in seen_git_dates:
@@ -434,8 +519,8 @@ def main() -> None:
             if data_date:
                 seen_git_dates.add(data_date)
             data = json.loads(payload)
-            snapshot = snapshot_from_data(data, commit[:7], "dist/data.json git")
-        except (OSError, subprocess.CalledProcessError, json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+            snapshot = snapshot_from_data(data, commit[:7], f"dist/{blob_path} git")
+        except (OSError, EOFError, subprocess.CalledProcessError, json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
             print(f"WARNING: skipping git snapshot {commit[:7]}: {exc}")
             continue
         merge_snapshot(by_date, priorities, snapshot, 20)
@@ -444,7 +529,7 @@ def main() -> None:
             print(f"Backfilled {snapshot['data_date']} from git {commit[:7]}")
 
     if current_data:
-        snapshot = snapshot_from_data(current_data, current_dist_commit(), "dist/data.json current")
+        snapshot = snapshot_from_data(current_data, current_dist_commit(), f"{current_source} current")
         if snapshot:
             existing = by_date.get(str(snapshot.get("data_date") or ""))
             if snapshot_content_equal(existing, snapshot):
