@@ -225,22 +225,38 @@ def lookup_salesman_for_booking(lookup, customer_no, origin, ori_port):
         or ''
     )
 
+def clean_salesman_value(value):
+    if pd.isna(value):
+        return ''
+    text = str(value).strip()
+    if text.lower() in ('', 'nan', 'none', 'nat') or text == MISSING_SALES:
+        return ''
+    return text
+
 def apply_salesman_mapping(output, lookup):
     mapped = []
     matched = 0
-    for customer_no, origin, ori_port in zip(
+    raw_fallback = 0
+    raw_sales = output['Salesman_POR'] if 'Salesman_POR' in output.columns else pd.Series([''] * len(output))
+    for customer_no, origin, ori_port, raw_value in zip(
         output['BKG_SHPR_CST_NO'],
         output['POR_CTR_CD'],
         output['POR_PLC_CD'],
+        raw_sales,
     ):
         sales = lookup_salesman_for_booking(lookup, customer_no, origin, ori_port)
         if sales:
             matched += 1
             mapped.append(sales)
         else:
-            mapped.append(MISSING_SALES)
+            raw_salesman = clean_salesman_value(raw_value)
+            if raw_salesman:
+                raw_fallback += 1
+                mapped.append(raw_salesman)
+            else:
+                mapped.append(MISSING_SALES)
     output['Salesman_POR'] = mapped
-    return matched, len(mapped) - matched
+    return matched, raw_fallback, len(mapped) - matched - raw_fallback
 
 # Workbook: booking snapshot(전체) - contentUrl
 BKG_WB_CONTENT_URL = 'bookingsnapshot'
@@ -283,6 +299,7 @@ TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW1_EX
 TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS', '0'))
 TABLEAU_BSA_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_BSA_EXISTING_FALLBACK_MAX_HOURS', '0'))
 DASHBOARD_ALLOW_EXISTING_DATA_REUSE = os.environ.get('DASHBOARD_ALLOW_EXISTING_DATA_REUSE', '0') == '1'
+DASHBOARD_REUSE_SAME_DAY_CHUNKS = os.environ.get('DASHBOARD_REUSE_SAME_DAY_CHUNKS', '1') == '1'
 DASHBOARD_RUN_STARTED_TS = time.time()
 
 
@@ -899,6 +916,39 @@ def window_quarter_chunks(start_str, end_str, year):
     return chunks
 
 
+def current_dataset_date():
+    try:
+        return datetime.strptime(DATASET_ID, '%Y%m%d').date()
+    except ValueError:
+        return datetime.now().date()
+
+
+def same_day_chunk_size_and_rows(path):
+    """Return size/rows for a valid same-day chunk that can resume a failed run."""
+    if not DASHBOARD_REUSE_SAME_DAY_CHUNKS:
+        return None
+
+    path = Path(path)
+    if not path.exists():
+        return None
+
+    stat = path.stat()
+    if stat.st_size <= 0:
+        return None
+
+    modified_at = datetime.fromtimestamp(stat.st_mtime)
+    if modified_at.date() != current_dataset_date():
+        return None
+
+    try:
+        rows = count_csv_rows(path)
+    except Exception as row_exc:
+        print(f"    Existing chunk {path.name} is not reusable: row count failed ({row_exc})")
+        return None
+
+    return stat.st_size, rows
+
+
 def yearly_yyyymm_filter(year):
     """Return comma-separated YYYYMM values for Tableau multi-select filters."""
     return ','.join(f'{year}{month:02d}' for month in range(1, 13))
@@ -1001,6 +1051,14 @@ def download_view1_daily(path1):
     parts = []
     for qno, cstart, cend in chunks:
         print(f"  View 1 chunk Q{qno}: {cstart} ~ {cend}")
+        part_path = WORK_DIR / f'1_{DATASET_ID}_q{qno}.csv'
+        reusable = same_day_chunk_size_and_rows(part_path)
+        if reusable:
+            psize, prows = reusable
+            print(f"    Reusing same-day chunk {part_path.name}: {psize:,} bytes ({prows:,} rows)")
+            parts.append(part_path)
+            continue
+
         s, api_ver, site_id = tableau_rest_api()
         try:
             wb_name = f'{TEMP_WB_NAME}_q{qno}'
@@ -1010,7 +1068,6 @@ def download_view1_daily(path1):
                 s.post(f'{TABLEAU_SERVER}/api/{api_ver}/auth/signout', timeout=10)
             except Exception:
                 pass
-        part_path = WORK_DIR / f'1_{DATASET_ID}_q{qno}.csv'
         psize = download_csv_from_tableau(wb_url, '1', part_path)
         prows = count_csv_rows(part_path)
         print(f"    {part_path.name}: {psize:,} bytes ({prows:,} rows)")
@@ -1446,11 +1503,11 @@ def process_snapshot():
     if salesman_csv:
         try:
             salesman_lookup = load_active_salesman_lookup(salesman_csv, TODAY_STR)
-            matched, unmatched = apply_salesman_mapping(output, salesman_lookup)
+            matched, raw_fallback, unmatched = apply_salesman_mapping(output, salesman_lookup)
             obt_salesmen = salesman_lookup['obt_salesmen']
             print(
                 f"  Salesman mapping: {salesman_csv.name} current owners applied "
-                f"({matched:,} matched / {unmatched:,} unmatched)."
+                f"({matched:,} current-owner matched / {raw_fallback:,} raw fallback / {unmatched:,} unmatched)."
             )
             print(f"  OBT salesman set: {len(obt_salesmen):,} names (KR/JP-based excluded).")
         except Exception as e:
@@ -1846,10 +1903,10 @@ def upload_to_gdrive():
             obt_salesmen = salesman_lookup['obt_salesmen']
             required_cols = {'BKG_SHPR_CST_NO', 'POR_CTR_CD', 'POR_PLC_CD'}
             if required_cols.issubset(set(bkg.columns)):
-                matched, unmatched = apply_salesman_mapping(bkg, salesman_lookup)
+                matched, raw_fallback, unmatched = apply_salesman_mapping(bkg, salesman_lookup)
                 print(
                     f"  Salesman mapping verified for summary JSON "
-                    f"({matched:,} matched / {unmatched:,} unmatched)."
+                    f"({matched:,} current-owner matched / {raw_fallback:,} raw fallback / {unmatched:,} unmatched)."
                 )
         except Exception as e:
             print(f"  WARNING: salesman.csv mapping skipped for summary JSON ({e})")

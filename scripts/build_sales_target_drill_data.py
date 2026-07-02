@@ -83,6 +83,23 @@ def clean_text(value: Any, fallback: str = "") -> str:
     return fallback if text.lower() in {"", "nan", "none", "nat"} else text
 
 
+def clean_salesman_series(series: pd.Series) -> pd.Series:
+    out = series.fillna("").astype(str).str.strip()
+    invalid = out.str.lower().isin({"", "nan", "none", "nat"}) | out.eq(MISSING_SALES)
+    return out.mask(invalid, "")
+
+
+def apply_salesman_map_with_raw_fallback(df: pd.DataFrame, salesman_map: dict[str, str] | None) -> None:
+    raw_sales = clean_salesman_series(df["Salesman_POR"])
+    if salesman_map:
+        keys = df["BKG_SHPR_CST_NO"].str.upper()
+        mapped = keys.map(salesman_map).fillna("").astype(str).str.strip()
+        df["Salesman_POR"] = mapped.where(mapped.ne(""), raw_sales)
+    else:
+        df["Salesman_POR"] = raw_sales
+    df["Salesman_POR"] = df["Salesman_POR"].replace("", MISSING_SALES)
+
+
 def safe_int(value: Any) -> int:
     text = clean_text(value)
     if not text:
@@ -261,10 +278,7 @@ def load_w3_2025_teu(cache_path: Path, salesman_map: dict[str, str] | None) -> t
     df["DLY_CTR_CD"] = df["DLY_CTR_CD"].fillna("").astype(str).str.strip()
     df["BKG_SHPR_CST_NO"] = df["BKG_SHPR_CST_NO"].fillna("").astype(str).str.strip()
     df["Salesman_POR"] = df["Salesman_POR"].fillna("").astype(str).str.strip()
-    if salesman_map:
-        keys = df["BKG_SHPR_CST_NO"].str.upper()
-        df["Salesman_POR"] = keys.map(salesman_map).fillna("").astype(str).str.strip()
-    df["Salesman_POR"] = df["Salesman_POR"].replace("", MISSING_SALES)
+    apply_salesman_map_with_raw_fallback(df, salesman_map)
     df["tab"] = [tab_key(o, p) for o, p in zip(df["POR_CTR_CD"], df["POR_PLC_CD"])]
     if "team" not in df.columns:
         df["team"] = [classify_team(o, d) for o, d in zip(df["POR_CTR_CD"], df["DLY_CTR_CD"])]
@@ -323,10 +337,7 @@ def load_2025_base_cells(cache_path: Path, salesman_map: dict[str, str] | None) 
         if col not in df.columns:
             df[col] = ""
         df[col] = df[col].fillna("").astype(str).str.strip()
-    if salesman_map:
-        keys = df["BKG_SHPR_CST_NO"].str.upper()
-        df["Salesman_POR"] = keys.map(salesman_map).fillna("").astype(str).str.strip()
-    df["Salesman_POR"] = df["Salesman_POR"].replace("", MISSING_SALES)
+    apply_salesman_map_with_raw_fallback(df, salesman_map)
     df["tab"] = [tab_key(o, p) for o, p in zip(df["POR_CTR_CD"], df["POR_PLC_CD"])]
     if "team" not in df.columns:
         df["team"] = [classify_team(o, d) for o, d in zip(df["POR_CTR_CD"], df["DLY_CTR_CD"])]
@@ -418,10 +429,7 @@ def load_2025_shipper_cells(cache_path: Path, salesman_map: dict[str, str] | Non
         if col not in df.columns:
             df[col] = ""
         df[col] = df[col].fillna("").astype(str).str.strip()
-    if salesman_map:
-        keys = df["BKG_SHPR_CST_NO"].str.upper()
-        df["Salesman_POR"] = keys.map(salesman_map).fillna("").astype(str).str.strip()
-    df["Salesman_POR"] = df["Salesman_POR"].replace("", MISSING_SALES)
+    apply_salesman_map_with_raw_fallback(df, salesman_map)
     df["tab"] = [tab_key(o, p) for o, p in zip(df["POR_CTR_CD"], df["POR_PLC_CD"])]
     if "team" not in df.columns:
         df["team"] = [classify_team(o, d) for o, d in zip(df["POR_CTR_CD"], df["DLY_CTR_CD"])]
@@ -595,10 +603,7 @@ def load_allocation_basis(cache_path: Path, salesman_map: dict[str, str] | None)
         if col not in df.columns:
             df[col] = ""
         df[col] = df[col].fillna("").astype(str).str.strip()
-    if salesman_map:
-        keys = df["BKG_SHPR_CST_NO"].str.upper()
-        df["Salesman_POR"] = keys.map(salesman_map).fillna("").astype(str).str.strip()
-    df["Salesman_POR"] = df["Salesman_POR"].replace("", MISSING_SALES)
+    apply_salesman_map_with_raw_fallback(df, salesman_map)
     df["tab"] = [tab_key(o, p) for o, p in zip(df["POR_CTR_CD"], df["POR_PLC_CD"])]
     if "team" not in df.columns:
         df["team"] = [classify_team(o, d) for o, d in zip(df["POR_CTR_CD"], df["DLY_CTR_CD"])]
@@ -946,11 +951,9 @@ def load_snapshot(path: Path, salesman_map: dict[str, str] | None = None) -> pd.
     for col in SNAPSHOT_COLUMNS:
         df[col] = df[col].fillna("").astype(str).str.strip()
 
-    # Override Salesman_POR using salesman.csv (current customer-owner mapping) when provided.
-    if salesman_map:
-        keys = df["BKG_SHPR_CST_NO"].str.upper()
-        df["Salesman_POR"] = keys.map(salesman_map).fillna("").astype(str).str.strip()
-    df["Salesman_POR"] = df["Salesman_POR"].replace("", MISSING_SALES)
+    # Prefer current owner mapping, but keep the raw snapshot owner when the
+    # customer is absent from salesman.csv so real performance rows are not lost.
+    apply_salesman_map_with_raw_fallback(df, salesman_map)
     df["team"] = [classify_team(o, d) for o, d in zip(df["POR_CTR_CD"], df["DLY_CTR_CD"])]
     df["tab"] = [tab_key(o, p) for o, p in zip(df["POR_CTR_CD"], df["POR_PLC_CD"])]
     df["fst_teu_num"] = pd.to_numeric(df["FST_TEU"].str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
@@ -1346,7 +1349,11 @@ def main() -> int:
     print(f"      Parsed {len(parsed_summary)} target rows.", flush=True)
 
     # Build the 2025 WOS-3 BKG TEU map up front so we can splice it into the rows.
-    cache_2025 = ROOT / "output" / "_cache_2025.parquet"
+    try:
+        cache_2025 = ensure_2025_cache()
+    except Exception as exc:
+        cache_2025 = ROOT / "output" / "_cache_2025.parquet"
+        print(f"      WARN: _cache_2025.parquet could not be prepared ({exc}).", flush=True)
     pre_salesman_map: dict[str, str] = {}
     if not args.no_remap:
         sm_csv = Path(args.salesman_csv) if args.salesman_csv else find_salesman_csv()
@@ -1381,8 +1388,13 @@ def main() -> int:
     print(f"[2/3] Reading snapshot {snapshot_path.name} ...", flush=True)
     df = load_snapshot(snapshot_path, salesman_map=salesman_map)
     if salesman_map:
-        matched = int((df["Salesman_POR"] != MISSING_SALES).sum())
-        print(f"      Remap coverage: {matched:,} / {len(df):,} rows matched (others -> {MISSING_SALES}).", flush=True)
+        covered = int((df["Salesman_POR"] != MISSING_SALES).sum())
+        missing = len(df) - covered
+        print(
+            f"      Salesman coverage after remap/raw fallback: "
+            f"{covered:,} / {len(df):,} rows covered ({missing:,} -> {MISSING_SALES}).",
+            flush=True,
+        )
     print(f"      Loaded {len(df):,} booking rows.", flush=True)
 
     print("[3/3] Writing chunk JSONs ...", flush=True)

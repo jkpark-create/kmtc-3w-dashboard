@@ -1,5 +1,17 @@
-const DATA_PATHS = ["../dist/data.json", "../data.json", "/dist/data.json", "data.json"];
-const HISTORY_PATHS = ["history.json", "./history.json", "/obt-exception-monitor/history.json"];
+const DATA_PATHS = ["../data.json.gz", "../dist/data.json.gz", "../dist/data.json", "../data.json", "/data.json.gz", "/dist/data.json.gz", "/dist/data.json", "data.json"];
+const HISTORY_PATHS = ["history.json.gz", "./history.json.gz", "/obt-exception-monitor/history.json.gz", "history.json", "./history.json", "/obt-exception-monitor/history.json"];
+
+async function fetchJson(path, force = false) {
+  const url = force ? `${path}${path.includes("?") ? "&" : "?"}t=${Date.now()}` : path;
+  const response = await fetch(url, {cache: "no-cache"});
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  if (!path.split("?")[0].endsWith(".gz")) return response.json();
+  if (!("DecompressionStream" in window) || !response.body) {
+    throw new Error("gzip JSON is not supported by this browser");
+  }
+  const stream = response.body.pipeThrough(new DecompressionStream("gzip"));
+  return new Response(stream).json();
+}
 
 const RISK_DEFS = {
   "BSA 속도 부족": {
@@ -894,10 +906,7 @@ async function loadData(force = false) {
     let loadedPath = "";
     for (const path of DATA_PATHS) {
       try {
-        const url = force ? `${path}?t=${Date.now()}` : path;
-        const response = await fetch(url);
-        if (!response.ok) continue;
-        data = await response.json();
+        data = await fetchJson(path, force);
         loadedPath = path;
         break;
       } catch (error) {
@@ -932,10 +941,7 @@ async function loadData(force = false) {
 async function loadHistory(force = false) {
   for (const path of HISTORY_PATHS) {
     try {
-      const url = force ? `${path}?t=${Date.now()}` : path;
-      const response = await fetch(url);
-      if (!response.ok) continue;
-      return await response.json();
+      return await fetchJson(path, force);
     } catch (error) {
       // Optional file; continue without pace history.
     }

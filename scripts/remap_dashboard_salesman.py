@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_JSON = ROOT / "dist" / "data.json"
 DEFAULT_SALESMAN_CANDIDATES = ("salesman.csv", "saleman.csv")
 NON_OBT_COUNTRIES = {"KR", "JP"}
+DEFAULT_MISSING = "(미지정)"
 
 
 def clean_key(value: object) -> str:
@@ -38,7 +39,13 @@ def clean_key(value: object) -> str:
     if text.lower() in {"", "nan", "none", "nat"}:
         return ""
     return text.upper()
-DEFAULT_MISSING = "(미지정)"
+
+
+def clean_salesman_value(value: object, missing_label: str = DEFAULT_MISSING) -> str:
+    text = "" if value is None else str(value).strip()
+    if text.lower() in {"", "nan", "none", "nat"} or text == missing_label:
+        return ""
+    return text
 
 
 def find_salesman_csv(explicit: str | None) -> Path:
@@ -165,19 +172,68 @@ def compute_obt_salesman_set(path: Path, as_of: str | None) -> list[str]:
     return sorted(obt_set)
 
 
-def remap_shipper(data: dict, mapping: dict[str, object], missing_label: str) -> tuple[int, int]:
+def _decode_packed_cell(cols: list[str], dicts: dict[str, list], row: list, idx: int | None) -> object:
+    if idx is None or idx >= len(row):
+        return ""
+    value = row[idx]
+    col = cols[idx]
+    dictionary = dicts.get(col)
+    if (
+        isinstance(dictionary, list)
+        and isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value < len(dictionary)
+    ):
+        return dictionary[value]
+    return value
+
+
+def _remap_shipper_records(records: list[dict], mapping: dict[str, object], missing_label: str) -> tuple[int, int, int]:
+    matched = 0
+    raw_fallback = 0
+    unmatched = 0
+    for row in records:
+        if not isinstance(row, dict):
+            continue
+        new_sales = lookup_salesman(
+            mapping,
+            row.get("BKG_SHPR_CST_NO", ""),
+            row.get("origin") or row.get("POR_CTR_CD", ""),
+            row.get("ori_port") or row.get("POR_PLC_CD", ""),
+        )
+        if new_sales:
+            row["Salesman_POR"] = new_sales
+            matched += 1
+        else:
+            raw_sales = clean_salesman_value(row.get("Salesman_POR", ""), missing_label)
+            if raw_sales:
+                row["Salesman_POR"] = raw_sales
+                raw_fallback += 1
+            else:
+                row["Salesman_POR"] = missing_label
+                unmatched += 1
+    return matched, raw_fallback, unmatched
+
+
+def remap_shipper(data: dict, mapping: dict[str, object], missing_label: str) -> tuple[int, int, int]:
     shipper = data.get("shipper")
+    if isinstance(shipper, list):
+        return _remap_shipper_records(shipper, mapping, missing_label)
     if not isinstance(shipper, dict):
-        return 0, 0
+        return 0, 0, 0
     cols = shipper.get("c", [])
     rows = shipper.get("r", [])
+    dicts = shipper.get("d") or shipper.get("dicts") or {}
+    if not isinstance(dicts, dict):
+        dicts = {}
     if "Salesman_POR" not in cols or "BKG_SHPR_CST_NO" not in cols:
-        return 0, 0
+        return 0, 0, 0
     sm_idx = cols.index("Salesman_POR")
     cn_idx = cols.index("BKG_SHPR_CST_NO")
     origin_idx = cols.index("origin") if "origin" in cols else None
     port_idx = cols.index("ori_port") if "ori_port" in cols else None
     matched = 0
+    raw_fallback = 0
     unmatched = 0
     indexes = [sm_idx, cn_idx]
     if origin_idx is not None:
@@ -185,20 +241,36 @@ def remap_shipper(data: dict, mapping: dict[str, object], missing_label: str) ->
     if port_idx is not None:
         indexes.append(port_idx)
     need_len = max(indexes) + 1
+    sales_index: dict[str, int] = {}
+    sales_values: list[str] = []
+
+    def encode_sales(value: str) -> int:
+        if value not in sales_index:
+            sales_index[value] = len(sales_values)
+            sales_values.append(value)
+        return sales_index[value]
+
     for row in rows:
         # columns-v1 rows may omit trailing nulls; pad as needed before we can index.
         if len(row) < need_len:
             row.extend([None] * (need_len - len(row)))
-        origin = row[origin_idx] if origin_idx is not None else ""
-        ori_port = row[port_idx] if port_idx is not None else ""
-        new_sales = lookup_salesman(mapping, row[cn_idx], origin, ori_port)
+        customer_no = _decode_packed_cell(cols, dicts, row, cn_idx)
+        origin = _decode_packed_cell(cols, dicts, row, origin_idx)
+        ori_port = _decode_packed_cell(cols, dicts, row, port_idx)
+        current_sales = clean_salesman_value(_decode_packed_cell(cols, dicts, row, sm_idx), missing_label)
+        new_sales = lookup_salesman(mapping, customer_no, origin, ori_port)
         if new_sales:
-            row[sm_idx] = new_sales
+            row[sm_idx] = encode_sales(new_sales)
             matched += 1
+        elif current_sales:
+            row[sm_idx] = encode_sales(current_sales)
+            raw_fallback += 1
         else:
-            row[sm_idx] = missing_label
+            row[sm_idx] = encode_sales(missing_label)
             unmatched += 1
-    return matched, unmatched
+    dicts["Salesman_POR"] = sales_values
+    shipper["d"] = dicts
+    return matched, raw_fallback, unmatched
 
 
 def main() -> int:
@@ -229,10 +301,11 @@ def main() -> int:
         data = json.load(fh)
 
     print(f"[3/3] Remapping Salesman_POR in DATA.shipper ...", flush=True)
-    matched, unmatched = remap_shipper(data, mapping, args.missing_label)
-    total = matched + unmatched
+    matched, raw_fallback, unmatched = remap_shipper(data, mapping, args.missing_label)
+    total = matched + raw_fallback + unmatched
     print(
-        f"      Matched: {matched:,} / {total:,} rows. "
+        f"      Current-owner matched: {matched:,} / {total:,} rows. "
+        f"Raw fallback: {raw_fallback:,}. "
         f"Unmatched → {args.missing_label!r}: {unmatched:,}.",
         flush=True,
     )
