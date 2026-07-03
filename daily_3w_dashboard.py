@@ -296,6 +296,15 @@ TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS = max(
         str(min(TABLEAU_CSV_DOWNLOAD_TIMEOUT_MS, 900000)),
     )),
 )
+TABLEAU_VIEW_RENDER_WAIT_SECONDS = max(0, int(os.environ.get('TABLEAU_VIEW_RENDER_WAIT_SECONDS', '15')))
+TABLEAU_VIEW1_RENDER_WAIT_SECONDS = max(
+    TABLEAU_VIEW_RENDER_WAIT_SECONDS,
+    int(os.environ.get('TABLEAU_VIEW1_RENDER_WAIT_SECONDS', '60')),
+)
+TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS = max(
+    0,
+    int(os.environ.get('TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS', '180000')),
+)
 TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS', '0'))
 TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS', '0'))
 TABLEAU_BSA_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_BSA_EXISTING_FALLBACK_MAX_HOURS', '0'))
@@ -679,24 +688,51 @@ def download_csv_via_authenticated_http(ctx, csv_url, tmp_path):
     return bytes_written
 
 
-def download_csv_via_browser_event(page, csv_url, tmp_path):
-    with page.expect_download(timeout=TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS) as dl_info:
+def download_csv_via_browser_event(page, csv_url, tmp_path, timeout_ms=None):
+    timeout_ms = TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS if timeout_ms is None else max(1000, int(timeout_ms))
+    with page.expect_download(timeout=timeout_ms) as dl_info:
         page.evaluate('url => { window.location.href = url; }', csv_url)
     download = dl_info.value
     download.save_as(str(tmp_path))
     return os.path.getsize(tmp_path)
 
 
-def download_csv_from_tableau(content_url, view_name, save_path, vf_params=None, use_http=None):
+def short_error(exc):
+    text = str(exc).strip().splitlines()
+    return text[0] if text else exc.__class__.__name__
+
+
+def download_csv_from_tableau(
+    content_url,
+    view_name,
+    save_path,
+    vf_params=None,
+    use_http=None,
+    render_wait_seconds=None,
+    browser_warmup_timeout_ms=0,
+):
     """Download CSV from Tableau with retry and HTTP fallback protection."""
     from playwright.sync_api import sync_playwright
     save_path = Path(save_path)
     tmp_path = save_path.with_name(f'{save_path.name}.download')
     csv_url = build_tableau_csv_url(content_url, view_name, vf_params)
     use_http = TABLEAU_USE_HTTP_CSV_DOWNLOAD if use_http is None else bool(use_http)
+    render_wait_seconds = (
+        TABLEAU_VIEW_RENDER_WAIT_SECONDS
+        if render_wait_seconds is None
+        else max(0, int(render_wait_seconds))
+    )
+    browser_warmup_timeout_ms = max(0, int(browser_warmup_timeout_ms or 0))
+    warmup_pending = (
+        not use_http
+        and browser_warmup_timeout_ms > 0
+        and browser_warmup_timeout_ms < TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS
+    )
     last_error = None
+    attempt = 1
 
-    for attempt in range(1, TABLEAU_CSV_DOWNLOAD_RETRIES + 1):
+    while attempt <= TABLEAU_CSV_DOWNLOAD_RETRIES:
+        is_warmup = warmup_pending
         tmp_path.unlink(missing_ok=True)
         with sync_playwright() as p:
             browser = None
@@ -712,7 +748,8 @@ def download_csv_from_tableau(content_url, view_name, save_path, vf_params=None,
                 # Load embed view to establish Tableau session/filter context.
                 page.goto(f'{TABLEAU_SERVER}/views/{content_url}/{view_name}?:embed=y&:showVizHome=n',
                           timeout=120000)
-                time.sleep(15)
+                if render_wait_seconds:
+                    time.sleep(render_wait_seconds)
 
                 if use_http:
                     print(f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} (HTTP stream)...")
@@ -726,15 +763,25 @@ def download_csv_from_tableau(content_url, view_name, save_path, vf_params=None,
                         )
                         size = download_csv_via_browser_event(page, csv_url, tmp_path)
                 else:
-                    print(
-                        f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} "
-                        "(browser event, HTTP stream disabled)..."
-                    )
-                    print(
-                        f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} "
-                        f"(browser event, timeout={TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS // 1000}s)..."
-                    )
-                    size = download_csv_via_browser_event(page, csv_url, tmp_path)
+                    if is_warmup:
+                        print(
+                            "  CSV download warm-up "
+                            f"(browser event, timeout={browser_warmup_timeout_ms // 1000}s)..."
+                        )
+                        size = download_csv_via_browser_event(
+                            page, csv_url, tmp_path,
+                            timeout_ms=browser_warmup_timeout_ms,
+                        )
+                    else:
+                        print(
+                            f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} "
+                            "(browser event, HTTP stream disabled)..."
+                        )
+                        print(
+                            f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} "
+                            f"(browser event, timeout={TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS // 1000}s)..."
+                        )
+                        size = download_csv_via_browser_event(page, csv_url, tmp_path)
 
                 if size <= 0:
                     raise RuntimeError('CSV download produced an empty file')
@@ -744,9 +791,15 @@ def download_csv_from_tableau(content_url, view_name, save_path, vf_params=None,
             except Exception as exc:
                 last_error = exc
                 tmp_path.unlink(missing_ok=True)
+                if is_warmup:
+                    warmup_pending = False
+                    print(f"  CSV warm-up did not finish: {short_error(exc)}")
+                    print("  Continuing with full browser download attempts...")
+                    continue
                 print(f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} failed: {exc}")
                 if attempt < TABLEAU_CSV_DOWNLOAD_RETRIES:
                     time.sleep(30 * attempt)
+                attempt += 1
             finally:
                 if browser is not None:
                     try:
@@ -992,6 +1045,8 @@ def download_all_chunked():
                 size = download_csv_from_tableau(
                     wb_url, '1', part_path,
                     use_http=TABLEAU_VIEW1_USE_HTTP_CSV_DOWNLOAD,
+                    render_wait_seconds=TABLEAU_VIEW1_RENDER_WAIT_SECONDS,
+                    browser_warmup_timeout_ms=TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS,
                 )
                 rows = count_csv_rows(part_path)
                 print(f"      {part_path.name}: {size:,} bytes ({rows:,} rows)")
@@ -1052,6 +1107,8 @@ def download_view1_daily(path1):
         return download_csv_from_tableau(
             wb_url, '1', path1,
             use_http=TABLEAU_VIEW1_USE_HTTP_CSV_DOWNLOAD,
+            render_wait_seconds=TABLEAU_VIEW1_RENDER_WAIT_SECONDS,
+            browser_warmup_timeout_ms=TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS,
         )
 
     chunks = list(window_quarter_chunks(BKG_SCHEDULE_START, BKG_SCHEDULE_END, DATASET_YEAR))
@@ -1079,6 +1136,8 @@ def download_view1_daily(path1):
         psize = download_csv_from_tableau(
             wb_url, '1', part_path,
             use_http=TABLEAU_VIEW1_USE_HTTP_CSV_DOWNLOAD,
+            render_wait_seconds=TABLEAU_VIEW1_RENDER_WAIT_SECONDS,
+            browser_warmup_timeout_ms=TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS,
         )
         prows = count_csv_rows(part_path)
         print(f"    {part_path.name}: {psize:,} bytes ({prows:,} rows)")
