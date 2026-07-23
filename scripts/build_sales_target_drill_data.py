@@ -822,7 +822,11 @@ def parse_summary(rows: list[list[Any]]) -> list[dict[str, Any]]:
         Q hp_q1_target, R hp_q1_perform, S hp_q1_gap,
         T hp_q2_target, U hp_q2_progress, V hp_q2_gap,
         W ac_total, X ac_w3, Y ac_pct,
-        Z booking_q3_target, AA lifting_q3_target, AB hp_q3_target, AC row_type
+        Z booking_2025_base, AA lifting_2025_base, AB hp_2025_base, AC row_type.
+
+        Summary_All has no separate Q3 target columns. Q1/Q2 targets both use
+        2025 base + the origin's Target_Input, so Q3 must reuse the computed Q2
+        target cells instead of the hidden base columns.
     """
     parsed: list[dict[str, Any]] = []
     for raw in rows[4:]:  # data starts at row 5 (index 4)
@@ -856,7 +860,7 @@ def parse_summary(rows: list[list[Any]]) -> list[dict[str, Any]]:
                         "gap": parse_pct(raw[9] if len(raw) > 9 else None),
                     },
                     "q3": {
-                        "target": parse_pct(raw[25] if len(raw) > 25 else None),
+                        "target": parse_pct(raw[7] if len(raw) > 7 else None),
                         "progress": None,
                         "gap": None,
                     },
@@ -873,7 +877,7 @@ def parse_summary(rows: list[list[Any]]) -> list[dict[str, Any]]:
                         "gap": parse_pct(raw[15] if len(raw) > 15 else None),
                     },
                     "q3": {
-                        "target": parse_pct(raw[26] if len(raw) > 26 else None),
+                        "target": parse_pct(raw[13] if len(raw) > 13 else None),
                         "progress": None,
                         "gap": None,
                     },
@@ -890,7 +894,7 @@ def parse_summary(rows: list[list[Any]]) -> list[dict[str, Any]]:
                         "gap": parse_pct(raw[21] if len(raw) > 21 else None),
                     },
                     "q3": {
-                        "target": parse_pct(raw[27] if len(raw) > 27 else None),
+                        "target": parse_pct(raw[19] if len(raw) > 19 else None),
                         "progress": None,
                         "gap": None,
                     },
