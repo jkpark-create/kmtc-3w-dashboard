@@ -1184,6 +1184,30 @@ def attach_missing_quarter_progress(rows: list[dict[str, Any]], month_metrics: d
                 cell["gap"] = (actual - target) if actual is not None and target is not None else None
 
 
+def attach_quarter_metrics(rows: list[dict[str, Any]], month_metrics: dict[str, Any]) -> None:
+    """Add row['quarter_metrics'] = {q: {w3f, w3l, w3h, bsa}} (raw TEU sums) so the
+    frontend can aggregate multiple rows as a ratio-of-sums (∑num / ∑den) instead of
+    an account-weighted mean of ratios. mean(x_i/y_i) explodes when one tab has a
+    structurally tiny denominator (e.g. ID-IDO outport BSA is booked at the mother
+    port), which inflated the multi-origin KPI cards vs the -3W dashboard."""
+    for row in rows:
+        per_month = _row_month_metrics(row, month_metrics)
+        if not per_month:
+            continue
+        qm: dict[str, dict[str, float]] = {}
+        for quarter, months in QUARTER_MONTHS.items():
+            agg = {"w3f": 0.0, "w3l": 0.0, "w3h": 0.0, "bsa": 0.0}
+            for ym, vals in per_month.items():
+                if ym not in months:
+                    continue
+                for key in agg:
+                    agg[key] += float(vals.get(key) or 0.0)
+            if any(agg.values()):
+                qm[quarter] = {key: round(value, 3) for key, value in agg.items()}
+        if qm:
+            row["quarter_metrics"] = qm
+
+
 def serialize_bsa_allocations(bsa_block: pd.DataFrame | None) -> tuple[float, list[dict[str, Any]]]:
     if bsa_block is None or bsa_block.empty:
         return 0.0, []
@@ -1419,6 +1443,7 @@ def main() -> int:
     # values that match the Sales Target screen, not the workbook's static quarter snapshot).
     attach_month_progress(parsed_summary, month_metrics)
     attach_missing_quarter_progress(parsed_summary, month_metrics)
+    attach_quarter_metrics(parsed_summary, month_metrics)
 
     index_payload = {
         "_format": "sales-target-index-v1",
