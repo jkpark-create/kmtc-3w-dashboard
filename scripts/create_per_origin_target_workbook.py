@@ -51,6 +51,8 @@ PERIOD_COLS = {
     "2025_Q2": 9,
     "2025_Total": 18,
     "2026_Q1": 22,
+    # Historical layout key — the report's Q2 progress window is dynamic (elapsed
+    # fiscal weeks, W14-26 once the quarter ends) but the block keeps this name.
     "2026_Q2_W14_19": 23,
 }
 
@@ -1058,7 +1060,7 @@ def build_readme_values() -> list[list[Any]]:
         [""],
         ["■ 실적"],
         ["• 1Q 2026 = 확정 실적"],
-        ["• 2Q 2026 = 14~19주차 진척률 (14주차 시작 후 데이터 채워짐)"],
+        ["• 2Q 2026 = 분기 경과 주차 진척률 (데이터 기준일까지 종료된 주차 누적, 분기 종료 후엔 14~26주차 전체)"],
         [""],
         ["■ 화주수 비중"],
         ["• 전체 화주수 대비 3W 부킹 화주수 비중은 목표설정 없이 1Q 실적만 표시"],

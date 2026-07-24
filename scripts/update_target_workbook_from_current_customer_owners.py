@@ -41,7 +41,6 @@ NO_BASIS_LABEL = "(no 2025 basis)"
 MONTHS_2025 = {f"2025{m:02d}" for m in range(1, 13)}
 Q1_2026 = {"202601", "202602", "202603"}
 Q2_2026 = {"202604", "202605", "202606"}
-Q2_PROGRESS_WEEKS = set(range(14, 20))
 TARGET_MONTHS = MONTHS_2025 | Q1_2026 | Q2_2026
 HIGH_TOKEN = "\uace0\uc218\uc775"
 
@@ -56,6 +55,38 @@ CN_NKG_PORTS = frozenset({
     "MSN", "NCH", "NKG", "NTG", "TAZ", "TCG", "TOL", "WHI",
     "WUH", "WUW", "WZH", "YCH", "YYA", "YZH", "YZR", "ZHE", "ZJG",
 })
+
+
+def fiscal_quarter_weeks(year: int, quarter: int) -> set[int]:
+    _, pattern = FISCAL_445[year]
+    first = sum(pattern[: 3 * (quarter - 1)]) + 1
+    last = sum(pattern[: 3 * quarter])
+    return set(range(first, last + 1))
+
+
+def elapsed_fiscal_weeks(year: int, weeks: set[int], as_of_int: int) -> set[int]:
+    """Weeks whose 7-day span has fully ended by as_of, so partial weeks don't
+    pair partial bookings with full-week BSA. Grows as the quarter progresses
+    and equals the whole quarter once it has ended."""
+    first_sun, _ = FISCAL_445[year]
+    as_of = datetime.strptime(str(as_of_int), "%Y%m%d")
+    return {w for w in weeks if first_sun + timedelta(weeks=w - 1, days=6) <= as_of}
+
+
+def q2_progress_weeks_for(as_of_int: int) -> set[int]:
+    return elapsed_fiscal_weeks(2026, fiscal_quarter_weeks(2026, 2), as_of_int)
+
+
+def q2_progress_weeks_text() -> str:
+    if not Q2_PROGRESS_WEEKS:
+        return "none"
+    return f"{min(Q2_PROGRESS_WEEKS)}-{max(Q2_PROGRESS_WEEKS)}"
+
+
+# 2Q 2026 progress window = fully elapsed fiscal weeks of Q2 as of the dataset
+# date (recomputed in main() once --as-of/--dataset-id are known). Was a static
+# 14-19 snapshot that stopped reflecting bookings after mid-May.
+Q2_PROGRESS_WEEKS = q2_progress_weeks_for(CURRENT_DATE_INT)
 
 
 # Target workbook tab -> source organization-chart sheet / column / row span.
@@ -1463,8 +1494,8 @@ def build_readme_values(as_of_int: int) -> list[list[Any]]:
         ["This version recalculates salesperson performance from the current customer-code owner mapping."],
         ["Owner source", f"https://docs.google.com/spreadsheets/d/{SALES_OWNER_SOURCE_ID}/edit"],
         ["Customer owner mapping", f"saleman.csv active rows as of {as_of_text}"],
-        ["Performance basis", "2025, 2026 Q1, and 2026 Q2 week 14-19 bookings are attributed by BKG_SHPR_CST_NO -> current SALESMAN_NO."],
-        ["BSA allocation", "Route BSA is allocated inside each tab's selected/current owner group by 2025 Normal LST_TEU route share; Q2 progress uses WW14-19 BSA."],
+        ["Performance basis", f"2025, 2026 Q1, and 2026 Q2 week {q2_progress_weeks_text()} bookings are attributed by BKG_SHPR_CST_NO -> current SALESMAN_NO. Q2 weeks = fully elapsed fiscal weeks as of the dataset date."],
+        ["BSA allocation", f"Route BSA is allocated inside each tab's selected/current owner group by 2025 Normal LST_TEU route share; Q2 progress uses WW{q2_progress_weeks_text()} BSA."],
         ["Generated", datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
     ]
 
@@ -1864,10 +1895,10 @@ def audit_mapping(booking: pd.DataFrame, owner_entries: dict[str, list[OwnerEntr
                 "2025_Allocated_BSA": sum(raw.get("bsa_2025", 0.0) for raw in raw_by_origin.get(origin, {}).values()),
                 "2026_Q1_WOS3_FST_TEU": sum(raw.get("w3_q1", 0.0) for raw in raw_by_origin.get(origin, {}).values()),
                 "2026_Q1_Allocated_BSA": sum(raw.get("bsa_q1", 0.0) for raw in raw_by_origin.get(origin, {}).values()),
-                "2026_Q2_W14_19_WOS3_FST_TEU": sum(
+                f"2026_Q2_W{q2_progress_weeks_text()}_WOS3_FST_TEU": sum(
                     raw.get("w3_q2_progress", 0.0) for raw in raw_by_origin.get(origin, {}).values()
                 ),
-                "2026_Q2_W14_19_Allocated_BSA": sum(
+                f"2026_Q2_W{q2_progress_weeks_text()}_Allocated_BSA": sum(
                     raw.get("bsa_q2_progress", 0.0) for raw in raw_by_origin.get(origin, {}).values()
                 ),
             }
@@ -1894,7 +1925,7 @@ def write_audit_files(report: dict[str, Any], owner_entries: dict[str, list[Owne
 
 
 def main() -> None:
-    global CURRENT_DATASET_ID, CURRENT_DATE_INT
+    global CURRENT_DATASET_ID, CURRENT_DATE_INT, Q2_PROGRESS_WEEKS
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="Build payloads and audit files without writing to Google Sheets.")
@@ -1904,6 +1935,7 @@ def main() -> None:
 
     CURRENT_DATASET_ID = args.dataset_id or latest_dataset_id()
     CURRENT_DATE_INT = int(args.as_of or CURRENT_DATASET_ID)
+    Q2_PROGRESS_WEEKS = q2_progress_weeks_for(CURRENT_DATE_INT)
 
     mod = target_builder()
     creds = get_creds()
@@ -1966,7 +1998,7 @@ def main() -> None:
         "dataset_id": CURRENT_DATASET_ID,
         "as_of": CURRENT_DATE_INT,
         "booking_rows": int(len(booking)),
-        "q2_progress_weeks": "14-19",
+        "q2_progress_weeks": q2_progress_weeks_text(),
         "booking_rows_mapped_to_current_owner": int(booking["mapped_current_owner"].sum()),
         "booking_customer_codes": int(booking["shipper_code_key"].nunique()),
         "mapped_customer_codes": int(booking.loc[booking["mapped_current_owner"], "shipper_code_key"].nunique()),

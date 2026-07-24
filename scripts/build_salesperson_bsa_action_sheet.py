@@ -5,7 +5,7 @@ import math
 import numbers
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
@@ -21,11 +21,11 @@ OUT_DIR = ROOT / "output"
 TEAM_FILTER = "OBT"
 MONTHS = [f"2025{m:02d}" for m in range(1, 13)] + [f"2026{m:02d}" for m in range(1, 7)]
 MONTH_LABELS = {m: f"{m[:4]}-{m[4:]}" for m in MONTHS}
+# Historical layout key: create_per_origin_target_workbook.PERIOD_COLS addresses the
+# report block by this name, so it stays fixed even though the week window is dynamic.
 Q2_PROGRESS_KEY = "2026_Q2_W14_19"
-Q2_PROGRESS_LABEL = "2026 Q2 W14-19"
-Q2_PROGRESS_START = datetime(2026, 4, 5)
-Q2_PROGRESS_END = datetime(2026, 5, 10)
-Q2_PROGRESS_WEEKS = set(range(14, 20))
+FISCAL_2026_FIRST_SUNDAY = datetime(2026, 1, 4)
+Q2_2026_WEEK_FIRST, Q2_2026_WEEK_LAST = 14, 26  # 4-4-5 calendar: Apr-Jun
 MISSING = "(미지정)"
 NO_BASIS_LABEL = "(no 2025 basis)"
 NO_BASIS_LEVEL = "no 2025 basis"
@@ -55,6 +55,22 @@ def latest_dataset_id() -> str:
 
 
 CURRENT_DATASET_ID = os.environ.get("SALES_BSA_DATASET_ID", latest_dataset_id())
+
+
+def _q2_elapsed_weeks(as_of: datetime) -> set[int]:
+    """Q2 fiscal weeks fully ended by as_of — the progress window grows with the
+    quarter and covers all of W14-26 once the quarter has ended."""
+    return {
+        w
+        for w in range(Q2_2026_WEEK_FIRST, Q2_2026_WEEK_LAST + 1)
+        if FISCAL_2026_FIRST_SUNDAY + timedelta(weeks=w - 1, days=6) <= as_of
+    }
+
+
+Q2_PROGRESS_WEEKS = _q2_elapsed_weeks(datetime.strptime(CURRENT_DATASET_ID, "%Y%m%d")) or {Q2_2026_WEEK_FIRST}
+Q2_PROGRESS_START = FISCAL_2026_FIRST_SUNDAY + timedelta(weeks=min(Q2_PROGRESS_WEEKS) - 1)
+Q2_PROGRESS_END = FISCAL_2026_FIRST_SUNDAY + timedelta(weeks=max(Q2_PROGRESS_WEEKS) - 1)
+Q2_PROGRESS_LABEL = f"2026 Q2 W{min(Q2_PROGRESS_WEEKS)}-{max(Q2_PROGRESS_WEEKS)}"
 
 PERIODS: list[tuple[str, str, list[str]]] = [
     ("202501", "2025-01", ["202501"]),
