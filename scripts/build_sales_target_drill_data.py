@@ -36,6 +36,7 @@ import argparse
 import importlib.util
 import json
 import math
+import os
 import re
 import sys
 import time
@@ -50,11 +51,15 @@ from googleapiclient.discovery import build
 
 
 ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_ROOT = Path(os.environ.get("DASHBOARD_RUNTIME_ROOT", str(ROOT)))
 DEFAULT_WORKBOOK = "1YxZkwvoMaQXIEw07qUDZtCPDFZBf8GOZyr5knkxnLxo"
 SUMMARY_SHEET = "Summary_All"
 MISSING_SALES = "(미지정)"
 SALESMAN_CSV_CANDIDATES = ("salesman.csv", "saleman.csv")
 TEAM_FILTER = "OBT"
+RAW_NEW_SALESMAN_MIN_ROWS = 3
+RAW_NEW_SALESMAN_RECENT_DAYS = 45
+RAW_SALESMAN_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{1,63}$")
 BSA_ROUTE_KEYS = ["team", "tab", "dest", "dst_port"]
 NO_BASIS_SALES = "(no 2025 basis)"
 MONTHS_2025 = frozenset(f"2025{m:02d}" for m in range(1, 13))
@@ -94,7 +99,22 @@ def apply_salesman_map_with_raw_fallback(df: pd.DataFrame, salesman_map: dict[st
     if salesman_map:
         keys = df["BKG_SHPR_CST_NO"].str.upper()
         mapped = keys.map(salesman_map).fillna("").astype(str).str.strip()
-        df["Salesman_POR"] = mapped.where(mapped.ne(""), raw_sales)
+        active_keys = {
+            clean_text(value).upper()
+            for value in salesman_map.values()
+            if clean_text(value)
+        }
+        provisional = (
+            raw_sales.ne("")
+            & ~raw_sales.str.upper().isin(active_keys)
+            & raw_sales.map(
+                lambda value: bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]{1,63}", value))
+            )
+        )
+        df["Salesman_POR"] = raw_sales.where(
+            provisional,
+            mapped.where(mapped.ne(""), raw_sales),
+        )
     else:
         df["Salesman_POR"] = raw_sales
     df["Salesman_POR"] = df["Salesman_POR"].replace("", MISSING_SALES)
@@ -557,7 +577,7 @@ def load_module(module_name: str, path: Path) -> Any:
 
 def ensure_2025_cache() -> Path:
     """Create output/_cache_2025.parquet on demand for the BSA allocation basis."""
-    out = ROOT / "output" / "_cache_2025.parquet"
+    out = RUNTIME_ROOT / "output" / "_cache_2025.parquet"
     if out.exists():
         return out
     mod = load_module("build_2025_bsa_shipper_sheet", ROOT / "scripts" / "build_2025_bsa_shipper_sheet.py")
@@ -569,7 +589,7 @@ def ensure_2025_cache() -> Path:
 
 
 def find_bsa_csv(as_of: str | None) -> Path | None:
-    out_dir = ROOT / "output"
+    out_dir = RUNTIME_ROOT / "output"
     if as_of:
         exact = out_dir / f"BSA_raw_monthly3W_{as_of}.csv"
         if exact.exists():
@@ -790,7 +810,7 @@ def build_allocated_bsa(
 
 def latest_snapshot() -> Path:
     candidates: list[tuple[float, Path]] = []
-    for path in (ROOT / "output").glob("booking_snapshot_result_*.csv"):
+    for path in (RUNTIME_ROOT / "output").glob("booking_snapshot_result_*.csv"):
         if re.fullmatch(r"booking_snapshot_result_\d{8}", path.stem):
             candidates.append((path.stat().st_mtime, path))
     if not candidates:
@@ -988,6 +1008,208 @@ def sales_target_scope_mask(df: pd.DataFrame) -> pd.Series:
         & df["YYYYMM"].ne("")
         & df["tab"].ne("UNKNOWN")
     )
+
+
+def _salesman_activity_dates(df: pd.DataFrame) -> pd.Series:
+    for col in ("Booking_schedule", "week_start_date", "Booking_date"):
+        if col not in df.columns:
+            continue
+        text = df[col].fillna("").astype(str).str.strip()
+        normalized = (
+            text.str.replace("년 ", "-", regex=False)
+            .str.replace("월 ", "-", regex=False)
+            .str.replace("일", "", regex=False)
+        )
+        parsed = pd.to_datetime(normalized, errors="coerce")
+        if parsed.notna().any():
+            return parsed
+    return pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+
+
+def provisional_salespeople_from_snapshot(
+    df: pd.DataFrame,
+    salesman_map: dict[str, str] | None,
+    as_of: str,
+) -> dict[str, list[str]]:
+    """Return recent live salesperson IDs absent from the roster, grouped by tab."""
+    if not salesman_map or df.empty:
+        return {}
+
+    active_keys = {
+        clean_text(value).upper()
+        for value in salesman_map.values()
+        if clean_text(value)
+    }
+    sales = clean_salesman_series(df["Salesman_POR"])
+    sales_keys = sales.str.upper()
+    simple = sales.map(lambda value: bool(RAW_SALESMAN_ID_RE.fullmatch(value)))
+    unregistered = sales_keys.ne("") & ~sales_keys.isin(active_keys)
+    scoped = sales_target_scope_mask(df)
+
+    dates = _salesman_activity_dates(df)
+    try:
+        as_of_date = pd.Timestamp(datetime.strptime(as_of, "%Y%m%d"))
+    except (TypeError, ValueError):
+        as_of_date = dates.max()
+    if pd.isna(as_of_date):
+        recent = pd.Series(True, index=df.index)
+    else:
+        recent = dates.ge(as_of_date - pd.Timedelta(days=RAW_NEW_SALESMAN_RECENT_DAYS))
+
+    candidates = df.loc[scoped & simple & unregistered & recent, ["tab"]].copy()
+    candidates["sales"] = sales[scoped & simple & unregistered & recent].values
+    if candidates.empty:
+        return {}
+    counts = candidates.groupby(["tab", "sales"], dropna=False).size()
+    accepted = counts[counts >= RAW_NEW_SALESMAN_MIN_ROWS]
+    grouped: dict[str, list[str]] = {}
+    for tab, name in accepted.index:
+        tab_text = clean_text(tab)
+        name_text = clean_text(name)
+        if tab_text and name_text:
+            grouped.setdefault(tab_text, []).append(name_text)
+    return {
+        tab: sorted(set(names))
+        for tab, names in grouped.items()
+    }
+
+
+def provisional_customer_owner_mapping(
+    df: pd.DataFrame,
+    salesman_map: dict[str, str] | None,
+    as_of: str,
+) -> dict[str, str]:
+    """Map customers of accepted live-only salespeople to their current owner.
+
+    The augmented mapping is reused for 2025 numerator/BSA cells so the live
+    dashboard's '25 share/base columns and target basis follow the same current
+    customer ownership as the Target Workbook.
+    """
+    provisional = provisional_salespeople_from_snapshot(df, salesman_map, as_of)
+    accepted_pairs = {
+        (clean_text(tab), clean_text(name))
+        for tab, names in provisional.items()
+        for name in names
+    }
+    if not accepted_pairs:
+        return {}
+
+    try:
+        as_of_date = pd.Timestamp(datetime.strptime(as_of, "%Y%m%d"))
+    except (TypeError, ValueError):
+        as_of_date = _salesman_activity_dates(df).max()
+    dates = _salesman_activity_dates(df)
+    if pd.isna(as_of_date):
+        recent = pd.Series(True, index=df.index)
+    else:
+        recent = (
+            dates.ge(as_of_date - pd.Timedelta(days=RAW_NEW_SALESMAN_RECENT_DAYS))
+            & dates.le(as_of_date)
+        )
+
+    sales = clean_salesman_series(df["Salesman_POR"])
+    customers = df["BKG_SHPR_CST_NO"].fillna("").astype(str).str.strip().str.upper()
+    pairs = pd.Series(
+        list(zip(df["tab"].map(clean_text), sales.map(clean_text))),
+        index=df.index,
+        dtype=object,
+    )
+    mask = sales_target_scope_mask(df) & recent & pairs.isin(accepted_pairs) & customers.ne("")
+    if not mask.any():
+        return {}
+
+    votes = pd.DataFrame(
+        {
+            "customer": customers.loc[mask],
+            "salesman": sales.loc[mask],
+        }
+    )
+    winners = (
+        votes.groupby(["customer", "salesman"], dropna=False)
+        .size()
+        .reset_index(name="rows")
+        .sort_values(["customer", "rows", "salesman"], ascending=[True, False, True])
+        .drop_duplicates("customer", keep="first")
+    )
+    return winners.set_index("customer")["salesman"].to_dict()
+
+
+def _empty_kpi() -> dict[str, dict[str, dict[str, float | None]]]:
+    return {
+        key: {
+            "q1": {"target": None, "perform": None, "gap": None},
+            "q2": {"target": None, "progress": None, "gap": None},
+            "q3": {"target": None, "progress": None, "gap": None},
+        }
+        for key in ("booking", "lifting", "high_profit")
+    }
+
+
+def _provisional_summary_row(tab: str, name: str, df: pd.DataFrame) -> dict[str, Any]:
+    q1 = df.loc[
+        df["tab"].eq(tab)
+        & df["Salesman_POR"].eq(name)
+        & df["YYYYMM"].isin(QUARTER_MONTHS["q1"])
+    ]
+    account_total = int(q1.loc[q1["BKG_SHPR_CST_NO"].ne(""), "BKG_SHPR_CST_NO"].nunique())
+    account_w3 = int(
+        q1.loc[q1["is_w3"] & q1["BKG_SHPR_CST_NO"].ne(""), "BKG_SHPR_CST_NO"].nunique()
+    )
+    return {
+        "tab": tab,
+        "name": name,
+        "row_type": "SALES",
+        "source": "live_booking_provisional",
+        "share_2025": None,
+        "booking_base_2025": None,
+        "w3_2025_teu": None,
+        "kpi": _empty_kpi(),
+        "accounts": {
+            "total": account_total,
+            "w3": account_w3,
+            "pct": (account_w3 / account_total) if account_total else None,
+        },
+    }
+
+
+def add_provisional_salespeople_to_summary(
+    rows: list[dict[str, Any]],
+    df: pd.DataFrame,
+    salesman_map: dict[str, str] | None,
+    as_of: str,
+) -> list[tuple[str, str]]:
+    """Add live provisional salespeople to target rows before chunk allow-listing."""
+    provisional = provisional_salespeople_from_snapshot(df, salesman_map, as_of)
+    existing = {
+        (clean_text(row.get("tab")), clean_text(row.get("name")))
+        for row in rows
+        if row.get("row_type") == "SALES"
+    }
+    additions = {
+        tab: [name for name in names if (tab, name) not in existing]
+        for tab, names in provisional.items()
+    }
+    additions = {tab: names for tab, names in additions.items() if names}
+    if not additions:
+        return []
+
+    merged: list[dict[str, Any]] = []
+    inserted_tabs: set[str] = set()
+    for index, row in enumerate(rows):
+        merged.append(row)
+        tab = clean_text(row.get("tab"))
+        next_tab = clean_text(rows[index + 1].get("tab")) if index + 1 < len(rows) else ""
+        if tab in additions and tab != next_tab:
+            merged.extend(_provisional_summary_row(tab, name, df) for name in additions[tab])
+            inserted_tabs.add(tab)
+    for tab in sorted(set(additions) - inserted_tabs):
+        merged.extend(_provisional_summary_row(tab, name, df) for name in additions[tab])
+    rows[:] = merged
+    return [
+        (tab, name)
+        for tab in sorted(additions)
+        for name in additions[tab]
+    ]
 
 
 def aggregate_chunks(
@@ -1362,7 +1584,7 @@ def main() -> int:
     parser.add_argument("--salesman-csv", default=None, help="Path to salesman.csv (default: project root)")
     parser.add_argument("--as-of", default=None, help="YYYYMMDD for active-row filter (default: today)")
     parser.add_argument("--no-remap", action="store_true", help="Skip salesman.csv override (use raw Salesman_POR)")
-    parser.add_argument("--out", default=str(ROOT / "dist" / "sales-target"))
+    parser.add_argument("--out", default=str(RUNTIME_ROOT / "dist" / "sales-target"))
     args = parser.parse_args()
 
     out_dir = Path(args.out)
@@ -1380,7 +1602,7 @@ def main() -> int:
     try:
         cache_2025 = ensure_2025_cache()
     except Exception as exc:
-        cache_2025 = ROOT / "output" / "_cache_2025.parquet"
+        cache_2025 = RUNTIME_ROOT / "output" / "_cache_2025.parquet"
         print(f"      WARN: _cache_2025.parquet could not be prepared ({exc}).", flush=True)
     pre_salesman_map: dict[str, str] = {}
     if not args.no_remap:
@@ -1424,6 +1646,42 @@ def main() -> int:
             flush=True,
         )
     print(f"      Loaded {len(df):,} booking rows.", flush=True)
+
+    provisional_pairs = add_provisional_salespeople_to_summary(
+        parsed_summary,
+        df,
+        salesman_map,
+        args.as_of or data_date,
+    )
+    if provisional_pairs:
+        print(
+            "      Added provisional live salespeople missing from Summary_All: "
+            + ", ".join(f"{tab}/{name}" for tab, name in provisional_pairs),
+            flush=True,
+        )
+
+    provisional_customer_owners = provisional_customer_owner_mapping(
+        df,
+        salesman_map,
+        args.as_of or data_date,
+    )
+    if provisional_customer_owners:
+        salesman_map = dict(salesman_map or {})
+        salesman_map.update(provisional_customer_owners)
+        df = load_snapshot(snapshot_path, salesman_map=salesman_map)
+        print(
+            "      Current-customer history transferred to provisional salespeople: "
+            f"{len(provisional_customer_owners):,} customers.",
+            flush=True,
+        )
+        w3_2025_by_pair, w3_2025_by_tab = load_w3_2025_teu(cache_2025, salesman_map)
+        for row in parsed_summary:
+            if row["row_type"] == "TOTAL":
+                row["w3_2025_teu"] = float(w3_2025_by_tab.get(row["tab"], 0.0))
+            else:
+                row["w3_2025_teu"] = float(
+                    w3_2025_by_pair.get((row["tab"], row["name"]), 0.0)
+                )
 
     print("[3/3] Writing chunk JSONs ...", flush=True)
     alloc_months = set(df.loc[sales_target_scope_mask(df), "YYYYMM"].dropna().astype(str))

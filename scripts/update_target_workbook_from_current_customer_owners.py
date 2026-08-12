@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import math
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -22,7 +23,8 @@ from googleapiclient.http import MediaIoBaseDownload
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT_DIR = ROOT / "output"
+RUNTIME_ROOT = Path(os.environ.get("DASHBOARD_RUNTIME_ROOT", str(ROOT)))
+OUT_DIR = RUNTIME_ROOT / "output"
 
 SALES_OWNER_SOURCE_ID = "1aGn2YyvKRx35mOsHLQAMaas6sa81LTOf4pNPugIUajg"
 TARGET_SPREADSHEET_ID = "1YxZkwvoMaQXIEw07qUDZtCPDFZBf8GOZyr5knkxnLxo"
@@ -43,6 +45,9 @@ Q1_2026 = {"202601", "202602", "202603"}
 Q2_2026 = {"202604", "202605", "202606"}
 TARGET_MONTHS = MONTHS_2025 | Q1_2026 | Q2_2026
 HIGH_TOKEN = "\uace0\uc218\uc775"
+RAW_NEW_SALESMAN_MIN_ROWS = 3
+RAW_NEW_SALESMAN_RECENT_DAYS = 45
+RAW_SALESMAN_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{1,63}$")
 
 FISCAL_445 = {
     2025: (datetime(2024, 12, 29), [4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4, 6]),
@@ -427,7 +432,113 @@ def read_existing_target_input(target_path: Path, mod: Any) -> dict[str, tuple[f
     return existing
 
 
-def active_salesman_mapping() -> tuple[pd.DataFrame, pd.Series, dict[str, int]]:
+def salesman_activity_dates(frame: pd.DataFrame) -> pd.Series:
+    for col in ("Actual_Departure_schedule", "Booking_schedule", "Booking_date"):
+        if col not in frame.columns:
+            continue
+        text = frame[col].fillna("").astype(str).str.strip()
+        normalized = (
+            text.str.replace("년 ", "-", regex=False)
+            .str.replace("월 ", "-", regex=False)
+            .str.replace("일", "", regex=False)
+        )
+        parsed = pd.to_datetime(normalized, errors="coerce")
+        if parsed.notna().any():
+            return parsed
+    return pd.Series(pd.NaT, index=frame.index, dtype="datetime64[ns]")
+
+
+def infer_provisional_customer_owners(
+    frame: pd.DataFrame,
+    active_sales_names: set[str],
+    as_of_int: int,
+) -> tuple[dict[str, str], dict[str, list[str]], dict[str, int]]:
+    """Infer current customer ownership for newly observed salesperson IDs.
+
+    Recent booking rows establish which customers have moved to a new owner.
+    That current customer mapping is later applied to both the 2025 and 2026
+    booking caches so the new salesperson's targets use the customers' full
+    historical performance, not only bookings created after the transfer.
+    """
+    required = {"Salesman_POR", "BKG_SHPR_CST_NO"}
+    if frame.empty or not required.issubset(frame.columns):
+        return {}, {}, {}
+
+    raw = frame["Salesman_POR"].map(clean_text)
+    raw_keys = raw.map(norm_key)
+    customers = frame["BKG_SHPR_CST_NO"].map(clean_text).str.upper()
+    active_keys = {norm_key(name) for name in active_sales_names if norm_key(name)}
+    simple = raw.map(lambda value: bool(RAW_SALESMAN_ID_RE.fullmatch(value)))
+    unregistered = raw_keys.ne("") & ~raw_keys.isin(active_keys)
+
+    activity_dates = salesman_activity_dates(frame)
+    as_of_date = pd.Timestamp(datetime.strptime(str(as_of_int), "%Y%m%d"))
+    cutoff = as_of_date - pd.Timedelta(days=RAW_NEW_SALESMAN_RECENT_DAYS)
+    recent = activity_dates.ge(cutoff) & activity_dates.le(as_of_date)
+
+    origins = frame.get("POR_CTR_CD", pd.Series("", index=frame.index)).map(clean_text)
+    ports = frame.get("POR_PLC_CD", pd.Series("", index=frame.index)).map(clean_text)
+    destinations = frame.get("DLY_CTR_CD", pd.Series("", index=frame.index)).map(clean_text)
+    obt = pd.Series(
+        [classify_team(origin, dest) == TEAM_FILTER for origin, dest in zip(origins, destinations)],
+        index=frame.index,
+    )
+    candidate_mask = simple & unregistered & recent & obt & customers.ne("")
+    counts = raw_keys[candidate_mask].value_counts()
+    accepted_keys = set(counts[counts >= RAW_NEW_SALESMAN_MIN_ROWS].index)
+    if not accepted_keys:
+        return {}, {}, {}
+
+    accepted = frame.loc[candidate_mask & raw_keys.isin(accepted_keys)].copy()
+    accepted["_sales_key"] = raw_keys.loc[accepted.index]
+    accepted["_sales"] = raw.loc[accepted.index]
+    accepted["_customer"] = customers.loc[accepted.index]
+    accepted["_origin"] = origins.loc[accepted.index]
+    accepted["_port"] = ports.loc[accepted.index]
+
+    canonical_by_key = {
+        key: group["_sales"].value_counts().index[0]
+        for key, group in accepted.groupby("_sales_key", sort=True)
+    }
+    customer_votes = (
+        accepted.groupby(["_customer", "_sales_key"], dropna=False)
+        .size()
+        .reset_index(name="rows")
+        .sort_values(["_customer", "rows", "_sales_key"], ascending=[True, False, True])
+        .drop_duplicates("_customer", keep="first")
+    )
+    customer_to_sales = {
+        customer: canonical_by_key[sales_key]
+        for customer, sales_key, _ in customer_votes.itertuples(index=False, name=None)
+    }
+
+    by_origin: dict[str, list[str]] = {}
+    for key, group in accepted.groupby("_sales_key", sort=True):
+        canonical = canonical_by_key[key]
+        home = (
+            group.groupby(["_origin", "_port"], dropna=False)
+            .size()
+            .reset_index(name="rows")
+            .sort_values(["rows", "_origin", "_port"], ascending=[False, True, True])
+            .iloc[0]
+        )
+        target = tab_key(home["_origin"], home["_port"])
+        by_origin.setdefault(target, []).append(canonical)
+
+    evidence = {
+        canonical_by_key[key]: int(count)
+        for key, count in counts.loc[list(accepted_keys)].items()
+    }
+    return (
+        customer_to_sales,
+        {origin: sorted(set(names)) for origin, names in by_origin.items()},
+        evidence,
+    )
+
+
+def active_salesman_mapping(
+    dataset_path: Path | None = None,
+) -> tuple[pd.DataFrame, pd.Series, dict[str, int], dict[str, list[str]], dict[str, int]]:
     path = ROOT / "saleman.csv"
     if not path.exists():
         path = ROOT / "salesman.csv"
@@ -445,7 +556,41 @@ def active_salesman_mapping() -> tuple[pd.DataFrame, pd.Series, dict[str, int]]:
     active = active.drop_duplicates("CUSTOMER_NO_KEY", keep="first")
     customer_to_sales = active.set_index("CUSTOMER_NO_KEY")["SALESMAN_NO"]
     counts = active.groupby("SALESMAN_NO", dropna=False)["CUSTOMER_NO_KEY"].nunique().to_dict()
-    return active, customer_to_sales, {clean_text(k, MISSING_SALES): int(v) for k, v in counts.items()}
+    provisional_by_origin: dict[str, list[str]] = {}
+    provisional_evidence: dict[str, int] = {}
+    if dataset_path is not None and dataset_path.exists():
+        current = pd.read_parquet(dataset_path)
+        known_names = {clean_text(value) for value in active["SALESMAN_NO"] if clean_text(value)}
+        provisional_customers, provisional_by_origin, provisional_evidence = infer_provisional_customer_owners(
+            current,
+            known_names,
+            CURRENT_DATE_INT,
+        )
+        if provisional_customers:
+            for customer, sales_name in provisional_customers.items():
+                customer_to_sales.loc[customer] = sales_name
+            counts.update(pd.Series(provisional_customers).value_counts().astype(int).to_dict())
+            synthetic_rows = []
+            for customer, sales_name in provisional_customers.items():
+                synthetic_rows.append(
+                    {
+                        "COUNTRY": "",
+                        "PORT": "",
+                        "SALESMAN_NO": sales_name,
+                        "CUSTOMER_NO": customer,
+                        "CUSTOMER_NO_KEY": customer,
+                        "SALES_START_DATE": str(CURRENT_DATE_INT),
+                        "SALES_END_DATE": "29991231",
+                    }
+                )
+            active = pd.concat([active, pd.DataFrame(synthetic_rows)], ignore_index=True, sort=False)
+    return (
+        active,
+        customer_to_sales,
+        {clean_text(k, MISSING_SALES): int(v) for k, v in counts.items()},
+        provisional_by_origin,
+        provisional_evidence,
+    )
 
 
 def person_key(value: object) -> str:
@@ -1027,7 +1172,9 @@ def complete_owner_entries(
     explicit: dict[str, list[OwnerEntry]],
     fallback_sales: dict[str, list[str]],
     customer_counts: dict[str, int],
+    provisional_sales: dict[str, list[str]] | None = None,
 ) -> dict[str, list[OwnerEntry]]:
+    provisional_sales = provisional_sales or {}
     out: dict[str, list[OwnerEntry]] = {}
     for origin in origins:
         pinned = PINNED_SALES_BY_ORIGIN.get(origin)
@@ -1046,25 +1193,45 @@ def complete_owner_entries(
                 )
                 for sales in pinned
             ]
-            continue
-        entries = explicit.get(origin, [])
-        if entries:
-            out[origin] = entries
-            continue
-        out[origin] = [
-            OwnerEntry(
-                target_tab=origin,
-                source_sheet="saleman.csv",
-                source_cell="CUSTOMER_NO",
-                input_name=sales,
-                sales_key=norm_key(sales),
-                resolved_sales=sales,
-                match_status="active_customer_mapping",
-                source_type="fallback_active_mapping",
-                customer_count=customer_counts.get(sales, 0),
+            entries = out[origin]
+        else:
+            entries = explicit.get(origin, [])
+            if entries:
+                entries = list(entries)
+            else:
+                entries = [
+                    OwnerEntry(
+                        target_tab=origin,
+                        source_sheet="saleman.csv",
+                        source_cell="CUSTOMER_NO",
+                        input_name=sales,
+                        sales_key=norm_key(sales),
+                        resolved_sales=sales,
+                        match_status="active_customer_mapping",
+                        source_type="fallback_active_mapping",
+                        customer_count=customer_counts.get(sales, 0),
+                    )
+                    for sales in fallback_sales.get(origin, [])
+                ]
+        seen_sales = {entry.resolved_sales for entry in entries if entry.resolved_sales}
+        for sales in provisional_sales.get(origin, []):
+            if sales in seen_sales:
+                continue
+            entries.append(
+                OwnerEntry(
+                    target_tab=origin,
+                    source_sheet=f"_cache_{CURRENT_DATASET_ID}.parquet",
+                    source_cell="recent booking customer ownership",
+                    input_name=sales,
+                    sales_key=norm_key(sales),
+                    resolved_sales=sales,
+                    match_status="live_booking_provisional",
+                    source_type="live_booking_provisional",
+                    customer_count=customer_counts.get(sales, 0),
+                )
             )
-            for sales in fallback_sales.get(origin, [])
-        ]
+            seen_sales.add(sales)
+        out[origin] = entries
     return out
 
 
@@ -1945,7 +2112,10 @@ def main() -> None:
     owner_path = export_sheet(drive, SALES_OWNER_SOURCE_ID, f"contact_point_sales_owner_source_export_{CURRENT_DATASET_ID}.xlsx")
     target_path = export_sheet(drive, TARGET_SPREADSHEET_ID, f"target_workbook_before_current_customer_owner_update_{CURRENT_DATASET_ID}.xlsx")
 
-    active_sales, customer_to_sales, customer_counts = active_salesman_mapping()
+    current_cache = OUT_DIR / f"_cache_{CURRENT_DATASET_ID}.parquet"
+    active_sales, customer_to_sales, customer_counts, provisional_sales, provisional_evidence = active_salesman_mapping(
+        current_cache
+    )
     explicit_entries = load_owner_entries(owner_path, active_sales, customer_counts)
     booking = load_booking(customer_to_sales)
     bsa = load_bsa()
@@ -1953,7 +2123,13 @@ def main() -> None:
 
     origins = target_origins_from_workbook(target_path, mod)
     fallback_sales = candidate_sales_by_origin(booking)
-    owner_entries = complete_owner_entries(origins, explicit_entries, fallback_sales, customer_counts)
+    owner_entries = complete_owner_entries(
+        origins,
+        explicit_entries,
+        fallback_sales,
+        customer_counts,
+        provisional_sales,
+    )
     allowed = allowed_sales_by_origin(owner_entries)
     frames = build_metric_frames(booking, bsa, q2_progress_bsa, allowed)
     counts = account_counts(booking, owner_entries)
@@ -2006,6 +2182,8 @@ def main() -> None:
         "owner_rows": owner_row_count,
         "unmatched_owner_rows": unmatched,
         "zero_activity_owner_rows_removed": zero_activity_removed,
+        "provisional_salespeople": provisional_sales,
+        "provisional_salesperson_recent_rows": provisional_evidence,
         "origin_rowcounts": origin_rowcounts,
         "dry_run": args.dry_run,
     }

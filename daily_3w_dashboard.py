@@ -29,7 +29,10 @@ if _env.exists():
 # ═══════════════════════════════════════════════════════════
 # Configuration
 # ═══════════════════════════════════════════════════════════
-WORK_DIR = Path(os.environ.get('WORK_DIR', r'C:\Users\JKPARK\OneDrive\Documents\Claude\-3W bkg dashboard'))
+PROJECT_DIR = Path(__file__).resolve().parent
+WORK_DIR = Path(os.environ.get('WORK_DIR', str(PROJECT_DIR)))
+RUNTIME_DIR = Path(os.environ.get('DASHBOARD_RUNTIME_ROOT', str(WORK_DIR)))
+RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 TABLEAU_SERVER = os.environ.get('TABLEAU_SERVER', 'https://tableau.ekmtc.com')
 TABLEAU_USER = os.environ.get('TABLEAU_USER', 'obt')
 TABLEAU_PASS = os.environ.get('TABLEAU_PASS', '')
@@ -80,7 +83,7 @@ def build_445_map():
     return week_month_lookup
 
 def dataset_csv_path(stem):
-    return WORK_DIR / f'{stem}{DATASET_INPUT_SUFFIX}.csv'
+    return RUNTIME_DIR / f'{stem}{DATASET_INPUT_SUFFIX}.csv'
 
 def classify_team(origin, dly_raw):
     """OBT/EST/IST/JBT based on origin & destination country codes."""
@@ -94,6 +97,9 @@ BSA_TEAMS = ('OBT', 'EST', 'IST', 'JBT')
 SALESMAN_CSV_CANDIDATES = ('salesman.csv', 'saleman.csv')
 MISSING_SALES = '(미지정)'
 NON_OBT_COUNTRIES = {'KR', 'JP'}
+RAW_NEW_SALESMAN_MIN_ROWS = max(1, int(os.environ.get('RAW_NEW_SALESMAN_MIN_ROWS', '3')))
+RAW_NEW_SALESMAN_RECENT_DAYS = max(1, int(os.environ.get('RAW_NEW_SALESMAN_RECENT_DAYS', '45')))
+RAW_SALESMAN_ID_RE = re.compile(r'^[A-Za-z][A-Za-z0-9._-]{1,63}$')
 
 DEST_GROUP_MAP = {
     'MY': 'MY/SG',
@@ -209,6 +215,11 @@ def load_active_salesman_lookup(path, as_of=None):
         'generic': generic,
         'unique_customer': unique_customer,
         'obt_salesmen': sorted(set(obt_salesmen)),
+        'active_salesman_keys': {
+            clean_owner_key(value)
+            for value in active['SALESMAN_NO']
+            if clean_owner_key(value)
+        },
     }
 
 def lookup_salesman_for_booking(lookup, customer_no, origin, ori_port):
@@ -233,9 +244,92 @@ def clean_salesman_value(value):
         return ''
     return text
 
-def apply_salesman_mapping(output, lookup):
+
+def _salesman_activity_dates(output):
+    for col in ('Actual_Departure_schedule', 'Booking_schedule', 'Booking_date'):
+        if col not in output.columns:
+            continue
+        text = output[col].fillna('').astype(str).str.strip()
+        normalized = (
+            text.str.replace('년 ', '-', regex=False)
+            .str.replace('월 ', '-', regex=False)
+            .str.replace('일', '', regex=False)
+        )
+        parsed = pd.to_datetime(normalized, errors='coerce')
+        if parsed.notna().any():
+            return parsed
+    return pd.Series(pd.NaT, index=output.index, dtype='datetime64[ns]')
+
+
+def infer_new_raw_salesmen(output, lookup, as_of=None):
+    """Detect recent simple salesperson IDs missing from the roster CSV.
+
+    The roster is authoritative for known IDs, but it can lag behind the live
+    booking source when someone is newly added. A missing ID is accepted as a
+    provisional salesperson only when it is a single ID (not a comma-joined
+    multi-owner value) and appears on at least RAW_NEW_SALESMAN_MIN_ROWS recent
+    booking rows.
+    """
+    if 'Salesman_POR' not in output.columns or output.empty:
+        return {}, [], {}
+
+    raw = output['Salesman_POR'].map(clean_salesman_value)
+    raw_keys = raw.map(clean_owner_key)
+    active_keys = set(lookup.get('active_salesman_keys') or ())
+    simple = raw.map(lambda value: bool(RAW_SALESMAN_ID_RE.fullmatch(value)))
+    unregistered = raw_keys.ne('') & ~raw_keys.isin(active_keys)
+
+    activity_dates = _salesman_activity_dates(output)
+    try:
+        as_of_date = pd.Timestamp(datetime.strptime(str(as_of), '%Y%m%d'))
+    except (TypeError, ValueError):
+        as_of_date = activity_dates.max()
+    if pd.isna(as_of_date):
+        recent = pd.Series(True, index=output.index)
+    else:
+        cutoff = as_of_date - pd.Timedelta(days=RAW_NEW_SALESMAN_RECENT_DAYS)
+        recent = activity_dates.ge(cutoff)
+
+    candidate_mask = simple & unregistered & recent
+    counts = raw_keys[candidate_mask].value_counts()
+    accepted_keys = set(counts[counts >= RAW_NEW_SALESMAN_MIN_ROWS].index)
+    if not accepted_keys:
+        return {}, [], {}
+
+    accepted = candidate_mask & raw_keys.isin(accepted_keys)
+    canonical_by_key = {}
+    provisional_obt = []
+    evidence = {}
+    origins = (
+        output['POR_CTR_CD'].fillna('').astype(str).str.strip().str.upper()
+        if 'POR_CTR_CD' in output.columns
+        else pd.Series('', index=output.index)
+    )
+    for key in sorted(accepted_keys):
+        scoped = accepted & raw_keys.eq(key)
+        canonical = raw[scoped].value_counts().index[0]
+        canonical_by_key[key] = canonical
+        evidence[canonical] = int(scoped.sum())
+        home_values = origins[scoped & origins.ne('')]
+        home = home_values.mode().iloc[0] if not home_values.empty else ''
+        if home not in NON_OBT_COUNTRIES:
+            provisional_obt.append(canonical)
+    return canonical_by_key, sorted(set(provisional_obt)), evidence
+
+
+def apply_salesman_mapping(output, lookup, as_of=None):
+    provisional_by_key, provisional_obt, evidence = infer_new_raw_salesmen(
+        output,
+        lookup,
+        as_of=as_of,
+    )
+    lookup['provisional_salesmen'] = sorted(provisional_by_key.values())
+    lookup['provisional_obt_salesmen'] = provisional_obt
+    lookup['provisional_salesman_evidence'] = evidence
+
     mapped = []
     matched = 0
+    provisional = 0
     raw_fallback = 0
     raw_sales = output['Salesman_POR'] if 'Salesman_POR' in output.columns else pd.Series([''] * len(output))
     for customer_no, origin, ori_port, raw_value in zip(
@@ -244,19 +338,24 @@ def apply_salesman_mapping(output, lookup):
         output['POR_PLC_CD'],
         raw_sales,
     ):
+        raw_salesman = clean_salesman_value(raw_value)
+        raw_key = clean_owner_key(raw_salesman)
+        if raw_key in provisional_by_key:
+            provisional += 1
+            mapped.append(provisional_by_key[raw_key])
+            continue
         sales = lookup_salesman_for_booking(lookup, customer_no, origin, ori_port)
         if sales:
             matched += 1
             mapped.append(sales)
         else:
-            raw_salesman = clean_salesman_value(raw_value)
             if raw_salesman:
                 raw_fallback += 1
                 mapped.append(raw_salesman)
             else:
                 mapped.append(MISSING_SALES)
     output['Salesman_POR'] = mapped
-    return matched, raw_fallback, len(mapped) - matched - raw_fallback
+    return matched, provisional, raw_fallback, len(mapped) - matched - provisional - raw_fallback
 
 # Workbook: booking snapshot(전체) - contentUrl
 BKG_WB_CONTENT_URL = 'bookingsnapshot'
@@ -308,6 +407,15 @@ TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS = max(
 TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS', '0'))
 TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS', '0'))
 TABLEAU_BSA_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_BSA_EXISTING_FALLBACK_MAX_HOURS', '0'))
+TABLEAU_REST_API_RETRIES = max(1, int(os.environ.get('TABLEAU_REST_API_RETRIES', '5')))
+TABLEAU_REST_API_RETRY_BASE_SECONDS = max(
+    1,
+    int(os.environ.get('TABLEAU_REST_API_RETRY_BASE_SECONDS', '15')),
+)
+TABLEAU_REST_API_RETRY_MAX_SECONDS = max(
+    TABLEAU_REST_API_RETRY_BASE_SECONDS,
+    int(os.environ.get('TABLEAU_REST_API_RETRY_MAX_SECONDS', '120')),
+)
 DASHBOARD_ALLOW_EXISTING_DATA_REUSE = os.environ.get('DASHBOARD_ALLOW_EXISTING_DATA_REUSE', '0') == '1'
 DASHBOARD_REUSE_SAME_DAY_CHUNKS = os.environ.get('DASHBOARD_REUSE_SAME_DAY_CHUNKS', '1') == '1'
 DASHBOARD_RUN_STARTED_TS = time.time()
@@ -335,21 +443,66 @@ def require_fresh_file(path, label, *, require_current_run=True):
 # ═══════════════════════════════════════════════════════════
 def tableau_rest_api():
     """REST API helper: sign in and return (session, api_ver, site_id)"""
-    s = requests.Session()
-    s.verify = False
-    resp = s.get(f'{TABLEAU_SERVER}/api/2.4/serverinfo',
-                 headers={'Accept': 'application/json'}, timeout=15)
-    api_ver = resp.json()['serverInfo']['restApiVersion']
-    resp = s.post(
-        f'{TABLEAU_SERVER}/api/{api_ver}/auth/signin',
-        json={'credentials': {'name': TABLEAU_USER, 'password': TABLEAU_PASS,
-                               'site': {'contentUrl': ''}}},
-        headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
-        timeout=30)
-    data = resp.json()['credentials']
-    s.headers['X-Tableau-Auth'] = data['token']
-    site_id = data['site']['id']
-    return s, api_ver, site_id
+    last_error = None
+    for attempt in range(1, TABLEAU_REST_API_RETRIES + 1):
+        s = requests.Session()
+        s.verify = False
+        try:
+            resp = s.get(
+                f'{TABLEAU_SERVER}/api/2.4/serverinfo',
+                headers={'Accept': 'application/json'},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            api_ver = resp.json()['serverInfo']['restApiVersion']
+
+            resp = s.post(
+                f'{TABLEAU_SERVER}/api/{api_ver}/auth/signin',
+                json={'credentials': {
+                    'name': TABLEAU_USER,
+                    'password': TABLEAU_PASS,
+                    'site': {'contentUrl': ''},
+                }},
+                headers={
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()['credentials']
+            s.headers['X-Tableau-Auth'] = data['token']
+            site_id = data['site']['id']
+            if attempt > 1:
+                print(f"  Tableau REST API recovered on attempt {attempt}/{TABLEAU_REST_API_RETRIES}.")
+            return s, api_ver, site_id
+        except Exception as exc:
+            last_error = exc
+            s.close()
+
+            # Authentication/configuration errors will not recover by waiting.
+            status = getattr(getattr(exc, 'response', None), 'status_code', None)
+            retryable = status is None or status in (408, 425, 429) or status >= 500
+            if not retryable or attempt >= TABLEAU_REST_API_RETRIES:
+                break
+
+            delay = min(
+                TABLEAU_REST_API_RETRY_BASE_SECONDS * (2 ** (attempt - 1)),
+                TABLEAU_REST_API_RETRY_MAX_SECONDS,
+            )
+            error_text = str(exc).strip().splitlines()
+            error_text = error_text[0] if error_text else exc.__class__.__name__
+            print(
+                f"  Tableau REST API attempt {attempt}/{TABLEAU_REST_API_RETRIES} failed: "
+                f"{error_text}"
+            )
+            print(f"  Retrying Tableau REST API in {delay} seconds...")
+            time.sleep(delay)
+
+    raise RuntimeError(
+        f'Tableau REST API sign-in failed after {attempt} attempt(s): '
+        f'{last_error}'
+    ) from last_error
 
 
 VIEW2_YYYYMM_CALC = 'Calculation_5632314318418350528'
@@ -1040,7 +1193,7 @@ def download_all_chunked():
                 print(f"  View 1 chunk Q{chunk_no}: {start} ~ {end}")
                 wb_name = f'{TEMP_WB_NAME}_q{chunk_no}'
                 wb_url = ensure_temp_workbook(s, api_ver, site_id, start=start, end=end, workbook_name=wb_name)
-                part_path = WORK_DIR / f'1_{DATASET_ID}_q{chunk_no}.csv'
+                part_path = RUNTIME_DIR / f'1_{DATASET_ID}_q{chunk_no}.csv'
                 print(f"    Downloading View 1 ({part_path.name})...")
                 size = download_csv_from_tableau(
                     wb_url, '1', part_path,
@@ -1116,7 +1269,7 @@ def download_view1_daily(path1):
     parts = []
     for qno, cstart, cend in chunks:
         print(f"  View 1 chunk Q{qno}: {cstart} ~ {cend}")
-        part_path = WORK_DIR / f'1_{DATASET_ID}_q{qno}.csv'
+        part_path = RUNTIME_DIR / f'1_{DATASET_ID}_q{qno}.csv'
         reusable = same_day_chunk_size_and_rows(part_path)
         if reusable:
             psize, prows = reusable
@@ -1239,7 +1392,7 @@ def download_bsa():
         import urllib.parse
         import pandas as pd
         all_dfs = []
-        out_dir = WORK_DIR / 'output'
+        out_dir = RUNTIME_DIR / 'output'
         out_dir.mkdir(exist_ok=True)
         for team in BSA_TEAMS:
             params = urllib.parse.urlencode({
@@ -1300,7 +1453,7 @@ def process_snapshot():
     obt_salesmen = []
 
     # Grade: Tableau에서 분기별 다운로드 (Q1=01, Q2=04, Q3=07, Q4=10)
-    grade_csv = WORK_DIR / 'output' / ('grade_latest.csv' if PUBLISH_LATEST else f'grade_{DATASET_ID}.csv')
+    grade_csv = RUNTIME_DIR / 'output' / ('grade_latest.csv' if PUBLISH_LATEST else f'grade_{DATASET_ID}.csv')
     _quarter_month = {1: '01', 2: '04', 3: '07', 4: '10'}
     _q = (_today.month - 1) // 3 + 1
     _grade_yyyymm = f'{DATASET_YEAR}{_quarter_month[_q]}'
@@ -1314,7 +1467,7 @@ def process_snapshot():
     if _need_download:
         print(f"  Downloading grade from Tableau (YYYYMM={_grade_yyyymm})...")
         try:
-            _grade_save = WORK_DIR / 'output' / f'grade_download_{DATASET_ID}.csv'
+            _grade_save = RUNTIME_DIR / 'output' / f'grade_download_{DATASET_ID}.csv'
             download_csv_from_tableau('Q_17363223877520', 'grade', _grade_save,
                                       vf_params={'YYYYMM': _grade_yyyymm})
             # 첫 줄에 YYYYMM 메타 추가하여 저장
@@ -1345,7 +1498,7 @@ def process_snapshot():
         print(f"  grade: {len(grade_lookup)} shippers (A+B={_ab}, C+D={_cd})")
     elif DASHBOARD_ALLOW_EXISTING_DATA_REUSE:
         # Fallback: grade from existing cache
-        cache_files = sorted((WORK_DIR / 'output').glob('_cache_*.parquet'), key=os.path.getmtime, reverse=True)
+        cache_files = sorted((RUNTIME_DIR / 'output').glob('_cache_*.parquet'), key=os.path.getmtime, reverse=True)
         if cache_files:
             _cf = pd.read_parquet(cache_files[0], columns=['BKG_SHPR_CST_NO', 'grade'])
             for _, r in _cf.drop_duplicates('BKG_SHPR_CST_NO').iterrows():
@@ -1402,7 +1555,7 @@ def process_snapshot():
         except: return None
 
     def load_previous_actual_schedule():
-        out_dir = WORK_DIR / 'output'
+        out_dir = RUNTIME_DIR / 'output'
 
         def snapshot_date(path):
             m = re.search(r'(\d{8})', path.stem)
@@ -1573,12 +1726,25 @@ def process_snapshot():
     if salesman_csv:
         try:
             salesman_lookup = load_active_salesman_lookup(salesman_csv, TODAY_STR)
-            matched, raw_fallback, unmatched = apply_salesman_mapping(output, salesman_lookup)
-            obt_salesmen = salesman_lookup['obt_salesmen']
+            matched, provisional, raw_fallback, unmatched = apply_salesman_mapping(
+                output,
+                salesman_lookup,
+                as_of=TODAY_STR,
+            )
+            obt_salesmen = sorted(set(salesman_lookup['obt_salesmen']) | set(
+                salesman_lookup.get('provisional_obt_salesmen', [])
+            ))
             print(
                 f"  Salesman mapping: {salesman_csv.name} current owners applied "
-                f"({matched:,} current-owner matched / {raw_fallback:,} raw fallback / {unmatched:,} unmatched)."
+                f"({matched:,} current-owner matched / {provisional:,} provisional-new preserved / "
+                f"{raw_fallback:,} raw fallback / {unmatched:,} unmatched)."
             )
+            if salesman_lookup.get('provisional_salesman_evidence'):
+                detected = ', '.join(
+                    f"{name}({rows:,})"
+                    for name, rows in sorted(salesman_lookup['provisional_salesman_evidence'].items())
+                )
+                print(f"  Provisional new salespeople detected from recent bookings: {detected}")
             print(f"  OBT salesman set: {len(obt_salesmen):,} names (KR/JP-based excluded).")
         except Exception as e:
             print(f"  WARNING: salesman.csv mapping failed; using raw Salesman_POR ({e})")
@@ -1918,7 +2084,7 @@ def process_snapshot():
     print(f"  Final (대상 only): {len(output):,}")
 
     # --- Save ---
-    out_dir = WORK_DIR / 'output'
+    out_dir = RUNTIME_DIR / 'output'
     out_dir.mkdir(exist_ok=True)
     out_path = out_dir / f'booking_snapshot_result_{DATASET_ID}.csv'
     cache_path = out_dir / f'_cache_{DATASET_ID}.parquet'
@@ -1936,7 +2102,10 @@ def process_snapshot():
 # ═══════════════════════════════════════════════════════════
 # Phase 3/4: Sales Target Build + Google Drive Upload
 # ═══════════════════════════════════════════════════════════
-GDRIVE_FOLDER_ID = '1JIxg6Y-_gRfI1HueXZ1Q9j4-Z5bxvNgv'
+GDRIVE_FOLDER_ID = '1lDyEaYHhvkMw6BoTJxSNgkWG0-BbMtpY'
+GDRIVE_HISTORY_FOLDER_ID = '1q8XdzDbYHGL6aObw0cGik8xOQgNkNgmg'
+GDRIVE_SOURCE_FOLDER_ID = '1zUm2P3VbwkRR6Up_zK111PV5moApKT65'
+GDRIVE_OBT_FOLDER_ID = '1ChAP3LiukrM3_GFDBL-kfgC8S4ejJ66P'
 GDRIVE_CREDS_DIR = Path(r'C:\Users\JKPARK\OneDrive\Documents\Claude\.gdrive-mcp')
 DASHBOARD_JSON_SAFE_LIMIT_BYTES = 95_000_000
 PACKED_STRING_DICT_MIN_SAVINGS_BYTES = 512
@@ -1946,9 +2115,11 @@ def upload_to_gdrive():
     print("[Upload] Building summary JSON + uploading to Google Drive...")
     import json as _json
     obt_salesmen = []
+    provisional_salesmen = []
+    provisional_obt_salesmen = []
 
     # --- Build aggregated JSON for static dashboard ---
-    out_dir = WORK_DIR / 'output'
+    out_dir = RUNTIME_DIR / 'output'
     bf = sorted(out_dir.glob(f'booking_snapshot_result_{DATASET_ID}.csv'), key=os.path.getmtime, reverse=True)
     sf = sorted(out_dir.glob(f'BSA_raw_monthly3W_{DATASET_ID}.csv'), key=os.path.getmtime, reverse=True)
     cache = sorted(out_dir.glob(f'_cache_{DATASET_ID}.parquet'), key=os.path.getmtime, reverse=True)
@@ -1973,10 +2144,18 @@ def upload_to_gdrive():
             obt_salesmen = salesman_lookup['obt_salesmen']
             required_cols = {'BKG_SHPR_CST_NO', 'POR_CTR_CD', 'POR_PLC_CD'}
             if required_cols.issubset(set(bkg.columns)):
-                matched, raw_fallback, unmatched = apply_salesman_mapping(bkg, salesman_lookup)
+                matched, provisional, raw_fallback, unmatched = apply_salesman_mapping(
+                    bkg,
+                    salesman_lookup,
+                    as_of=TODAY_STR,
+                )
+                provisional_salesmen = salesman_lookup.get('provisional_salesmen', [])
+                provisional_obt_salesmen = salesman_lookup.get('provisional_obt_salesmen', [])
+                obt_salesmen = sorted(set(obt_salesmen) | set(provisional_obt_salesmen))
                 print(
                     f"  Salesman mapping verified for summary JSON "
-                    f"({matched:,} current-owner matched / {raw_fallback:,} raw fallback / {unmatched:,} unmatched)."
+                    f"({matched:,} current-owner matched / {provisional:,} provisional-new preserved / "
+                    f"{raw_fallback:,} raw fallback / {unmatched:,} unmatched)."
                 )
         except Exception as e:
             print(f"  WARNING: salesman.csv mapping skipped for summary JSON ({e})")
@@ -2277,6 +2456,8 @@ def upload_to_gdrive():
         'shipper': pack_records(shipper_records),
         'bsa': pack_records(bsa_records),
         'obt_salesmen': obt_salesmen,
+        'provisional_salesmen': provisional_salesmen,
+        'provisional_obt_salesmen': provisional_obt_salesmen,
     }
 
     json_path = out_dir / f'dashboard_summary_{DATASET_ID}.json'
@@ -2300,7 +2481,7 @@ def upload_to_gdrive():
     # Copy to dist/data.json only for the current/latest dataset.
     if PUBLISH_LATEST:
         import shutil
-        dist_data = WORK_DIR / 'dist' / 'data.json'
+        dist_data = RUNTIME_DIR / 'dist' / 'data.json'
         if dist_data.parent.exists():
             shutil.copy2(json_path, dist_data)
             print(f"  Copied to {dist_data}")
@@ -2338,21 +2519,21 @@ def upload_to_gdrive():
     at = resp.json()['access_token']
     headers = {'Authorization': f'Bearer {at}'}
 
-    out_dir = WORK_DIR / 'output'
+    out_dir = RUNTIME_DIR / 'output'
 
     # Upload parquet cache built during processing.
     cf = sorted(out_dir.glob(f'_cache_{DATASET_ID}.parquet'), key=os.path.getmtime, reverse=True)
     if not cf:
         raise FileNotFoundError(f'Current booking cache missing before Drive upload: _cache_{DATASET_ID}.parquet')
     require_fresh_file(cf[0], 'Current booking cache parquet')
-    _upload_file(headers, cf[0], cf[0].name)
+    _upload_file(headers, cf[0], cf[0].name, folder_id=GDRIVE_SOURCE_FOLDER_ID)
 
     # Upload BSA CSV
     sf = sorted(out_dir.glob(f'BSA_raw_monthly3W_{DATASET_ID}.csv'), key=os.path.getmtime, reverse=True)
     if not sf:
         raise FileNotFoundError(f'Current BSA raw missing before Drive upload: BSA_raw_monthly3W_{DATASET_ID}.csv')
     require_fresh_file(sf[0], 'Current BSA raw CSV')
-    _upload_file(headers, sf[0], sf[0].name)
+    _upload_file(headers, sf[0], sf[0].name, folder_id=GDRIVE_SOURCE_FOLDER_ID)
 
     # Upload summary JSON (for static dashboard)
     jf = sorted(out_dir.glob(f'dashboard_summary_{DATASET_ID}.json'), key=os.path.getmtime, reverse=True)
@@ -2364,22 +2545,37 @@ def upload_to_gdrive():
             # 1. 고정 파일 (GitHub Pages용)
             _upload_file(headers, jf[0], 'dashboard_summary.json')
             # 2. 날짜별 보관 (히스토리 비교용)
-            _upload_file(headers, jf[0], f'dashboard_summary_{DATASET_ID}.json')
+            _upload_file(
+                headers,
+                jf[0],
+                f'dashboard_summary_{DATASET_ID}.json',
+                folder_id=GDRIVE_HISTORY_FOLDER_ID,
+            )
         else:
             # One-off/yearly backfills are loaded from the historical selector.
-            _upload_file(headers, jf[0], f'dashboard_summary_{DATASET_ID}.json')
+            _upload_file(
+                headers,
+                jf[0],
+                f'dashboard_summary_{DATASET_ID}.json',
+                folder_id=GDRIVE_HISTORY_FOLDER_ID,
+            )
 
     # Full OBT pace history is kept in Drive as a rolling backup.  The Pages
     # copy can be size-capped to avoid GitHub's 100 MB file limit.
     if PUBLISH_LATEST and os.environ.get('SKIP_OBT_HISTORY_DRIVE_UPLOAD') != '1':
-        history_path = WORK_DIR / 'obt-exception-monitor' / 'history.json'
+        history_path = RUNTIME_DIR / 'obt-exception-monitor' / 'history.json'
         if history_path.exists():
             try:
                 with open(history_path, encoding='utf-8') as fh:
                     history = _json.load(fh)
                 latest = max((str(s.get('data_date') or '') for s in history.get('snapshots') or []), default='')
                 if latest == DATASET_ID:
-                    _upload_file(headers, history_path, 'obt_exception_history.json')
+                    _upload_file(
+                        headers,
+                        history_path,
+                        'obt_exception_history.json',
+                        folder_id=GDRIVE_OBT_FOLDER_ID,
+                    )
                 else:
                     print(
                         f"  WARN: OBT history Drive upload skipped "
@@ -2403,8 +2599,8 @@ def build_obt_exception_history():
         return
 
     script_path = WORK_DIR / 'obt-exception-monitor' / 'build_history.py'
-    data_path = WORK_DIR / 'dist' / 'data.json'
-    history_path = WORK_DIR / 'dist' / 'obt-exception-monitor' / 'history.json'
+    data_path = RUNTIME_DIR / 'dist' / 'data.json'
+    history_path = RUNTIME_DIR / 'dist' / 'obt-exception-monitor' / 'history.json'
     strict = os.environ.get('OBT_HISTORY_STRICT') == '1'
 
     if not script_path.exists():
@@ -2474,8 +2670,8 @@ def build_sales_target_payload():
         return
 
     script_path = WORK_DIR / 'scripts' / 'build_sales_target_drill_data.py'
-    snapshot_path = WORK_DIR / 'output' / f'booking_snapshot_result_{DATASET_ID}.csv'
-    out_dir = WORK_DIR / 'dist' / 'sales-target'
+    snapshot_path = RUNTIME_DIR / 'output' / f'booking_snapshot_result_{DATASET_ID}.csv'
+    out_dir = RUNTIME_DIR / 'dist' / 'sales-target'
 
     if not script_path.exists():
         raise FileNotFoundError(f"Sales Target build script not found: {script_path}")
@@ -2493,12 +2689,12 @@ def build_sales_target_payload():
     subprocess.run(cmd, cwd=WORK_DIR, check=True)
 
 
-def _upload_file(headers, local_path, filename):
+def _upload_file(headers, local_path, filename, *, folder_id=GDRIVE_FOLDER_ID):
     """Upload or update a file in the Drive folder."""
     import json as _json
 
     # Check if file already exists
-    q = f"name='{filename}' and '{GDRIVE_FOLDER_ID}' in parents and trashed=false"
+    q = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
     r = _drive_request('GET', 'https://www.googleapis.com/drive/v3/files',
         retry_label=f'Drive lookup {filename}',
         headers=headers, params={'q': q, 'fields': 'files(id)'}, timeout=30)
@@ -2516,7 +2712,7 @@ def _upload_file(headers, local_path, filename):
     else:
         # Create metadata first, then stream media. This avoids building a large
         # multipart body in memory for cache/history files.
-        metadata = _json.dumps({'name': filename, 'parents': [GDRIVE_FOLDER_ID]})
+        metadata = _json.dumps({'name': filename, 'parents': [folder_id]})
         created = _drive_request('POST', 'https://www.googleapis.com/drive/v3/files',
             retry_label=f'Drive create metadata {filename}',
             headers={**headers, 'Content-Type': 'application/json; charset=UTF-8'},
@@ -2620,9 +2816,9 @@ def main():
             try:
                 download_bsa()
             except Exception as exc:
-                bsa_path = WORK_DIR / 'output' / f'BSA_raw_monthly3W_{DATASET_ID}.csv'
+                bsa_path = RUNTIME_DIR / 'output' / f'BSA_raw_monthly3W_{DATASET_ID}.csv'
                 bsa_candidates = sorted(
-                    (WORK_DIR / 'output').glob('BSA_raw_monthly3W_*.csv'),
+                    (RUNTIME_DIR / 'output').glob('BSA_raw_monthly3W_*.csv'),
                     key=os.path.getmtime,
                     reverse=True,
                 )

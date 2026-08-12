@@ -14,7 +14,8 @@ from openpyxl.utils import get_column_letter
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT_DIR = ROOT / "output"
+RUNTIME_ROOT = Path(os.environ.get("DASHBOARD_RUNTIME_ROOT", str(ROOT)))
+OUT_DIR = RUNTIME_ROOT / "output"
 YEAR = "2025"
 BSA_TEAMS = ("OBT", "EST", "IST", "JBT")
 
@@ -601,7 +602,7 @@ def build_result_tables(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, d
 
 
 def write_xlsx(total: pd.DataFrame, monthly: pd.DataFrame) -> Path:
-    OUT_DIR.mkdir(exist_ok=True)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUT_DIR / "2025_업체별_구간별_BSA_배분.xlsx"
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         total.to_excel(writer, sheet_name="2025 전체", index=False)

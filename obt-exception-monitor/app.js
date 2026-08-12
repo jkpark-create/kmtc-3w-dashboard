@@ -1,5 +1,53 @@
 const DATA_PATHS = ["../data.json.gz", "../dist/data.json.gz", "../dist/data.json", "../data.json", "/data.json.gz", "/dist/data.json.gz", "/dist/data.json", "data.json"];
 const HISTORY_PATHS = ["history.json.gz", "./history.json.gz", "/obt-exception-monitor/history.json.gz", "history.json", "./history.json", "/obt-exception-monitor/history.json"];
+const DRIVE_CONFIG = window.DASHBOARD_DRIVE_CONFIG || {};
+const DRIVE_FILE_CACHE = new Map();
+
+function localPreview() {
+  return ["localhost", "127.0.0.1"].includes(location.hostname);
+}
+
+async function findDriveFileByName(folderId, fileName) {
+  const cacheKey = `${folderId}/${fileName}`;
+  if (DRIVE_FILE_CACHE.has(cacheKey)) return DRIVE_FILE_CACHE.get(cacheKey);
+  const token = OBTAuth.getToken();
+  if (!token) throw new Error("Google Drive token is missing");
+  const escapedName = String(fileName).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  const params = new URLSearchParams({
+    q: `'${folderId}' in parents and name='${escapedName}' and trashed=false`,
+    fields: "files(id,name,size,modifiedTime)",
+    pageSize: "10"
+  });
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`, {
+    cache: "no-cache",
+    headers: {Authorization: "Bearer " + token}
+  });
+  if (!response.ok) throw new Error(`Google Drive lookup HTTP ${response.status}`);
+  const file = (await response.json()).files?.[0] || null;
+  if (file) DRIVE_FILE_CACHE.set(cacheKey, file);
+  return file;
+}
+
+async function fetchDriveJson(folderId, fileName, force = false) {
+  const file = await findDriveFileByName(folderId, fileName);
+  if (!file) throw new Error(`Google Drive file not found: ${fileName}`);
+  const token = OBTAuth.getToken();
+  const suffix = force ? `&t=${Date.now()}` : "";
+  const response = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}?alt=media${suffix}`,
+    {
+      cache: "no-cache",
+      headers: {Authorization: "Bearer " + token}
+    }
+  );
+  if (!response.ok) throw new Error(`Google Drive ${fileName}: HTTP ${response.status}`);
+  if (!fileName.endsWith(".gz")) return response.json();
+  if (!("DecompressionStream" in window) || !response.body) {
+    throw new Error("gzip JSON is not supported by this browser");
+  }
+  const stream = response.body.pipeThrough(new DecompressionStream("gzip"));
+  return new Response(stream).json();
+}
 
 async function fetchJson(path, force = false) {
   const url = force ? `${path}${path.includes("?") ? "&" : "?"}t=${Date.now()}` : path;
@@ -904,13 +952,18 @@ async function loadData(force = false) {
   try {
     let data = null;
     let loadedPath = "";
-    for (const path of DATA_PATHS) {
-      try {
-        data = await fetchJson(path, force);
-        loadedPath = path;
-        break;
-      } catch (error) {
-        // Try the next path.
+    if (OBTAuth.getToken() && DRIVE_CONFIG.mainFolderId) {
+      data = await fetchDriveJson(DRIVE_CONFIG.mainFolderId, "data.json.gz", force);
+      loadedPath = "Google Drive / Main Dashboard / data.json.gz";
+    } else if (localPreview()) {
+      for (const path of DATA_PATHS) {
+        try {
+          data = await fetchJson(path, force);
+          loadedPath = path;
+          break;
+        } catch (error) {
+          // Try the next local preview path.
+        }
       }
     }
     if (!data) throw new Error("dist/data.json 파일을 읽을 수 없습니다.");
@@ -939,11 +992,21 @@ async function loadData(force = false) {
 }
 
 async function loadHistory(force = false) {
-  for (const path of HISTORY_PATHS) {
+  if (OBTAuth.getToken() && DRIVE_CONFIG.obtFolderId) {
     try {
-      return await fetchJson(path, force);
+      return await fetchDriveJson(DRIVE_CONFIG.obtFolderId, "history.json.gz", force);
     } catch (error) {
-      // Optional file; continue without pace history.
+      console.warn("Google Drive history unavailable", error);
+      return null;
+    }
+  }
+  if (localPreview()) {
+    for (const path of HISTORY_PATHS) {
+      try {
+        return await fetchJson(path, force);
+      } catch (error) {
+        // Optional local preview file; continue without pace history.
+      }
     }
   }
   return null;

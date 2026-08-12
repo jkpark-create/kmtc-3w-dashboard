@@ -28,11 +28,13 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DIST = ROOT / "dist"
-SOURCE_OUT = ROOT / "obt-exception-monitor" / "history.json"
-DEPLOY_OUT = DIST / "obt-exception-monitor" / "history.json"
-DATA_PATH = DIST / "data.json"
-DATA_GZIP_PATH = DIST / "data.json.gz"
+RUNTIME_ROOT = Path(os.environ.get("DASHBOARD_RUNTIME_ROOT", str(ROOT)))
+RUNTIME_DIST = RUNTIME_ROOT / "dist"
+GIT_DIST = ROOT / "dist"
+SOURCE_OUT = RUNTIME_ROOT / "obt-exception-monitor" / "history.json"
+DEPLOY_OUT = RUNTIME_DIST / "obt-exception-monitor" / "history.json"
+DATA_PATH = RUNTIME_DIST / "data.json"
+DATA_GZIP_PATH = RUNTIME_DIST / "data.json.gz"
 GIT_DATA_PATHS = ("data.json", "data.json.gz")
 CURRENT_DATA_PATHS = (DATA_PATH, DATA_GZIP_PATH)
 HISTORY_SCHEMA = 2
@@ -45,12 +47,12 @@ DATA_DATE_RE = re.compile(rb'"data_date"\s*:\s*"(\d{8})"')
 
 
 def git(args: list[str]) -> bytes:
-    return subprocess.check_output(["git", "-C", str(DIST), *args], stderr=subprocess.PIPE)
+    return subprocess.check_output(["git", "-C", str(GIT_DIST), *args], stderr=subprocess.PIPE)
 
 
 def git_blob_exists(commit: str, path: str) -> bool:
     return subprocess.run(
-        ["git", "-C", str(DIST), "cat-file", "-e", f"{commit}:{path}"],
+        ["git", "-C", str(GIT_DIST), "cat-file", "-e", f"{commit}:{path}"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     ).returncode == 0
@@ -59,7 +61,7 @@ def git_blob_exists(commit: str, path: str) -> bool:
 def git_blob_prefix(commit: str, path: str, size: int = 8192) -> bytes:
     try:
         process = subprocess.Popen(
-            ["git", "-C", str(DIST), "show", f"{commit}:{path}"],
+            ["git", "-C", str(GIT_DIST), "show", f"{commit}:{path}"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
@@ -77,7 +79,7 @@ def git_blob_prefix(commit: str, path: str, size: int = 8192) -> bytes:
 def git_gzip_blob_prefix(commit: str, path: str, size: int = 8192) -> bytes:
     try:
         process = subprocess.Popen(
-            ["git", "-C", str(DIST), "show", f"{commit}:{path}"],
+            ["git", "-C", str(GIT_DIST), "show", f"{commit}:{path}"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
