@@ -60,6 +60,40 @@ class RuntimeSyncSafetyTest(unittest.TestCase):
         finally:
             sync.list_files = original_list_files
 
+    def test_obt_history_restore_uses_canonical_drive_file(self):
+        original_list_files = sync.list_files
+        original_download = sync.download_verified_file
+        calls = []
+        try:
+            sync.list_files = lambda _token, _folder: [
+                {"id": "gzip", "name": "history.json.gz"},
+                {"id": "canonical", "name": "obt_exception_history.json"},
+            ]
+
+            def fake_download(token, remote, target):
+                calls.append((token, remote, target))
+                return target
+
+            sync.download_verified_file = fake_download
+            target = Path("restored-history.json")
+            self.assertEqual(sync.restore_obt_history("token", target), target)
+            self.assertEqual(calls[0][1]["id"], "canonical")
+        finally:
+            sync.list_files = original_list_files
+            sync.download_verified_file = original_download
+
+    def test_obt_history_restore_rejects_duplicates(self):
+        original_list_files = sync.list_files
+        try:
+            sync.list_files = lambda _token, _folder: [
+                {"id": "one", "name": "obt_exception_history.json"},
+                {"id": "two", "name": "obt_exception_history.json"},
+            ]
+            with self.assertRaisesRegex(RuntimeError, "found 2"):
+                sync.restore_obt_history("token")
+        finally:
+            sync.list_files = original_list_files
+
 
 if __name__ == "__main__":
     unittest.main()

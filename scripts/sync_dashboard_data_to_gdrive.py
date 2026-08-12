@@ -52,6 +52,7 @@ STATE_PATH = LOCAL_STATE_ROOT / "gdrive_runtime_manifest.json"
 THREAD_LOCAL = threading.local()
 LEGACY_FOLDER_ID = "1JIxg6Y-_gRfI1HueXZ1Q9j4-Z5bxvNgv"
 HISTORICAL_CACHE_PATH = RUNTIME_ROOT / "output" / "_cache_2025.parquet"
+OBT_HISTORY_PATH = RUNTIME_ROOT / "obt-exception-monitor" / "history.json"
 
 
 def refresh_access_token(*, retries: int = 6) -> str:
@@ -205,6 +206,59 @@ def md5_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def download_verified_file(
+    access_token: str,
+    remote: dict[str, Any],
+    target_path: Path,
+) -> Path:
+    """Download one Drive file atomically and verify its advertised metadata."""
+    remote_name = str(remote.get("name") or target_path.name)
+    expected_md5 = str(remote.get("md5Checksum") or "")
+    expected_size = int(remote.get("size") or 0)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = target_path.with_name(f".{target_path.name}.download")
+    temp_path.unlink(missing_ok=True)
+    try:
+        response = request(
+            access_token,
+            "GET",
+            f"{DRIVE_API}/files/{remote['id']}",
+            label=f"download {remote_name}",
+            params={"alt": "media"},
+            stream=True,
+            timeout=600,
+        )
+        digest = hashlib.md5()
+        downloaded_size = 0
+        with temp_path.open("wb") as handle:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if not chunk:
+                    continue
+                handle.write(chunk)
+                digest.update(chunk)
+                downloaded_size += len(chunk)
+        downloaded_md5 = digest.hexdigest()
+        if expected_size and downloaded_size != expected_size:
+            raise RuntimeError(
+                f"Downloaded {remote_name} size mismatch: "
+                f"expected {expected_size:,}, got {downloaded_size:,}"
+            )
+        if expected_md5 and downloaded_md5 != expected_md5:
+            raise RuntimeError(
+                f"Downloaded {remote_name} MD5 mismatch: "
+                f"expected {expected_md5}, got {downloaded_md5}"
+            )
+        temp_path.replace(target_path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+    print(
+        f"[restore] downloaded {remote_name} -> {target_path} "
+        f"({downloaded_size:,} bytes, md5={downloaded_md5})"
+    )
+    return target_path
+
+
 def ensure_historical_cache(access_token: str) -> Path:
     """Restore the immutable 2025 booking cache from Drive when needed.
 
@@ -238,49 +292,25 @@ def ensure_historical_cache(access_token: str) -> Path:
             )
             return HISTORICAL_CACHE_PATH
 
-    HISTORICAL_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = HISTORICAL_CACHE_PATH.with_name(f".{remote_name}.download")
-    temp_path.unlink(missing_ok=True)
-    try:
-        response = request(
-            access_token,
-            "GET",
-            f"{DRIVE_API}/files/{remote['id']}",
-            label=f"download {remote_name}",
-            params={"alt": "media"},
-            stream=True,
-            timeout=600,
-        )
-        digest = hashlib.md5()
-        downloaded_size = 0
-        with temp_path.open("wb") as handle:
-            for chunk in response.iter_content(chunk_size=1024 * 1024):
-                if not chunk:
-                    continue
-                handle.write(chunk)
-                digest.update(chunk)
-                downloaded_size += len(chunk)
-        downloaded_md5 = digest.hexdigest()
-        if expected_size and downloaded_size != expected_size:
-            raise RuntimeError(
-                f"Downloaded {remote_name} size mismatch: "
-                f"expected {expected_size:,}, got {downloaded_size:,}"
-            )
-        if expected_md5 and downloaded_md5 != expected_md5:
-            raise RuntimeError(
-                f"Downloaded {remote_name} MD5 mismatch: "
-                f"expected {expected_md5}, got {downloaded_md5}"
-            )
-        temp_path.replace(HISTORICAL_CACHE_PATH)
-    except Exception:
-        temp_path.unlink(missing_ok=True)
-        raise
+    return download_verified_file(access_token, remote, HISTORICAL_CACHE_PATH)
 
-    print(
-        f"[restore] downloaded {remote_name} "
-        f"({downloaded_size:,} bytes, md5={downloaded_md5})"
-    )
-    return HISTORICAL_CACHE_PATH
+
+def restore_obt_history(
+    access_token: str,
+    target_path: Path = OBT_HISTORY_PATH,
+) -> Path:
+    """Restore the canonical OBT history before appending today's snapshot."""
+    matches = [
+        item
+        for item in list_files(access_token, DRIVE_FOLDERS["obt"])
+        if item.get("name") == "obt_exception_history.json"
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            "Expected exactly one Drive obt_exception_history.json, "
+            f"found {len(matches)} in folder {DRIVE_FOLDERS['obt']}"
+        )
+    return download_verified_file(access_token, matches[0], target_path)
 
 
 def restore_latest_booking_snapshot(access_token: str) -> Path:
@@ -834,6 +864,16 @@ def main() -> int:
         help="Restore and verify output/_cache_2025.parquet from Drive, then exit.",
     )
     parser.add_argument(
+        "--ensure-runtime-baseline",
+        action="store_true",
+        help="Restore the 2025 cache and canonical OBT history from Drive, then exit.",
+    )
+    parser.add_argument(
+        "--backup-obt-history",
+        type=Path,
+        help="Download and verify the canonical Drive OBT history to this path, then exit.",
+    )
+    parser.add_argument(
         "--restore-latest-booking-snapshot",
         action="store_true",
         help="Restore the latest dated cache and rebuild its Booking snapshot CSV, then exit.",
@@ -848,6 +888,13 @@ def main() -> int:
     access_token = refresh_access_token()
     if args.ensure_cache_2025:
         ensure_historical_cache(access_token)
+        return 0
+    if args.ensure_runtime_baseline:
+        ensure_historical_cache(access_token)
+        restore_obt_history(access_token)
+        return 0
+    if args.backup_obt_history:
+        restore_obt_history(access_token, args.backup_obt_history.resolve())
         return 0
     if args.restore_latest_booking_snapshot:
         restore_latest_booking_snapshot(access_token)
