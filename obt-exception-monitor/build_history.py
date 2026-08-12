@@ -33,6 +33,13 @@ RUNTIME_DIST = RUNTIME_ROOT / "dist"
 GIT_DIST = ROOT / "dist"
 SOURCE_OUT = RUNTIME_ROOT / "obt-exception-monitor" / "history.json"
 DEPLOY_OUT = RUNTIME_DIST / "obt-exception-monitor" / "history.json"
+LOCAL_STATE_ROOT = Path(
+    os.environ.get("DASHBOARD_LOCAL_STATE_DIR")
+    or Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    / "KMTC"
+    / "3w-dashboard"
+)
+RECOVERY_OUT = LOCAL_STATE_ROOT / "recovery" / "obt_history_canonical_backup.json"
 DATA_PATH = RUNTIME_DIST / "data.json"
 DATA_GZIP_PATH = RUNTIME_DIST / "data.json.gz"
 GIT_DATA_PATHS = ("data.json", "data.json.gz")
@@ -309,7 +316,10 @@ def shipper_snapshot(data: dict, target_weeks: set[str]) -> list[list]:
 
 
 def existing_generated_at(snapshots: list[dict]) -> str | None:
-    for path in (DEPLOY_OUT, SOURCE_OUT):
+    # The recovery copy is a last-resort seed for an incident run that began
+    # before the canonical Drive history had been restored into a clean runtime.
+    # It only fills dates absent from the freshly generated/source histories.
+    for path in (DEPLOY_OUT, SOURCE_OUT, RECOVERY_OUT):
         if not path.exists():
             continue
         try:
