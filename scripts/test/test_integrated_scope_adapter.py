@@ -36,12 +36,28 @@ class IntegratedScopeAdapterTests(unittest.TestCase):
                 {
                     "month": "202607", "week": "20260727", "team": "OBT",
                     "origin": "CN", "por": "SHA", "dest": "TH", "dly": "BKK",
-                    "bsaTeu": 30,
+                    "route": "KCV", "vesselCode": "JAAA", "voyageNo": "001E",
+                    "bound": "E", "pol": "SHA", "bsaTeu": 100,
+                    "referencePerformanceTeu": 40,
                 },
                 {
                     "month": "202607", "week": "20260728", "team": "OBT",
                     "origin": "CN", "por": "SHA", "dest": "TH", "dly": "BKK",
                     "bsaTeu": 40,
+                },
+                {
+                    "month": "202607", "week": "20260727", "team": "OBT",
+                    "origin": "CN", "por": "NBO", "dest": "TH", "dly": "BKK",
+                    "route": "KCV", "vesselCode": "JAAA", "voyageNo": "001E",
+                    "bound": "E", "pol": "NBO", "bsaTeu": 80,
+                    "referencePerformanceTeu": 30,
+                },
+                {
+                    "month": "202607", "week": "20260727", "team": "OBT",
+                    "origin": "CN", "por": "HKG", "dest": "TH", "dly": "BKK",
+                    "route": "KCV", "vesselCode": "JAAA", "voyageNo": "001E",
+                    "bound": "E", "pol": "HKG", "bsaTeu": 60,
+                    "referencePerformanceTeu": 20,
                 },
             ],
         }
@@ -60,6 +76,32 @@ class IntegratedScopeAdapterTests(unittest.TestCase):
                 ),
             },
             "monthFiles": {"202607": "months/202607.json.gz"},
+            "robMaxRows": [
+                {
+                    "key": "SHA", "month": "202607", "week": "20260727",
+                    "weekLabel": "W27", "route": "KCV", "vesselCode": "JAAA",
+                    "voyageNo": "001E", "bound": "E", "headBack": "head",
+                    "pol": "SHA", "polSequence": 1, "unusedTeu": 90,
+                    "occupancy": 0.5, "departureDate": "20260705",
+                    "sourceSnapshotDate": "20260814",
+                },
+                {
+                    "key": "NBO", "month": "202607", "week": "20260727",
+                    "weekLabel": "W27", "route": "KCV", "vesselCode": "JAAA",
+                    "voyageNo": "001E", "bound": "E", "headBack": "head",
+                    "pol": "NBO", "polSequence": 2, "unusedTeu": 50,
+                    "occupancy": 0.7, "departureDate": "20260706",
+                    "sourceSnapshotDate": "20260814",
+                },
+                {
+                    "key": "HKG", "month": "202607", "week": "20260727",
+                    "weekLabel": "W27", "route": "KCV", "vesselCode": "JAAA",
+                    "voyageNo": "001E", "bound": "E", "headBack": "head",
+                    "pol": "HKG", "polSequence": 3, "unusedTeu": 45,
+                    "occupancy": 0.75, "departureDate": "20260707",
+                    "sourceSnapshotDate": "20260814",
+                },
+            ],
         }
         (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
@@ -73,9 +115,18 @@ class IntegratedScopeAdapterTests(unittest.TestCase):
             }):
                 snapshot = adapter.load_integrated_scope_snapshot("20260814", 2026)
         self.assertEqual(snapshot.source_date, "20260814")
-        self.assertEqual(snapshot.bsa["WW"].tolist(), ["1", "2"])
-        self.assertEqual(snapshot.bsa["TEU_BSA (Actual)"].sum(), 70)
+        self.assertEqual(sorted(snapshot.bsa["WW"].unique().tolist()), ["1", "2"])
+        self.assertEqual(snapshot.bsa["TEU_BSA (Actual)"].sum(), 280)
         self.assertEqual(snapshot.booking_scope.iloc[0]["performance_vessel"], "JAAA")
+        self.assertEqual(len(snapshot.space_opportunities), 1)
+        opportunity = snapshot.space_opportunities[0]
+        self.assertEqual(opportunity["previous_port"], "SHA")
+        self.assertEqual(opportunity["current_port"], "NBO")
+        self.assertEqual(opportunity["prior_unused_bsa_teu"], 60)
+        self.assertEqual(opportunity["physical_unused_teu"], 50)
+        self.assertEqual(opportunity["reusable_teu"], 50)
+        self.assertEqual(snapshot.space_opportunity_meta["candidateVoyages"], 1)
+        self.assertEqual(snapshot.space_opportunity_meta["matchedGroups"], 3)
 
     def test_cutover_preserves_legacy_and_replaces_july(self):
         legacy = pd.DataFrame([

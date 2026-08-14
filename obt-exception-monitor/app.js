@@ -503,6 +503,8 @@ const state = {
   loadedPath: "",
   rows: [],
   bsaRows: [],
+  spaceRows: [],
+  spaceMeta: {},
   months: [],
   lang: "ko",
   activeTab: "exceptions",
@@ -559,6 +561,14 @@ function cacheElements() {
   ].forEach((id) => {
     els[id] = document.getElementById(id);
   });
+  if (!document.getElementById("spaceOpportunity")) {
+    const section = document.createElement("section");
+    section.id = "spaceOpportunity";
+    section.className = "space-opportunity hidden";
+    section.setAttribute("aria-label", "space reuse opportunities");
+    els.kpiGrid?.insertAdjacentElement("afterend", section);
+  }
+  els.spaceOpportunity = document.getElementById("spaceOpportunity");
   if (els.dashboardLink) els.dashboardLink.href = dashboardHref();
 }
 
@@ -972,6 +982,8 @@ async function loadData(force = false) {
     state.loadedPath = loadedPath;
     state.rows = normalizeRows(toRecordArray(data.shipper));
     state.bsaRows = normalizeBsaRows(toRecordArray(data.bsa));
+    state.spaceRows = normalizeSpaceRows(toRecordArray(data.space_opportunity));
+    state.spaceMeta = data.scope_source?.space_opportunity || {};
     state.history = await loadHistory(force);
     state.months = Array.from(new Set(state.rows.map((row) => row.month))).sort();
 
@@ -1180,6 +1192,46 @@ function normalizeBsaRows(rows) {
     .filter((row) => row.month && row.bsaTeu > 0);
 }
 
+function normalizeSpaceRows(rows) {
+  return rows.map((row) => {
+    const origins = Array.isArray(row.origins) ? row.origins.map(clean).filter(Boolean) : [];
+    const destinations = Array.isArray(row.destinations) ? row.destinations.map(clean).filter(Boolean) : [];
+    const destinationPorts = Array.isArray(row.destination_ports) ? row.destination_ports.map(clean).filter(Boolean) : [];
+    const route = clean(row.route);
+    const vesselCode = clean(row.vessel_code);
+    const voyageNo = clean(row.voyage_no);
+    const previousPort = clean(row.previous_port);
+    const currentPort = clean(row.current_port);
+    return {
+      month: clean(row.month),
+      week: clean(row.week),
+      weekStart: clean(row.week_start),
+      weekLabel: clean(row.week_label),
+      route,
+      vesselCode,
+      voyageNo,
+      bound: clean(row.bound),
+      headBack: clean(row.head_back),
+      previousPort,
+      currentPort,
+      departureDate: clean(row.departure_date),
+      bsaTeu: toNumber(row.bsa_teu),
+      bookingTeu: toNumber(row.booking_teu),
+      ownGapTeu: toNumber(row.own_gap_teu),
+      priorUnusedBsaTeu: toNumber(row.prior_unused_bsa_teu),
+      physicalUnusedTeu: toNumber(row.physical_unused_teu),
+      reusableTeu: toNumber(row.reusable_teu),
+      robOccupancy: toNumber(row.rob_occupancy),
+      origins,
+      destinations,
+      destinationPorts,
+      matchBasis: clean(row.match_basis),
+      sourceSnapshotDate: clean(row.source_snapshot_date),
+      search: [route, vesselCode, voyageNo, previousPort, currentPort, ...origins, ...destinations, ...destinationPorts].join(" ").toLowerCase()
+    };
+  }).filter((row) => row.month && row.weekStart && row.reusableTeu > 0);
+}
+
 function populateBaseFilters() {
   setOptions(els.monthFilter, state.months.map((m) => [m, formatMonth(m)]), state.filters.month);
   setOptions(els.horizonFilter, [["next3", horizonOptionLabel("next3")], ["w1", horizonOptionLabel("w1")], ["w2", horizonOptionLabel("w2")], ["w3", horizonOptionLabel("w3")], ["custom", t("options.custom")]], state.filters.horizon);
@@ -1306,8 +1358,10 @@ function render() {
   const currentBsaRows = filterBsaForPeriod(periods.current);
   const baselineBsaRows = filterBsaForPeriod(periods.baseline);
   const analysis = analyze(currentRows, baselineRows, currentBsaRows, baselineBsaRows, periods);
+  analysis.space = summarizeSpaceOpportunities(filterSpaceRowsForPeriod(periods.current), periods.current);
 
   renderKpis(analysis);
+  renderSpaceOpportunities(analysis.space);
   renderOriginPaceHeadlines(analysis);
   renderRoutes(analysis);
   renderSales(analysis);
@@ -1519,6 +1573,57 @@ function filterBsaForPeriod(period) {
     const divisor = period.scaleDivisorByWeek && week ? period.scaleDivisorByWeek[week] : period.scaleDivisor;
     return divisor ? { ...row, bsaTeu: row.bsaTeu / divisor } : row;
   });
+}
+
+function filterSpaceRowsForPeriod(period) {
+  if (!period || state.filters.sales !== "ALL") return [];
+  return state.spaceRows.filter((row) => {
+    if (period.weekSet && period.weekSet.size) {
+      if (!period.weekSet.has(row.weekStart)) return false;
+    } else {
+      if (period.month && row.month !== period.month) return false;
+      if (period.week && period.week !== "ALL" && row.weekStart !== period.week) return false;
+    }
+    if (!arrayMatchesFilter(row.origins, "origin")) return false;
+    if (!matchesFilter(row.currentPort, "pol")) return false;
+    if (!arrayMatchesFilter(row.destinations, "dest")) return false;
+    if (!arrayMatchesFilter(row.destinationPorts, "dst")) return false;
+    if (state.filters.query && !row.search.includes(state.filters.query)) return false;
+    return true;
+  });
+}
+
+function arrayMatchesFilter(values, key) {
+  const selected = state.filters[key];
+  if (!Array.isArray(selected) || !selected.length) return true;
+  return values.some((value) => selected.includes(value));
+}
+
+function summarizeSpaceOpportunities(rows, period) {
+  const weeklyMeta = Object.entries(state.spaceMeta?.coverageByWeek || {})
+    .filter(([week, item]) => {
+      if (period?.weekSet?.size) return period.weekSet.has(clean(item.weekStart));
+      if (period?.month && !week.startsWith(period.month)) return false;
+      return !period?.week || period.week === "ALL" || clean(item.weekStart) === period.week;
+    })
+    .map(([, item]) => item);
+  const eligibleGroups = weeklyMeta.reduce((sum, item) => sum + toNumber(item.eligibleGroups), 0);
+  const matchedGroups = weeklyMeta.reduce((sum, item) => sum + toNumber(item.matchedGroups), 0);
+  const selectedMeta = weeklyMeta.length ? {
+    ...state.spaceMeta,
+    eligibleGroups,
+    matchedGroups,
+    exactMatchedGroups: weeklyMeta.reduce((sum, item) => sum + toNumber(item.exactMatchedGroups), 0),
+    uniqueVoyageMatchedGroups: weeklyMeta.reduce((sum, item) => sum + toNumber(item.uniqueVoyageMatchedGroups), 0),
+    matchCoverage: eligibleGroups ? matchedGroups / eligibleGroups : 0
+  } : state.spaceMeta || {};
+  return {
+    rows: [...rows].sort((a, b) => b.reusableTeu - a.reusableTeu || a.departureDate.localeCompare(b.departureDate)),
+    count: rows.length,
+    reusableTeu: rows.reduce((sum, row) => sum + row.reusableTeu, 0),
+    hiddenBySales: state.filters.sales !== "ALL",
+    meta: selectedMeta
+  };
 }
 
 function getForcedPeriod() {
@@ -4022,6 +4127,8 @@ function classifyShipperFocus(issue, context, impactTeu) {
 
 function renderKpis(analysis) {
   const t = analysis.totals;
+  const space = analysis.space || { count: 0, reusableTeu: 0, hiddenBySales: false, meta: {} };
+  const spaceCoverage = toNumber(space.meta.matchCoverage);
   const w3Pct = t.totalBaseW3Teu ? t.deltaW3Teu / t.totalBaseW3Teu : 0;
   const bsaUtil = t.totalBsaTeu ? t.totalCurrentTeu / t.totalBsaTeu : 0;
   const w3BsaUtil = t.totalBsaTeu ? t.totalCurrentW3Teu / t.totalBsaTeu : 0;
@@ -4060,11 +4167,15 @@ function renderKpis(analysis) {
       tone: t.p1RouteExceptions ? "neg" : t.highRoutes ? "warn" : "pos"
     },
     {
-      key: "topAction",
-      label: state.lang === "en" ? "Action Targets" : "오늘 조치 대상",
-      value: fmt(t.topActionCount),
-      note: state.lang === "en" ? `P1 candidates ${fmt(t.p1Actions)} · all targets shown` : `P1 후보 ${fmt(t.p1Actions)}건 · 전체 표시`,
-      tone: t.topActionCount ? "warn" : "pos"
+      key: "spaceReuse",
+      label: state.lang === "en" ? "Space Reuse Opportunity" : "스페이스 활용 기회",
+      value: space.hiddenBySales ? "-" : space.count ? fmt(space.reusableTeu) : "-",
+      note: space.hiddenBySales
+        ? (state.lang === "en" ? "Salesperson BSA allocation unavailable" : "영업사원별 BSA 배분 기준 없음")
+        : state.lang === "en"
+          ? `${fmt(space.count)} voyages · ROB match ${rpct(spaceCoverage)}`
+          : `${fmt(space.count)}항차 · ROB 매칭 ${rpct(spaceCoverage)}`,
+      tone: space.count ? "warn" : "pos"
     },
     {
       key: "w3Teu",
@@ -4076,11 +4187,11 @@ function renderKpis(analysis) {
     {
       key: "w3TeuNotCancel",
       label: state.lang === "en" ? "3W BKG (not cancel)" : "3주전 BKG (not cancel)",
-      value: fmt(t.totalCurrentW3NotCancelLstTeu),
+      value: fmt(t.totalCurrentW3NotCancelTeu),
       note: state.lang === "en"
-        ? `LST basis · cancel ${fmt(t.totalCurrentW3CancelLstTeu)} TEU removed`
-        : `LST 기준 · cancel ${fmt(t.totalCurrentW3CancelLstTeu)} TEU 제외`,
-      tone: t.totalCurrentW3CancelLstTeu > 0 ? "warn" : "pos"
+        ? `Booking basis · cancel ${fmt(t.totalCurrentW3CancelTeu)} TEU removed`
+        : `Booking 기준 · cancel ${fmt(t.totalCurrentW3CancelTeu)} TEU 제외`,
+      tone: t.totalCurrentW3CancelTeu > 0 ? "warn" : "pos"
     },
     {
       key: "w3Bsa",
@@ -4112,6 +4223,51 @@ function renderKpis(analysis) {
       <div class="note">${item.note}</div>
     </article>
   `).join("");
+}
+
+function renderSpaceOpportunities(space) {
+  if (!els.spaceOpportunity) return;
+  if (!space || !space.rows.length) {
+    els.spaceOpportunity.innerHTML = "";
+    els.spaceOpportunity.classList.add("hidden");
+    return;
+  }
+  const en = state.lang === "en";
+  const meta = space.meta || {};
+  const coverage = toNumber(meta.matchCoverage);
+  const cards = space.rows.slice(0, 6).map((row) => `
+    <article class="space-opportunity-card">
+      <div class="space-opportunity-card-head">
+        <strong>${escapeHtml(row.route)} ${escapeHtml(row.vesselCode)} / ${escapeHtml(row.voyageNo)}</strong>
+        <span>${fmt(row.reusableTeu)} TEU</span>
+      </div>
+      <div class="space-opportunity-flow">
+        <b>${escapeHtml(row.previousPort)}</b><span>→</span><b>${escapeHtml(row.currentPort)}</b>
+        <small>${escapeHtml(row.weekLabel || row.week)} · ${formatDataDate(row.departureDate)}</small>
+      </div>
+      <div class="space-opportunity-metrics">
+        <span>${en ? "Prior BSA free" : "이전 BSA 미사용"} <b>${fmt(row.priorUnusedBsaTeu)}</b></span>
+        <span>${en ? "Physical free" : "물리 여유"} <b>${fmt(row.physicalUnusedTeu)}</b></span>
+        <span>${en ? "Current own gap" : "현재 자체 Gap"} <b>${fmt(row.ownGapTeu)}</b></span>
+      </div>
+    </article>
+  `).join("");
+  const sourceLabel = meta.physicalSourceMode === "legacy_dmsae"
+    ? (en ? "MAX ROB legacy DMSAE" : "MAX ROB 레거시 DMSAE")
+    : escapeHtml(meta.physicalSource || "MAX ROB");
+  els.spaceOpportunity.innerHTML = `
+    <div class="space-opportunity-head">
+      <div>
+        <h3>${en ? "Previous-port BSA reuse opportunities" : "이전 포트 미사용 BSA 활용 기회"}</h3>
+        <p>${en
+          ? "One strongest later-port action per voyage; BSA and physical ROB capacity remain separate facts."
+          : "항차별 가장 큰 후속 포트 기회 1건만 표시하며, BSA 여유와 물리 ROB 여유를 분리해 판단합니다."}</p>
+      </div>
+      <span>${sourceLabel} · ${en ? "match" : "매칭"} ${rpct(coverage)} (${fmt(meta.matchedGroups || 0)}/${fmt(meta.eligibleGroups || 0)})</span>
+    </div>
+    <div class="space-opportunity-grid">${cards}</div>
+  `;
+  els.spaceOpportunity.classList.remove("hidden");
 }
 
 function renderOriginPaceHeadlines(analysis) {
@@ -5512,9 +5668,9 @@ function kpiHelp(key) {
     bsaUtil: "현재 선택된 주차/월 조건의 전체 BKG(fst)를 같은 기간 BSA TEU로 나눈 비율입니다.",
     paceRisk: "현재 선택 조건에서 확인이 필요한 Route 수입니다. BKG 진행 부족은 같은 W+시점/도착포트 기준보다 전체 BKG 성숙도가 낮은 구간이고, BSA속도 부족은 최근 일별 pickup으로 남은 BSA Gap을 채우기 어려운 구간입니다. 3W부족은 W+3/BSA 선행확보율이 기준보다 낮거나 절대 확보율이 낮은 구간입니다.",
     p1Routes: "오늘 먼저 원인을 확인해야 하는 P1 Route 수입니다. P1 조치 건수에는 구간 이슈와 화주 Action 후보가 함께 포함됩니다.",
-    topAction: "현재 필터에서 조치 대상으로 노출되는 전체 화주 후보 수입니다.",
+    spaceReuse: "이전 포트까지 누적된 미사용 OBT BSA와 현재 포트의 MAX ROB 물리 여유 중 작은 값입니다. 항차별 중복을 제거해 가장 큰 후속 포트 기회 1건만 합산하며, ROB 미매칭 구간은 0이 아니라 계산 제외로 처리합니다.",
     w3Teu: "shipper.w3_fst 기반 3주전 선행 부킹 TEU 합계입니다.",
-    w3TeuNotCancel: "LST 기준으로 본 3주전 BKG에서 Cancel 상태로 전환된 부분(w3_canc_lst)을 제외한 값입니다. 계산식: w3_lst − w3_canc_lst. 실제 선적된 LST_TEU 기반이라 FST 기준 대비 정밀합니다.",
+    w3TeuNotCancel: "미래 3주전 선행 부킹에서 취소 전환분을 제외한 값입니다. 계산식: w3_fst − w3_canc_fst. 미래 주차에는 LST 실적이 아직 없어 0이 될 수 있으므로 Booking/FST 기준을 사용합니다.",
     w3Bsa: "3W Booking TEU를 같은 선택기간 BSA로 나눈 비율입니다.",
     issueCustomers: "감소/이탈 화주와 리스크 구간 참여 화주를 포함한 화주 단위 조치 대상 수입니다.",
     impactTeu: "기준 대비 회복이 필요한 영향 TEU 합계입니다.",
@@ -5525,9 +5681,9 @@ function kpiHelp(key) {
     bsaUtil: "Current total BKG (fst) divided by BSA TEU for the same selected week or month period.",
     paceRisk: "Number of routes that need checking under the current filters. BKG status means total BKG maturity is behind the same W+ stage and destination-port benchmark; BSA pace means recent BSA-gap pickup is unlikely to close the remaining BSA gap. W+3 low means W+3/BSA advance coverage is below the reference or absolutely low.",
     p1Routes: "Number of priority routes to check first today. P1 actions include both route issues and customer action candidates.",
-    topAction: "Number of customer action targets shown under the current filters.",
+    spaceReuse: "The smaller of cumulative unused OBT BSA at prior ports and physical MAX ROB space at the current port. Only the strongest later-port candidate per voyage is counted; unmatched ROB rows are excluded rather than treated as zero.",
     w3Teu: "Sum of 3W advance-booked TEU from shipper.w3_fst.",
-    w3TeuNotCancel: "LST-basis W-3 booking volume after removing the cancelled portion (w3_canc_lst). Formula: w3_lst − w3_canc_lst. Uses actual LST_TEU values, so it tracks loaded volume more precisely than the FST view.",
+    w3TeuNotCancel: "Advance booking volume after removing cancellations. Formula: w3_fst − w3_canc_fst. Future W+3 weeks use the Booking/FST basis because LST actuals are not yet available.",
     w3Bsa: "3W booking TEU divided by BSA for the same selected period.",
     issueCustomers: "Customer-level action targets, including declining/lost customers and customers participating in risk routes.",
     impactTeu: "Recoverable impact TEU compared with the baseline.",

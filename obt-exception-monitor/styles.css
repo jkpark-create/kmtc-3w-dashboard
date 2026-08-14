@@ -474,6 +474,108 @@ select {
   color: var(--warn);
 }
 
+.space-opportunity {
+  margin-bottom: 12px;
+  padding: 13px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  box-shadow: var(--shadow);
+}
+
+.space-opportunity.hidden {
+  display: none;
+}
+
+.space-opportunity-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 11px;
+}
+
+.space-opportunity-head h3,
+.space-opportunity-head p {
+  margin: 0;
+}
+
+.space-opportunity-head h3 {
+  font-size: 14px;
+}
+
+.space-opportunity-head p,
+.space-opportunity-head > span {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.space-opportunity-head > span {
+  flex: 0 0 auto;
+  text-align: right;
+}
+
+.space-opportunity-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.space-opportunity-card {
+  padding: 10px 11px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warn) 5%, var(--panel));
+}
+
+.space-opportunity-card-head,
+.space-opportunity-flow,
+.space-opportunity-metrics {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.space-opportunity-card-head {
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.space-opportunity-card-head > span {
+  color: var(--warn);
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.space-opportunity-flow {
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.space-opportunity-flow small {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.space-opportunity-metrics {
+  flex-wrap: wrap;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.space-opportunity-metrics span + span::before {
+  content: "·";
+  margin-right: 7px;
+}
+
+.space-opportunity-metrics b {
+  color: var(--text);
+}
+
 .origin-pace {
   margin-bottom: 12px;
   padding: 12px 14px;
@@ -1418,6 +1520,10 @@ tr:hover td {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .space-opportunity-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .workbench,
   .detail-grid,
   .action-grid {
@@ -1446,6 +1552,18 @@ tr:hover td {
 
   .kpi-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .space-opportunity-head {
+    flex-direction: column;
+  }
+
+  .space-opportunity-head > span {
+    text-align: left;
+  }
+
+  .space-opportunity-grid {
+    grid-template-columns: 1fr;
   }
 
   .action-kpi-grid {

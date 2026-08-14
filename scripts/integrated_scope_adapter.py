@@ -29,6 +29,9 @@ DEFAULT_CUTOVER_DATE = "20260705"
 DEFAULT_INTEGRATED_ROOT = Path(
     r"C:\Users\JKPARK\OneDrive\Documents\Claude\Integrated dashboard project"
 )
+SPACE_MIN_PRIOR_UNUSED_BSA_TEU = 30.0
+SPACE_MIN_PHYSICAL_UNUSED_TEU = 20.0
+SPACE_MIN_REUSABLE_TEU = 20.0
 
 REQUIRED_BSA_SCOPE_MARKERS = (
     "Single LOCAL first-vessel",
@@ -37,8 +40,11 @@ REQUIRED_BSA_SCOPE_MARKERS = (
 )
 REQUIRED_ACTUAL_SCOPE_MARKERS = (
     "B/L / SINGLE(TEAM) / individual",
-    "first BSA-bearing load segment",
     "Booking and actual B/L remain separate",
+)
+REQUIRED_ACTUAL_SCOPE_SEGMENT_ALTERNATIVES = (
+    "first BSA-bearing load segment",
+    "valid BSA-bearing vessel",
 )
 
 
@@ -86,6 +92,8 @@ def _validate_source_contract(source_meta: dict[str, Any]) -> None:
     actual_scope = _clean(source_meta.get("iccActualScope"))
     missing = [marker for marker in REQUIRED_BSA_SCOPE_MARKERS if marker not in bsa_scope]
     missing.extend(marker for marker in REQUIRED_ACTUAL_SCOPE_MARKERS if marker not in actual_scope)
+    if not any(marker in actual_scope for marker in REQUIRED_ACTUAL_SCOPE_SEGMENT_ALTERNATIVES):
+        missing.append("valid BSA-bearing load segment/vessel contract")
     if missing:
         raise RuntimeError(
             "Integrated dashboard source contract is not the expected Single/individual contract; "
@@ -248,12 +256,242 @@ def _canonical_bsa_rows(weekly_rows: list[dict[str, Any]]) -> pd.DataFrame:
     return frame.groupby(keys, as_index=False, dropna=False)["TEU_BSA (Actual)"].sum()
 
 
+def _space_reuse_opportunities(
+    weekly_rows: list[dict[str, Any]],
+    rob_max_rows: list[dict[str, Any]],
+    source_meta: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Build conservative previous-POL BSA reuse candidates.
+
+    Booking/BSA is first aggregated at OBT + voyage + POL grain.  A physical
+    ROB fact is accepted only on an exact operational key or, for vessel
+    substitutions, when Route+Voyage+Bound+POL resolves to one ROB fact.  The
+    output keeps one strongest candidate per voyage so the dashboard does not
+    repeat the same carry-over opportunity at several later calls.
+    """
+
+    exact: dict[tuple[str, ...], dict[str, Any]] = {}
+    unique_voyage: dict[tuple[str, ...], dict[str, Any] | None] = {}
+    for row in rob_max_rows:
+        exact_key = tuple(_clean(row.get(key)).upper() for key in (
+            "week", "route", "vesselCode", "voyageNo", "bound", "pol",
+        ))
+        previous = exact.get(exact_key)
+        if previous is None or _number(row.get("polSequence")) > _number(previous.get("polSequence")):
+            exact[exact_key] = row
+
+        voyage_key = tuple(_clean(row.get(key)).upper() for key in (
+            "week", "route", "voyageNo", "bound", "pol",
+        ))
+        if voyage_key not in unique_voyage:
+            unique_voyage[voyage_key] = row
+        else:
+            prior = unique_voyage[voyage_key]
+            if prior is not None and _clean(prior.get("key")) != _clean(row.get("key")):
+                unique_voyage[voyage_key] = None
+
+    source_groups: dict[tuple[str, ...], dict[str, Any]] = {}
+    for row in weekly_rows:
+        if _clean(row.get("team")).upper() != "OBT":
+            continue
+        key = tuple(_clean(row.get(field)).upper() for field in (
+            "week", "route", "vesselCode", "voyageNo", "bound", "pol",
+        ))
+        if not key[0] or key[0][:6] < DEFAULT_CUTOVER_MONTH:
+            continue
+        item = source_groups.setdefault(key, {
+            "bsa_teu": 0.0,
+            "booking_teu": 0.0,
+            "origins": set(),
+            "destinations": set(),
+            "destination_ports": set(),
+        })
+        item["bsa_teu"] += _number(row.get("bsaTeu"))
+        booking_value = row.get("referencePerformanceTeu")
+        if booking_value is None:
+            booking_value = row.get("bookingTeu")
+        item["booking_teu"] += _number(booking_value)
+        origin = _clean(row.get("origin")).upper()
+        destination = _clean(row.get("dest")).upper()
+        destination_port = _clean(row.get("dly")).upper()
+        if origin:
+            item["origins"].add(origin)
+        if destination:
+            item["destinations"].add(destination)
+        if destination_port:
+            item["destination_ports"].add(destination_port)
+
+    eligible_groups = {
+        key: item for key, item in source_groups.items()
+        if item["bsa_teu"] > 0 or item["booking_teu"] > 0
+    }
+    fact_groups: dict[str, dict[str, Any]] = {}
+    exact_matches = 0
+    unique_matches = 0
+    eligible_by_week: dict[str, int] = {}
+    matched_by_week: dict[str, int] = {}
+    exact_by_week: dict[str, int] = {}
+    unique_by_week: dict[str, int] = {}
+    for key in eligible_groups:
+        eligible_by_week[key[0]] = eligible_by_week.get(key[0], 0) + 1
+    for key, item in eligible_groups.items():
+        fact = exact.get(key)
+        match_basis = "exact"
+        if fact is None:
+            fact = unique_voyage.get((key[0], key[1], key[3], key[4], key[5]))
+            match_basis = "unique_route_voyage"
+        if fact is None:
+            continue
+        if match_basis == "exact":
+            exact_matches += 1
+            exact_by_week[key[0]] = exact_by_week.get(key[0], 0) + 1
+        else:
+            unique_matches += 1
+            unique_by_week[key[0]] = unique_by_week.get(key[0], 0) + 1
+        matched_by_week[key[0]] = matched_by_week.get(key[0], 0) + 1
+        fact_key = _clean(fact.get("key")) or "|".join(key)
+        target = fact_groups.setdefault(fact_key, {
+            "fact": fact,
+            "match_basis": match_basis,
+            "bsa_teu": 0.0,
+            "booking_teu": 0.0,
+            "origins": set(),
+            "destinations": set(),
+            "destination_ports": set(),
+        })
+        target["bsa_teu"] += item["bsa_teu"]
+        target["booking_teu"] += item["booking_teu"]
+        target["origins"].update(item["origins"])
+        target["destinations"].update(item["destinations"])
+        target["destination_ports"].update(item["destination_ports"])
+        if match_basis == "exact":
+            target["match_basis"] = "exact"
+
+    voyages: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for item in fact_groups.values():
+        fact = item["fact"]
+        voyage_key = tuple(_clean(fact.get(field)).upper() for field in (
+            "week", "route", "vesselCode", "voyageNo", "bound",
+        ))
+        voyages.setdefault(voyage_key, []).append(item)
+
+    opportunities: list[dict[str, Any]] = []
+    for voyage_key, calls in voyages.items():
+        cumulative_bsa = 0.0
+        cumulative_booking = 0.0
+        previous_port = ""
+        candidates: list[dict[str, Any]] = []
+        for item in sorted(calls, key=lambda value: (
+            _number(value["fact"].get("polSequence")),
+            _clean(value["fact"].get("pol")),
+        )):
+            fact = item["fact"]
+            current_port = _clean(fact.get("pol")).upper()
+            prior_unused = max(cumulative_bsa - cumulative_booking, 0.0)
+            physical_unused = max(_number(fact.get("unusedTeu")), 0.0)
+            reusable_teu = min(prior_unused, physical_unused)
+            own_gap = max(item["bsa_teu"] - item["booking_teu"], 0.0)
+            if (
+                previous_port
+                and current_port
+                and current_port != previous_port
+                and prior_unused >= SPACE_MIN_PRIOR_UNUSED_BSA_TEU
+                and physical_unused >= SPACE_MIN_PHYSICAL_UNUSED_TEU
+                and reusable_teu >= SPACE_MIN_REUSABLE_TEU
+            ):
+                week = _clean(fact.get("week"))
+                week_start = ""
+                if len(week) == 8 and week[:4].isdigit():
+                    start = _week_start_by_key(int(week[:4])).get(week)
+                    if start:
+                        week_start = f"{start.year}년 {start.month:02d}월 {start.day:02d}일"
+                candidates.append({
+                    "month": _clean(fact.get("month")) or week[:6],
+                    "week": week,
+                    "week_start": week_start,
+                    "week_label": _clean(fact.get("weekLabel")),
+                    "route": _clean(fact.get("route")),
+                    "vessel_code": _clean(fact.get("vesselCode")),
+                    "voyage_no": _clean(fact.get("voyageNo")),
+                    "bound": _clean(fact.get("bound")),
+                    "head_back": _clean(fact.get("headBack")),
+                    "previous_port": previous_port,
+                    "current_port": current_port,
+                    "departure_date": _clean(fact.get("departureDate")),
+                    "bsa_teu": item["bsa_teu"],
+                    "booking_teu": item["booking_teu"],
+                    "own_gap_teu": own_gap,
+                    "prior_unused_bsa_teu": prior_unused,
+                    "physical_unused_teu": physical_unused,
+                    "reusable_teu": reusable_teu,
+                    "rob_occupancy": _number(fact.get("occupancy")),
+                    "origins": sorted(item["origins"]),
+                    "destinations": sorted(item["destinations"]),
+                    "destination_ports": sorted(item["destination_ports"]),
+                    "match_basis": item["match_basis"],
+                    "source_snapshot_date": _clean(fact.get("sourceSnapshotDate")),
+                })
+            cumulative_bsa += item["bsa_teu"]
+            cumulative_booking += item["booking_teu"]
+            previous_port = current_port
+
+        if candidates:
+            # One action row per voyage: later calls carrying the same unused
+            # amount are alternate selling points, not additional capacity.
+            opportunities.append(max(candidates, key=lambda row: (
+                row["reusable_teu"], row["physical_unused_teu"], row["departure_date"],
+            )))
+
+    opportunities.sort(key=lambda row: (
+        row["week"], -row["reusable_teu"], row["route"], row["vessel_code"], row["voyage_no"],
+    ))
+    matched_groups = exact_matches + unique_matches
+    coverage_by_week = {}
+    for week, eligible_count in sorted(eligible_by_week.items()):
+        start_text = ""
+        if len(week) == 8 and week[:4].isdigit():
+            start = _week_start_by_key(int(week[:4])).get(week)
+            if start:
+                start_text = f"{start.year}년 {start.month:02d}월 {start.day:02d}일"
+        matched_count = matched_by_week.get(week, 0)
+        coverage_by_week[week] = {
+            "weekStart": start_text,
+            "eligibleGroups": eligible_count,
+            "matchedGroups": matched_count,
+            "exactMatchedGroups": exact_by_week.get(week, 0),
+            "uniqueVoyageMatchedGroups": unique_by_week.get(week, 0),
+            "matchCoverage": matched_count / eligible_count if eligible_count else 0.0,
+        }
+    meta = {
+        "basis": "OBT BSA/Booking by voyage POL + MAX ROB physical unused; one candidate per voyage",
+        "bookingBasis": "referencePerformanceTeu (fallback bookingTeu); B/L is not substituted",
+        "physicalSource": _clean(source_meta.get("robMaxSource")),
+        "physicalSourceMode": _clean(source_meta.get("robMaxSourceMode")),
+        "physicalBasis": _clean(source_meta.get("robMaxUnusedBasis")),
+        "eligibleGroups": len(eligible_groups),
+        "matchedGroups": matched_groups,
+        "exactMatchedGroups": exact_matches,
+        "uniqueVoyageMatchedGroups": unique_matches,
+        "matchedFactCalls": len(fact_groups),
+        "matchCoverage": matched_groups / len(eligible_groups) if eligible_groups else 0.0,
+        "coverageByWeek": coverage_by_week,
+        "candidateVoyages": len(opportunities),
+        "minPriorUnusedBsaTeu": SPACE_MIN_PRIOR_UNUSED_BSA_TEU,
+        "minPhysicalUnusedTeu": SPACE_MIN_PHYSICAL_UNUSED_TEU,
+        "minReusableTeu": SPACE_MIN_REUSABLE_TEU,
+        "deduplication": "strongest later-port candidate per week/route/vessel/voyage/bound",
+    }
+    return opportunities, meta
+
+
 @dataclass(frozen=True)
 class IntegratedScopeSnapshot:
     source_date: str
     booking_scope: pd.DataFrame
     bsa: pd.DataFrame
     source_meta: dict[str, Any]
+    space_opportunities: list[dict[str, Any]]
+    space_opportunity_meta: dict[str, Any]
 
 
 @lru_cache(maxsize=4)
@@ -285,11 +523,23 @@ def load_integrated_scope_snapshot(
 
     booking_scope = _choose_booking_scope_rows(booking_rows)
     bsa = _canonical_bsa_rows(weekly_rows)
+    space_opportunities, space_opportunity_meta = _space_reuse_opportunities(
+        weekly_rows,
+        list(manifest.get("robMaxRows") or []),
+        source_meta,
+    )
     if bsa.empty:
         raise RuntimeError(
             f"Integrated dashboard snapshot {source_date} contains no BSA from {DEFAULT_CUTOVER_MONTH}"
         )
-    return IntegratedScopeSnapshot(source_date, booking_scope, bsa, source_meta)
+    return IntegratedScopeSnapshot(
+        source_date,
+        booking_scope,
+        bsa,
+        source_meta,
+        space_opportunities,
+        space_opportunity_meta,
+    )
 
 
 def blend_bsa_cutover(

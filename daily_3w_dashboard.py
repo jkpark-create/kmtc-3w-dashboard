@@ -2435,14 +2435,22 @@ def upload_to_gdrive():
         bsa_agg = bsa_agg[bsa_agg['teu_bsa'] > 0]  # teu_bsa=0 records contribute nothing; drop to avoid field-missing issue in JSON
         bsa_data = bsa_agg.to_dict('records')
 
-    metric_keys = set(agg_cols) | {'teu_bsa', 'rhn', 'rhc', 'w3l', 'w3cl', 'basis_cm1', 'basis_lst'}
+    space_metric_keys = {
+        'bsa_teu', 'booking_teu', 'own_gap_teu', 'prior_unused_bsa_teu',
+        'physical_unused_teu', 'reusable_teu', 'rob_occupancy',
+    }
+    metric_keys = set(agg_cols) | {
+        'teu_bsa', 'rhn', 'rhc', 'w3l', 'w3cl', 'basis_cm1', 'basis_lst',
+    } | space_metric_keys
 
     def compact_records(records):
         compacted = []
         for rec in records:
             out = {}
             for key, val in rec.items():
-                if pd.isna(val):
+                if val is None:
+                    continue
+                if not isinstance(val, (list, tuple, dict, set)) and pd.isna(val):
                     continue
                 if key in metric_keys:
                     try:
@@ -2523,6 +2531,11 @@ def upload_to_gdrive():
     weekly_records = compact_records(weekly.round(1).to_dict('records'))
     shipper_records = compact_records(shipper_all.round(1).to_dict('records'))
     bsa_records = compact_records(bsa_data)
+    integrated = None
+    space_opportunity_records = []
+    if DATASET_YEAR >= 2026:
+        integrated = load_integrated_scope_snapshot(TODAY_STR, DATASET_YEAR)
+        space_opportunity_records = compact_records(integrated.space_opportunities)
 
     summary = {
         '_format': 'columns-v1',
@@ -2534,17 +2547,18 @@ def upload_to_gdrive():
         'weekly': pack_records(weekly_records),
         'shipper': pack_records(shipper_records),
         'bsa': pack_records(bsa_records),
+        'space_opportunity': pack_records(space_opportunity_records),
         'obt_salesmen': obt_salesmen,
         'provisional_salesmen': provisional_salesmen,
         'provisional_obt_salesmen': provisional_obt_salesmen,
     }
-    if DATASET_YEAR >= 2026:
-        integrated = load_integrated_scope_snapshot(TODAY_STR, DATASET_YEAR)
+    if integrated is not None:
         summary['scope_source'] = {
             'cutover_month': DEFAULT_CUTOVER_MONTH,
             'source_date': integrated.source_date,
             'basis': 'Integrated dashboard Single/individual BSA + Booking/B/L performance axis',
             'wos3_basis': 'Existing Booking_schedule and Lead_time (BKG_Sche)',
+            'space_opportunity': integrated.space_opportunity_meta,
         }
 
     json_path = out_dir / f'dashboard_summary_{DATASET_ID}.json'
@@ -2553,7 +2567,8 @@ def upload_to_gdrive():
     json_size = os.path.getsize(json_path)
     print(f"  Summary JSON: {json_path.name} ({json_size:,} bytes)")
     print(f"    monthly: {len(monthly_records):,} rows, weekly: {len(weekly_records):,} rows, "
-          f"shipper: {len(shipper_records):,} rows, bsa: {len(bsa_records):,} rows")
+          f"shipper: {len(shipper_records):,} rows, bsa: {len(bsa_records):,} rows, "
+          f"space opportunity: {len(space_opportunity_records):,} voyages")
     if PUBLISH_LATEST and json_size >= DASHBOARD_JSON_SAFE_LIMIT_BYTES:
         raise RuntimeError(
             f"{json_path.name} is {json_size:,} bytes; safe limit is "
