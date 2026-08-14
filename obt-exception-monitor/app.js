@@ -1487,16 +1487,18 @@ function baselineScaleDivisor(row, period) {
 
 function filterBsaForPeriod(period) {
   if (!period) return [];
-  const wwSet = new Set((period.weeks || []).map((week) => weekToBsaWW(week)).filter(Boolean));
+  const monthWwSet = new Set((period.weeks || [])
+    .map((week) => [weekToMonth(week), weekToBsaWW(week)])
+    .filter(([month, ww]) => month && ww)
+    .map(([month, ww]) => `${month}|${ww}`));
   const monthSet = new Set(period.months || []);
   const weekByMonthWw = new Map((period.weeks || [])
     .map((week) => [weekToMonth(week), weekToBsaWW(week), week])
     .filter(([month, ww]) => month && ww)
     .map(([month, ww, week]) => [`${month}|${ww}`, week]));
   const rows = state.bsaRows.filter((row) => {
-    if (wwSet.size) {
-      if (!wwSet.has(row.ww)) return false;
-      if (monthSet.size && !monthSet.has(row.month)) return false;
+    if (monthWwSet.size) {
+      if (!monthWwSet.has(`${row.month}|${row.ww}`)) return false;
     } else if (period.month) {
       if (row.month !== period.month) return false;
       if (period.week && period.week !== "ALL") {
