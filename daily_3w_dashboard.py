@@ -13,6 +13,13 @@ from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from scripts.integrated_scope_adapter import (
+    DEFAULT_CUTOVER_MONTH,
+    apply_booking_performance_scope,
+    blend_bsa_cutover,
+    load_integrated_scope_snapshot,
+)
+
 warnings.filterwarnings('ignore')
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
@@ -1407,7 +1414,7 @@ def download_all():
 
 
 def download_bsa():
-    """Download BSA raw (월간회의3주전) per Sales Team."""
+    """Download legacy BSA and apply the Integrated scope from July 2026."""
     print("[BSA] Downloading BSA raw...")
     year = DATASET_YEAR
     years = [year] if DATASET_IS_YEARLY else [year-1, year, year+1]
@@ -1468,6 +1475,16 @@ def download_bsa():
                 print(f"  Dropped BSA rows outside {DATASET_YEAR}: {dropped:,}")
             if combined.empty:
                 print(f"  WARNING: no BSA rows found for {DATASET_YEAR} in Tableau CSV export")
+
+        if DATASET_YEAR >= 2026:
+            integrated = load_integrated_scope_snapshot(TODAY_STR, DATASET_YEAR)
+            combined, cutover_stats = blend_bsa_cutover(combined, integrated.bsa)
+            print(
+                "  Integrated BSA cutover "
+                f"({cutover_stats['cutoverMonth']}+ / source {integrated.source_date}): "
+                f"{cutover_stats['integratedRows']:,} rows, "
+                f"{cutover_stats['integratedBsaTeu']:,.1f} TEU"
+            )
 
         out_path = out_dir / f'BSA_raw_monthly3W_{DATASET_ID}.csv'
         combined.to_csv(out_path, index=False)
@@ -1752,6 +1769,24 @@ def process_snapshot():
     print(f"  Recovered Cancel rows with actual schedule: {recovered_cancel_count:,}")
     print(f"  Recovered Cancel actual schedules from previous snapshot: {recovered_prev_actual_count:,}")
     print(f"  Skipped recovered Cancel rows without actual schedule: {recovered_missing_actual_count:,}")
+
+    # July 2026 cutover: use the Integrated dashboard's reconciled
+    # Single/individual performance departure, route, vessel and voyage.  The
+    # Booking_schedule columns below are deliberately untouched so WOS-3 keeps
+    # the historical -3W calculation contract.
+    if DATASET_YEAR >= 2026:
+        integrated = load_integrated_scope_snapshot(TODAY_STR, DATASET_YEAR)
+        output, scope_stats = apply_booking_performance_scope(
+            output,
+            integrated.booking_scope,
+            DEFAULT_CUTOVER_MONTH,
+        )
+        print(
+            "  Integrated Booking/B/L performance scope "
+            f"({DEFAULT_CUTOVER_MONTH}+ / source {integrated.source_date}): "
+            f"{scope_stats['matchedRows']:,} matched of "
+            f"{scope_stats['scopeRows']:,} canonical rows"
+        )
 
     total = len(output)
     bkg_nos = output['BKG_NO'].values
@@ -2080,8 +2115,13 @@ def process_snapshot():
         'LST_VSL', 'LST_VOY', 'grade', 'CM1/TEU',
         'week_start_date', 'D_group', 'YYYYMM', '\uace0/\uc800',
         'week_start (BKG_Sche)', 'Lead_time (BKG_Sche)', 'YYYYMM_BKG_Sche',
-        'Salesman_POR', '고수익태그'
+        'Salesman_POR', '고수익태그',
+        'Performance_Scope_Source', 'Performance_Week',
+        'Performance_Booking_TEU', 'Performance_BL_TEU'
     ]
+    for col in col_order:
+        if col not in output.columns:
+            output[col] = ''
     output = output[col_order]
 
     # --- Filters ---
@@ -2498,6 +2538,14 @@ def upload_to_gdrive():
         'provisional_salesmen': provisional_salesmen,
         'provisional_obt_salesmen': provisional_obt_salesmen,
     }
+    if DATASET_YEAR >= 2026:
+        integrated = load_integrated_scope_snapshot(TODAY_STR, DATASET_YEAR)
+        summary['scope_source'] = {
+            'cutover_month': DEFAULT_CUTOVER_MONTH,
+            'source_date': integrated.source_date,
+            'basis': 'Integrated dashboard Single/individual BSA + Booking/B/L performance axis',
+            'wos3_basis': 'Existing Booking_schedule and Lead_time (BKG_Sche)',
+        }
 
     json_path = out_dir / f'dashboard_summary_{DATASET_ID}.json'
     with open(json_path, 'w', encoding='utf-8') as f:
