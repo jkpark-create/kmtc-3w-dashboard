@@ -1487,10 +1487,10 @@ function baselineScaleDivisor(row, period) {
 
 function filterBsaForPeriod(period) {
   if (!period) return [];
-  const wwSet = new Set((period.weeks || []).map((week) => weekToWW(week)).filter(Boolean));
+  const wwSet = new Set((period.weeks || []).map((week) => weekToBsaWW(week)).filter(Boolean));
   const monthSet = new Set(period.months || []);
   const weekByMonthWw = new Map((period.weeks || [])
-    .map((week) => [weekToMonth(week), weekToWW(week), week])
+    .map((week) => [weekToMonth(week), weekToBsaWW(week), week])
     .filter(([month, ww]) => month && ww)
     .map(([month, ww, week]) => [`${month}|${ww}`, week]));
   const rows = state.bsaRows.filter((row) => {
@@ -1500,7 +1500,7 @@ function filterBsaForPeriod(period) {
     } else if (period.month) {
       if (row.month !== period.month) return false;
       if (period.week && period.week !== "ALL") {
-        const ww = weekToWW(period.week);
+        const ww = weekToBsaWW(period.week);
         if (ww && row.ww !== ww) return false;
       }
     } else if (monthSet.size && !monthSet.has(row.month)) {
@@ -1910,10 +1910,13 @@ function aggregateByRouteWeek(rows) {
 }
 
 function aggregateBsaByRouteWeek(rows, weeks) {
-  const wwToWeek = new Map((weeks || []).map((week) => [weekToWW(week), week]).filter(([ww]) => ww));
+  const wwToWeek = new Map((weeks || [])
+    .map((week) => [weekToMonth(week), weekToBsaWW(week), week])
+    .filter(([month, ww]) => month && ww)
+    .map(([month, ww, week]) => [`${month}|${ww}`, week]));
   const map = new Map();
   rows.forEach((row) => {
-    const week = wwToWeek.get(row.ww);
+    const week = wwToWeek.get(`${row.month}|${row.ww}`);
     if (!week) return;
     const key = routeWeekKey(row.routeKey, week);
     const found = map.get(key) || {
@@ -5208,6 +5211,13 @@ function koreanWeekToDate(week) {
 function weekToMonth(week) {
   const found = state.rows.find((row) => row.week === week && row.month);
   return found ? found.month : "";
+}
+
+function weekToBsaWW(week) {
+  const month = weekToMonth(week);
+  if (!month) return "";
+  const index = weeksForMonth(month).indexOf(week);
+  return index >= 0 ? String(index + 1) : "";
 }
 
 function weekToWW(week) {
