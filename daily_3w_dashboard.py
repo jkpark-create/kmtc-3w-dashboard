@@ -404,6 +404,10 @@ TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS = max(
     0,
     int(os.environ.get('TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS', '180000')),
 )
+TABLEAU_VIEW1_CHUNK_WEEKS = max(
+    1,
+    int(os.environ.get('TABLEAU_VIEW1_CHUNK_WEEKS', '5')),
+)
 TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS', '0'))
 TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS', '0'))
 TABLEAU_BSA_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_BSA_EXISTING_FALLBACK_MAX_HOURS', '0'))
@@ -1124,6 +1128,34 @@ def window_quarter_chunks(start_str, end_str, year):
     return chunks
 
 
+def window_week_chunks(start_str, end_str, max_weeks):
+    """Split an inclusive date window into contiguous fixed-size pieces.
+
+    Tableau intermittently takes longer than the browser download timeout for
+    a full fiscal quarter. Keeping daily exports to a few weeks limits each
+    query while preserving exact, gap-free coverage of the requested window.
+    """
+    ws = datetime.strptime(start_str[:10], '%Y-%m-%d')
+    we = datetime.strptime(end_str[:10], '%Y-%m-%d')
+    if we < ws:
+        raise ValueError(f'Invalid date window: {start_str} > {end_str}')
+
+    chunk_days = max(1, int(max_weeks)) * 7
+    chunks = []
+    start = ws
+    chunk_no = 1
+    while start <= we:
+        end = min(start + timedelta(days=chunk_days - 1), we)
+        chunks.append((
+            chunk_no,
+            f'{start:%Y-%m-%d} 00:00:00',
+            f'{end:%Y-%m-%d} 00:00:00',
+        ))
+        start = end + timedelta(days=1)
+        chunk_no += 1
+    return chunks
+
+
 def current_dataset_date():
     try:
         return datetime.strptime(DATASET_ID, '%Y%m%d').date()
@@ -1244,11 +1276,10 @@ def download_all_chunked():
 
 
 def download_view1_daily(path1):
-    """Download daily View 1, split into fiscal-quarter chunks to avoid the
-    single-export timeout that hits the full ~7-month window.
+    """Download daily View 1 in bounded week chunks.
 
-    Each chunk is <=3 months so its Tableau CSV export finishes well within the
-    download timeout; chunks are merged and de-duplicated into path1. Set
+    Smaller requests avoid the recurring Tableau timeout seen on 13-week
+    quarter exports. Chunks are merged and de-duplicated into path1. Set
     DASHBOARD_DAILY_CHUNKED_VIEW1=0 to fall back to a single full-window export.
     """
     if os.environ.get('DASHBOARD_DAILY_CHUNKED_VIEW1', '1') != '1':
@@ -1264,12 +1295,20 @@ def download_view1_daily(path1):
             browser_warmup_timeout_ms=TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS,
         )
 
-    chunks = list(window_quarter_chunks(BKG_SCHEDULE_START, BKG_SCHEDULE_END, DATASET_YEAR))
-    print(f"[1/3] Downloading View 1 in {len(chunks)} quarter chunk(s) -> {path1.name}...")
+    chunks = list(window_week_chunks(
+        BKG_SCHEDULE_START,
+        BKG_SCHEDULE_END,
+        TABLEAU_VIEW1_CHUNK_WEEKS,
+    ))
+    print(
+        f"[1/3] Downloading View 1 in {len(chunks)} chunk(s) "
+        f"(max {TABLEAU_VIEW1_CHUNK_WEEKS} weeks each) -> {path1.name}..."
+    )
     parts = []
-    for qno, cstart, cend in chunks:
-        print(f"  View 1 chunk Q{qno}: {cstart} ~ {cend}")
-        part_path = RUNTIME_DIR / f'1_{DATASET_ID}_q{qno}.csv'
+    for chunk_no, cstart, cend in chunks:
+        chunk_label = f'C{chunk_no:02d}'
+        print(f"  View 1 chunk {chunk_label}: {cstart} ~ {cend}")
+        part_path = RUNTIME_DIR / f'1_{DATASET_ID}_c{chunk_no:02d}.csv'
         reusable = same_day_chunk_size_and_rows(part_path)
         if reusable:
             psize, prows = reusable
@@ -1279,7 +1318,7 @@ def download_view1_daily(path1):
 
         s, api_ver, site_id = tableau_rest_api()
         try:
-            wb_name = f'{TEMP_WB_NAME}_q{qno}'
+            wb_name = f'{TEMP_WB_NAME}_c{chunk_no:02d}'
             wb_url = ensure_temp_workbook(s, api_ver, site_id, start=cstart, end=cend, workbook_name=wb_name)
         finally:
             try:
@@ -1316,7 +1355,7 @@ def download_all():
 
     os.chdir(WORK_DIR)
 
-    # 1+2. Download View 1 (1.csv) — chunked by fiscal quarter to avoid timeouts.
+    # 1+2. Download View 1 (1.csv) — bounded week chunks avoid large-export timeouts.
     path1 = dataset_csv_path('1')
     try:
         size = download_view1_daily(path1)
