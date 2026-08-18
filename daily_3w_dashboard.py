@@ -718,7 +718,11 @@ def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_nam
     try:
         resp = s.post(
             f'{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/workbooks',
-            params={'overwrite': 'true'}, data=payload,
+            # The workbook already contains its published data-source
+            # connections. Revalidating them during publish can leave the
+            # Tableau 2026.2 request open until the client timeout even though
+            # the workbook is never created.
+            params={'overwrite': 'true', 'skipConnectionCheck': 'true'}, data=payload,
             headers={'Content-Type': f'multipart/mixed; boundary={boundary}'},
             timeout=600)
         if resp.status_code in (200, 201):
@@ -728,11 +732,20 @@ def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_nam
                 import xml.etree.ElementTree as ET2
                 pub_tree = ET2.fromstring(resp.content)
                 ns = {'t': 'http://tableau.com/api'}
-                wb_el = pub_tree.find('.//t:workbook', ns) or pub_tree.find('.//workbook')
+                wb_el = pub_tree.find('.//t:workbook', ns)
+                if wb_el is None:
+                    wb_el = pub_tree.find('.//workbook')
                 if wb_el is not None:
                     actual_content_url = wb_el.get('contentUrl', workbook_name)
             except Exception:
                 pass
+        else:
+            # Do not hide a concrete permission, validation, or payload error
+            # behind the 30-minute workbook-discovery polling loop.
+            detail = (resp.text or '').strip().replace('\n', ' ')[:500]
+            raise RuntimeError(
+                f'Tableau workbook publish failed: HTTP {resp.status_code}: {detail}'
+            )
     except requests.exceptions.ReadTimeout:
         print(f"  Publish timed out (likely succeeded)")
         time.sleep(5)
