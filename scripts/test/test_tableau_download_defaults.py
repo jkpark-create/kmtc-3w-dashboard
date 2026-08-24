@@ -25,7 +25,7 @@ class TableauDownloadDefaultsTest(unittest.TestCase):
             calls.append((Path(save_path).name, kwargs.get("max_attempts")))
             if Path(save_path).name.endswith("_c01_20260802_20260815.csv"):
                 raise TimeoutError("Tableau render timeout")
-            value = "A" if "_c01a_" in Path(save_path).name else "B"
+            value = Path(save_path).stem
             Path(save_path).write_text(f"value\n{value}\n", encoding="utf-8")
             return Path(save_path).stat().st_size
 
@@ -45,37 +45,25 @@ class TableauDownloadDefaultsTest(unittest.TestCase):
                 dashboard.download_view1_daily(output)
 
             self.assertTrue(output.exists())
-            self.assertEqual(dashboard.count_csv_rows(output), 2)
-            self.assertEqual(
-                calls,
-                [
-                    ("1_20260824_c01_20260802_20260815.csv", 1),
-                    ("1_20260824_c01a_20260802_20260808.csv", 1),
-                    ("1_20260824_c01b_20260809_20260815.csv", 1),
-                ],
-            )
+            self.assertEqual(dashboard.count_csv_rows(output), 14)
+            self.assertEqual(calls[0], ("1_20260824_c01_20260802_20260815.csv", 1))
+            self.assertEqual(len(calls), 15)
+            self.assertEqual(calls[1], ("1_20260824_c01d01_20260802_20260802.csv", 1))
+            self.assertEqual(calls[-1], ("1_20260824_c01d14_20260815_20260815.csv", 1))
 
-    def test_slow_two_week_window_splits_into_gap_free_weeks(self):
-        self.assertEqual(
-            dashboard.split_view1_chunk_window(
-                "2026-08-02 00:00:00", "2026-08-15 00:00:00"
-            ),
-            [
-                ("2026-08-02 00:00:00", "2026-08-08 00:00:00"),
-                ("2026-08-09 00:00:00", "2026-08-15 00:00:00"),
-            ],
+    def test_slow_two_week_window_splits_into_daily_windows(self):
+        windows = dashboard.split_view1_chunk_window(
+            "2026-08-02 00:00:00", "2026-08-15 00:00:00"
         )
+        self.assertEqual(len(windows), 14)
+        self.assertEqual(windows[0], ("2026-08-02 00:00:00", "2026-08-02 00:00:00"))
+        self.assertEqual(windows[-1], ("2026-08-15 00:00:00", "2026-08-15 00:00:00"))
 
-    def test_one_week_window_can_split_to_shorter_ranges(self):
-        self.assertEqual(
-            dashboard.split_view1_chunk_window(
-                "2026-08-02 00:00:00", "2026-08-08 00:00:00"
-            ),
-            [
-                ("2026-08-02 00:00:00", "2026-08-04 00:00:00"),
-                ("2026-08-05 00:00:00", "2026-08-08 00:00:00"),
-            ],
+    def test_one_week_window_splits_into_seven_days(self):
+        windows = dashboard.split_view1_chunk_window(
+            "2026-08-02 00:00:00", "2026-08-08 00:00:00"
         )
+        self.assertEqual(len(windows), 7)
 
     def test_one_day_window_is_the_minimum(self):
         self.assertEqual(

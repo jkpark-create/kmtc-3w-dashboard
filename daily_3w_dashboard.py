@@ -1205,28 +1205,23 @@ def window_week_chunks(start_str, end_str, max_weeks):
 
 
 def split_view1_chunk_window(start_str, end_str):
-    """Bisect a slow View 1 window, down to a single day when necessary.
+    """Split a slow View 1 window directly into exact daily ranges.
 
-    Wider windows retain whole-week boundaries. A slow one-week export falls
-    back to shorter day ranges so a single problematic week cannot block the
-    entire daily refresh. Returned inclusive windows are contiguous and exact.
+    Tableau currently renders single dates reliably while every multi-day
+    retry can consume the full timeout. Skipping intermediate week/day halves
+    prevents the same known-slow parent range from being retried repeatedly.
     """
     start = datetime.strptime(start_str[:10], '%Y-%m-%d')
     end = datetime.strptime(end_str[:10], '%Y-%m-%d')
     day_count = (end - start).days + 1
     if day_count <= 1:
         return []
-    if day_count > 7:
-        left_days = max(7, (day_count // 2 // 7) * 7)
-        if left_days >= day_count:
-            left_days = 7
-    else:
-        left_days = day_count // 2
-    left_end = start + timedelta(days=left_days - 1)
-    right_start = left_end + timedelta(days=1)
     return [
-        (f'{start:%Y-%m-%d} 00:00:00', f'{left_end:%Y-%m-%d} 00:00:00'),
-        (f'{right_start:%Y-%m-%d} 00:00:00', f'{end:%Y-%m-%d} 00:00:00'),
+        (
+            f'{start + timedelta(days=offset):%Y-%m-%d} 00:00:00',
+            f'{start + timedelta(days=offset):%Y-%m-%d} 00:00:00',
+        )
+        for offset in range(day_count)
     ]
 
 
@@ -1406,7 +1401,10 @@ def download_view1_daily(path1):
             return [part_path]
 
         split_windows = split_view1_chunk_window(cstart, cend)
-        child_specs = list(zip(('A', 'B'), split_windows))
+        child_specs = [
+            (f'D{index:02d}', window)
+            for index, window in enumerate(split_windows, start=1)
+        ]
         child_paths = []
         for suffix, (split_start, split_end) in child_specs:
             child_label = f'{chunk_label}{suffix}'.lower()
@@ -1459,7 +1457,7 @@ def download_view1_daily(path1):
                 raise
             print(
                 f"    View 1 chunk {chunk_label} timed out; "
-                "splitting on a week boundary and retrying."
+                "splitting into daily windows and retrying."
             )
             recovered = []
             for suffix, (split_start, split_end) in child_specs:
