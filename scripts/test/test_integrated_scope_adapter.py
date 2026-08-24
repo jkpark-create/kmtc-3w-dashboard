@@ -20,6 +20,15 @@ class IntegratedScopeAdapterTests(unittest.TestCase):
     def tearDown(self):
         adapter.load_integrated_scope_snapshot.cache_clear()
 
+    def test_default_data_root_is_outside_the_integrated_onedrive_project(self):
+        with patch.dict(os.environ, {
+            "KMTC_INTEGRATED_DASHBOARD_DATA_ROOT": "",
+            "KMTC_INTEGRATED_DASHBOARD_RUNTIME_ROOT": "",
+        }):
+            data_root = adapter.integrated_data_root()
+        self.assertIn("integrated-dashboard-runtime", str(data_root))
+        self.assertNotIn("Integrated dashboard project", str(data_root))
+
     def write_fixture(self, root: Path):
         month_dir = root / "months"
         month_dir.mkdir(parents=True)

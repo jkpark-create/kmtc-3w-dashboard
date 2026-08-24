@@ -18,6 +18,7 @@ import gzip
 import json
 import os
 from pathlib import Path
+import sys
 from typing import Any
 
 import pandas as pd
@@ -89,7 +90,34 @@ def integrated_data_root() -> Path:
     override = os.environ.get("KMTC_INTEGRATED_DASHBOARD_DATA_ROOT", "").strip()
     if override:
         return Path(override)
-    return integrated_root() / "public" / "data" / "oracle-dashboard"
+    runtime_override = os.environ.get(
+        "KMTC_INTEGRATED_DASHBOARD_RUNTIME_ROOT", ""
+    ).strip()
+    if runtime_override:
+        runtime_root = Path(runtime_override)
+    elif os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        if not local_app_data:
+            raise RuntimeError(
+                "LOCALAPPDATA is required for the Integrated Dashboard runtime"
+            )
+        runtime_root = Path(local_app_data) / "KMTC" / "integrated-dashboard-runtime"
+    elif sys.platform == "darwin":
+        runtime_root = (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "KMTC"
+            / "integrated-dashboard-runtime"
+        )
+    else:
+        xdg_data = os.environ.get("XDG_DATA_HOME", "").strip()
+        runtime_root = (
+            Path(xdg_data).expanduser()
+            if xdg_data
+            else Path.home() / ".local" / "share"
+        ) / "KMTC" / "integrated-dashboard-runtime"
+    return runtime_root / "oracle-dashboard"
 
 
 def _validate_source_contract(source_meta: dict[str, Any]) -> None:
