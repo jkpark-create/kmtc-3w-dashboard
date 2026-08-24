@@ -1374,6 +1374,16 @@ def download_view1_daily(path1):
         f"[1/3] Downloading View 1 in {len(chunks)} chunk(s) "
         f"(max {TABLEAU_VIEW1_CHUNK_WEEKS} weeks each) -> {path1.name}..."
     )
+    def checkpoint_chunk(part_path, recovered):
+        frames = [read_tableau_csv(path) for path in recovered]
+        combined = pd.concat(frames, ignore_index=True).drop_duplicates()
+        combined.to_csv(part_path, index=False, encoding='utf-8-sig')
+        print(
+            f"    Checkpointed recovered chunk {part_path.name}: "
+            f"{part_path.stat().st_size:,} bytes ({len(combined):,} rows)"
+        )
+        return [part_path]
+
     def download_chunk(chunk_label, cstart, cend):
         print(f"  View 1 chunk {chunk_label}: {cstart} ~ {cend}")
         file_label = chunk_label.lower()
@@ -1392,6 +1402,27 @@ def download_view1_daily(path1):
             return [part_path]
 
         split_windows = split_view1_chunk_window(cstart, cend)
+        child_specs = list(zip(('A', 'B'), split_windows))
+        child_paths = []
+        for suffix, (split_start, split_end) in child_specs:
+            child_label = f'{chunk_label}{suffix}'.lower()
+            child_window = (
+                f"{child_label}_{split_start[:10].replace('-', '')}_"
+                f"{split_end[:10].replace('-', '')}"
+            )
+            child_paths.append(RUNTIME_DIR / f'1_{DATASET_ID}_{child_window}.csv')
+        if child_paths and any(same_day_chunk_size_and_rows(path) for path in child_paths):
+            print(
+                f"    Resuming {chunk_label} from existing child checkpoint(s); "
+                "skipping the known-slow parent export."
+            )
+            recovered = []
+            for suffix, (split_start, split_end) in child_specs:
+                recovered.extend(download_chunk(
+                    f'{chunk_label}{suffix}', split_start, split_end,
+                ))
+            return checkpoint_chunk(part_path, recovered)
+
         try:
             s, api_ver, site_id = tableau_rest_api()
             try:
@@ -1424,18 +1455,11 @@ def download_view1_daily(path1):
                 "splitting on a week boundary and retrying."
             )
             recovered = []
-            for suffix, (split_start, split_end) in zip(('A', 'B'), split_windows):
+            for suffix, (split_start, split_end) in child_specs:
                 recovered.extend(download_chunk(
                     f'{chunk_label}{suffix}', split_start, split_end,
                 ))
-            frames = [read_tableau_csv(path) for path in recovered]
-            combined = pd.concat(frames, ignore_index=True).drop_duplicates()
-            combined.to_csv(part_path, index=False, encoding='utf-8-sig')
-            print(
-                f"    Checkpointed recovered chunk {part_path.name}: "
-                f"{part_path.stat().st_size:,} bytes ({len(combined):,} rows)"
-            )
-            return [part_path]
+            return checkpoint_chunk(part_path, recovered)
 
         prows = count_csv_rows(part_path)
         print(f"    {part_path.name}: {psize:,} bytes ({prows:,} rows)")
