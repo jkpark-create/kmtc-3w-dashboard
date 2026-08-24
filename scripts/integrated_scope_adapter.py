@@ -716,11 +716,22 @@ def apply_booking_performance_scope(
             continue
         departure_dt = datetime.strptime(departure, "%Y%m%d")
         schedule_text = f"{departure_dt.year}년 {departure_dt.month}월 {departure_dt.day}일"
+        booking_no = _clean(row.BKG_NO)
+        is_integrated_aggregate = booking_no.startswith("DMSAE-")
+        shipper_code = _clean(row.shipper_code)
+        shipper_name = _clean(row.shipper_name)
+        if is_integrated_aggregate and not shipper_code:
+            # Prepared DMSAE fallback rows are route/voyage aggregates rather
+            # than customer bookings. Preserve their reconciled B/L totals in
+            # the dashboard under an explicit non-customer sentinel instead
+            # of misclassifying them as broken booking records.
+            shipper_code = "__INTEGRATED_AGGREGATE__"
+            shipper_name = shipper_name or "Integrated route aggregate"
         synthetic = {column: "" for column in result.columns}
         synthetic.update({
-            "BKG_NO": _clean(row.BKG_NO),
-            "BKG_SHPR_CST_NO": _clean(row.shipper_code),
-            "BKG_SHPR_CST_ENM": _clean(row.shipper_name),
+            "BKG_NO": booking_no,
+            "BKG_SHPR_CST_NO": shipper_code,
+            "BKG_SHPR_CST_ENM": shipper_name,
             "POR_CTR_CD": _clean(row.origin),
             "POR_PLC_CD": _clean(row.por),
             "POL_CTR_CD": _clean(row.pol_country),
@@ -737,7 +748,9 @@ def apply_booking_performance_scope(
             "LST_route": _clean(row.route),
             "LST_VSL": _clean(row.performance_vessel),
             "LST_VOY": _clean(row.performance_voyage),
-            "Salesman_POR": _clean(row.salesman),
+            "Salesman_POR": _clean(row.salesman) or (
+                "UNASSIGNED" if is_integrated_aggregate else ""
+            ),
             "Performance_Scope_Source": "Integrated Single/individual synthetic",
             "Performance_Week": _clean(row.performance_week),
             "Performance_Booking_TEU": _metric_text(row.booking_teu),

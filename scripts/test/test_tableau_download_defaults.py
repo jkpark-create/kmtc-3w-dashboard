@@ -21,9 +21,9 @@ class TableauDownloadDefaultsTest(unittest.TestCase):
 
         calls = []
 
-        def fake_download(_workbook, _view, save_path, **kwargs):
-            calls.append((Path(save_path).name, kwargs.get("max_attempts")))
-            if Path(save_path).name.endswith("_c01_20260802_20260815.csv"):
+        def fake_download(_session, _api, _site, _workbook, _view, save_path, **kwargs):
+            calls.append((Path(save_path).name, kwargs.get("timeout_seconds")))
+            if Path(save_path).name.endswith("_c01_20260802_20260815_raw1.csv"):
                 raise TimeoutError("Tableau render timeout")
             value = Path(save_path).stem
             Path(save_path).write_text(f"value\n{value}\n", encoding="utf-8")
@@ -40,30 +40,34 @@ class TableauDownloadDefaultsTest(unittest.TestCase):
                 patch.object(dashboard, "DASHBOARD_REUSE_SAME_DAY_CHUNKS", False),
                 patch.object(dashboard, "tableau_rest_api", return_value=(Session(), "3.29", "site")),
                 patch.object(dashboard, "ensure_temp_workbook", side_effect=lambda *_a, workbook_name, **_k: workbook_name),
-                patch.object(dashboard, "download_csv_from_tableau", side_effect=fake_download),
+                patch.object(dashboard, "download_csv_via_tableau_rest_view", side_effect=fake_download),
             ):
                 dashboard.download_view1_daily(output)
 
             self.assertTrue(output.exists())
-            self.assertEqual(dashboard.count_csv_rows(output), 14)
-            self.assertEqual(calls[0], ("1_20260824_c01_20260802_20260815.csv", 1))
-            self.assertEqual(len(calls), 15)
-            self.assertEqual(calls[1], ("1_20260824_c01d01_20260802_20260802.csv", 1))
-            self.assertEqual(calls[-1], ("1_20260824_c01d14_20260815_20260815.csv", 1))
+            self.assertEqual(dashboard.count_csv_rows(output), 2)
+            self.assertEqual(calls[0], ("1_20260824_c01_20260802_20260815_raw1.csv", dashboard.TABLEAU_VIEW1_REST_TIMEOUT_SECONDS))
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(calls[1], ("1_20260824_c01a_20260802_20260808_raw1.csv", dashboard.TABLEAU_VIEW1_REST_TIMEOUT_SECONDS))
+            self.assertEqual(calls[-1], ("1_20260824_c01b_20260809_20260815_raw1.csv", dashboard.TABLEAU_VIEW1_REST_TIMEOUT_SECONDS))
 
-    def test_slow_two_week_window_splits_into_daily_windows(self):
+    def test_slow_two_week_window_splits_into_week_windows(self):
         windows = dashboard.split_view1_chunk_window(
             "2026-08-02 00:00:00", "2026-08-15 00:00:00"
         )
-        self.assertEqual(len(windows), 14)
-        self.assertEqual(windows[0], ("2026-08-02 00:00:00", "2026-08-02 00:00:00"))
-        self.assertEqual(windows[-1], ("2026-08-15 00:00:00", "2026-08-15 00:00:00"))
+        self.assertEqual(windows, [
+            ("2026-08-02 00:00:00", "2026-08-08 00:00:00"),
+            ("2026-08-09 00:00:00", "2026-08-15 00:00:00"),
+        ])
 
-    def test_one_week_window_splits_into_seven_days(self):
+    def test_one_week_window_splits_into_shorter_ranges(self):
         windows = dashboard.split_view1_chunk_window(
             "2026-08-02 00:00:00", "2026-08-08 00:00:00"
         )
-        self.assertEqual(len(windows), 7)
+        self.assertEqual(windows, [
+            ("2026-08-02 00:00:00", "2026-08-04 00:00:00"),
+            ("2026-08-05 00:00:00", "2026-08-08 00:00:00"),
+        ])
 
     def test_one_day_window_is_the_minimum(self):
         self.assertEqual(
@@ -94,13 +98,14 @@ class TableauDownloadDefaultsTest(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertEqual(result.stdout.strip(), "1 0 2")
+        self.assertEqual(result.stdout.strip(), "1 0 5")
 
     def test_operational_batch_uses_reliable_browser_strategy(self):
         batch = (ROOT / "run_daily.bat").read_text(encoding="utf-8")
         self.assertIn('TABLEAU_USE_HTTP_CSV_DOWNLOAD=1', batch)
         self.assertIn('set "TABLEAU_VIEW1_USE_HTTP_CSV_DOWNLOAD=0"', batch)
-        self.assertIn('set "TABLEAU_VIEW1_CHUNK_WEEKS=2"', batch)
+        self.assertIn('if not defined TABLEAU_VIEW1_CHUNK_WEEKS set "TABLEAU_VIEW1_CHUNK_WEEKS=5"', batch)
+        self.assertIn('TABLEAU_VIEW1_SPLIT_TRIGGER_TIMEOUT_MS=900000', batch)
 
 
 if __name__ == "__main__":

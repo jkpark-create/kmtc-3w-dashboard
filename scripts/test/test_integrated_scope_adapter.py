@@ -237,6 +237,30 @@ class IntegratedScopeAdapterTests(unittest.TestCase):
         self.assertEqual(synthetic["LST_TEU"], "8")
         self.assertEqual(stats["syntheticRows"], 1)
 
+    def test_integrated_route_aggregate_uses_explicit_non_customer_sentinel(self):
+        output = pd.DataFrame([{
+            "BKG_NO": "LEGACY", "LST_route": "OLD", "LST_Status": "Confirm",
+            "LST_TEU": 0, "CM1": 0, "Actual_Departure_schedule": "",
+            "Booking_schedule": "",
+        }])
+        scope = pd.DataFrame([{
+            "BKG_NO": "DMSAE-AIM-1", "route": "AIM", "performance_month": "202607",
+            "performance_week": "20260727", "performance_departure_date": "20260705",
+            "performance_vessel": "JAAA", "performance_voyage": "001E",
+            "booking_teu": 0, "bl_teu": 39, "booking_cm1": 0, "bl_cm1": 390,
+            "origin": "KR", "por": "PNC", "pol_country": "KR", "pol": "PNC",
+            "pod_country": "OM", "pod": "SOH", "dest": "OM", "dly": "SOH",
+            "shipper_code": "", "shipper_name": "", "salesman": "",
+            "booking_status": "Normal",
+        }])
+        result, _stats = adapter.apply_booking_performance_scope(output, scope)
+        aggregate = result.loc[result["BKG_NO"].eq("DMSAE-AIM-1")].iloc[0]
+        self.assertEqual(aggregate["BKG_SHPR_CST_NO"], "__INTEGRATED_AGGREGATE__")
+        self.assertEqual(aggregate["BKG_SHPR_CST_ENM"], "Integrated route aggregate")
+        self.assertEqual(aggregate["Salesman_POR"], "UNASSIGNED")
+        self.assertEqual(aggregate["LST_TEU"], "39")
+        self.assertEqual(aggregate["Booking_schedule"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

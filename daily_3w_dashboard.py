@@ -247,7 +247,11 @@ def clean_salesman_value(value):
     if pd.isna(value):
         return ''
     text = str(value).strip()
-    if text.lower() in ('', 'nan', 'none', 'nat') or text == MISSING_SALES:
+    if (
+        text.lower() in ('', 'nan', 'none', 'nat')
+        or text.upper() == 'UNASSIGNED'
+        or text == MISSING_SALES
+    ):
         return ''
     return text
 
@@ -419,12 +423,18 @@ TABLEAU_VIEW1_LEAF_TIMEOUT_MS = max(
     TABLEAU_VIEW1_SPLIT_TRIGGER_TIMEOUT_MS,
     int(os.environ.get('TABLEAU_VIEW1_LEAF_TIMEOUT_MS', '180000')),
 )
-# Start View 1 at two fiscal weeks per render. A slow two-week export is
-# bisected to one-week exports by download_view1_daily.
+TABLEAU_VIEW1_REST_TIMEOUT_SECONDS = max(
+    300,
+    int(os.environ.get('TABLEAU_VIEW1_REST_TIMEOUT_SECONDS', '900')),
+)
+# Five-week exports are the last production-proven width for this workbook.
+# Slow windows are bisected on week boundaries instead of exploding directly
+# into dozens of daily Tableau publishes.
 TABLEAU_VIEW1_CHUNK_WEEKS = max(
     1,
-    int(os.environ.get('TABLEAU_VIEW1_CHUNK_WEEKS', '2')),
+    int(os.environ.get('TABLEAU_VIEW1_CHUNK_WEEKS', '5')),
 )
+TABLEAU_VIEW1_CHUNK_CACHE_VERSION = 'raw1'
 TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS', '0'))
 TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS', '0'))
 TABLEAU_BSA_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_BSA_EXISTING_FALLBACK_MAX_HOURS', '0'))
@@ -529,6 +539,10 @@ def tableau_rest_api():
 VIEW2_YYYYMM_CALC = 'Calculation_5632314318418350528'
 VIEW2_YYYYMM_COLUMN = f'[sqlproxy.1vgswr41razzwa148ywuc0fpriw3].[none:{VIEW2_YYYYMM_CALC}:nk]'
 VIEW2_YYYYMM_LEVEL = f'[none:{VIEW2_YYYYMM_CALC}:nk]'
+VIEW2_CUSTOMER_FIELDS = (
+    ('BKG_SHPR_CST_NO', 'Booking_Shipper_code'),
+    ('BKG_SHPR_CST_ENM', 'Booking_Shipper_name'),
+)
 
 
 def normalize_yyyymm_values(values):
@@ -567,11 +581,182 @@ def set_yyyymm_filter_members(filter_el, yyyymm_values):
         })
 
 
+def ensure_view2_customer_fields(tree):
+    """Put booking customer code/name on View 2's row shelf.
+
+    View 2 is the annual performance base, while View 1 is intentionally
+    bounded to the operational booking window.  Looking up customer codes only
+    from View 1 therefore produced historical performance rows with no company
+    code.  The fields already exist in D_SA002.Booking; adding them to the View
+    2 export makes every annual row self-contained.
+    """
+    import xml.etree.ElementTree as ET
+
+    for ws in tree.getroot().findall('.//worksheet'):
+        if ws.get('name') != '2':
+            continue
+        view = ws.find('./table/view')
+        rows = ws.find('./table/rows')
+        if view is None or rows is None:
+            raise RuntimeError('Tableau worksheet 2 is missing its view/row shelf')
+        source = next(
+            (
+                item.get('name')
+                for item in view.findall('./datasources/datasource')
+                if item.get('name') != 'Parameters'
+            ),
+            None,
+        )
+        if not source:
+            raise RuntimeError('Tableau worksheet 2 has no booking datasource')
+        deps = next(
+            (
+                item
+                for item in view.findall('./datasource-dependencies')
+                if item.get('datasource') == source
+            ),
+            None,
+        )
+        if deps is None:
+            raise RuntimeError('Tableau worksheet 2 has no booking datasource dependencies')
+
+        shelf_refs = []
+        for field_name, caption in VIEW2_CUSTOMER_FIELDS:
+            instance_name = f'[none:{field_name}:nk]'
+            if not any(item.get('name') == f'[{field_name}]' for item in deps.findall('column')):
+                ET.SubElement(deps, 'column', {
+                    'aggregation': 'Count',
+                    'caption': caption,
+                    'datatype': 'string',
+                    'default-type': 'nominal',
+                    'layered': 'true',
+                    'name': f'[{field_name}]',
+                    'pivot': 'key',
+                    'role': 'dimension',
+                    'type': 'nominal',
+                    'user-datatype': 'string',
+                    'visual-totals': 'Default',
+                })
+            if not any(item.get('name') == instance_name for item in deps.findall('column-instance')):
+                ET.SubElement(deps, 'column-instance', {
+                    'column': f'[{field_name}]',
+                    'derivation': 'None',
+                    'name': instance_name,
+                    'pivot': 'key',
+                    'type': 'nominal',
+                })
+            shelf_refs.append(f'[{source}].{instance_name}')
+
+        rows_text = (rows.text or '').strip()
+        missing_refs = [ref for ref in shelf_refs if ref not in rows_text]
+        if missing_refs:
+            suffix = missing_refs[-1]
+            for ref in reversed(missing_refs[:-1]):
+                suffix = f'({ref} / {suffix})'
+            rows.text = f'({rows_text} / {suffix})' if rows_text else suffix
+        return
+    raise RuntimeError('Tableau workbook is missing worksheet 2')
+
+
+def view2_customer_fields_present(tree):
+    """Return whether View 2 already exports both booking customer fields."""
+    for ws in tree.getroot().findall('.//worksheet'):
+        if ws.get('name') != '2':
+            continue
+        rows = ws.find('./table/rows')
+        rows_text = (rows.text or '') if rows is not None else ''
+        return all(f'[none:{field}:nk]' in rows_text for field, _ in VIEW2_CUSTOMER_FIELDS)
+    return False
+
+
+def inclusive_tableau_filter_end(value):
+    """Expand a date-at-midnight upper bound to the next midnight.
+
+    Tableau's quantitative range is inclusive. Using 23:59:59 makes the
+    booking view render pathologically slowly, while the next midnight keeps
+    the indexed boundary and still includes the requested end date. The one
+    possible next-day midnight row is removed after the chunk merge.
+    """
+    parsed = datetime.strptime(value, '%Y-%m-%d %H:%M:%S')
+    if parsed.strftime('%H:%M:%S') == '00:00:00':
+        return (parsed + timedelta(days=1)).strftime('%Y-%m-%d 00:00:00')
+    return value
+
+
+def ensure_view1_raw_schedule_prefilter(tree, start, end):
+    """Filter raw YYYYMMDDHHmm values before the costly datetime calculation."""
+    import xml.etree.ElementTree as ET
+
+    start_key = datetime.strptime(start, '%Y-%m-%d %H:%M:%S').strftime('%Y%m%d%H%M')
+    end_key = datetime.strptime(end, '%Y-%m-%d %H:%M:%S').strftime('%Y%m%d%H%M')
+    calc_name = 'Calculation_CodexRawScheduleWindow'
+    instance_name = f'[none:{calc_name}:nk]'
+    formula = (
+        f'IF [FST_VSL_DPO_DTM] >= "{start_key}" AND '
+        f'[FST_VSL_DPO_DTM] <= "{end_key}" THEN "Y" ELSE "N" END'
+    )
+
+    for ws in tree.getroot().findall('.//worksheet'):
+        if ws.get('name') != '1':
+            continue
+        view = ws.find('./table/view')
+        if view is None:
+            break
+        deps = next(iter(view.findall('./datasource-dependencies')), None)
+        if deps is None:
+            break
+        source = deps.get('datasource')
+        column = next(
+            (item for item in deps.findall('column') if item.get('name') == f'[{calc_name}]'),
+            None,
+        )
+        if column is None:
+            column = ET.SubElement(deps, 'column', {
+                'caption': 'Raw schedule window',
+                'datatype': 'string',
+                'datatype-customized': 'true',
+                'name': f'[{calc_name}]',
+                'role': 'dimension',
+                'type': 'nominal',
+            })
+        calculation = column.find('calculation')
+        if calculation is None:
+            calculation = ET.SubElement(column, 'calculation', {'class': 'tableau'})
+        calculation.set('formula', formula)
+        if not any(item.get('name') == instance_name for item in deps.findall('column-instance')):
+            ET.SubElement(deps, 'column-instance', {
+                'column': f'[{calc_name}]',
+                'derivation': 'None',
+                'name': instance_name,
+                'pivot': 'key',
+                'type': 'nominal',
+            })
+        column_ref = f'[{source}].{instance_name}'
+        raw_filter = next(
+            (item for item in view.findall('filter') if item.get('column') == column_ref),
+            None,
+        )
+        if raw_filter is None:
+            raw_filter = ET.SubElement(view, 'filter')
+        raw_filter.clear()
+        raw_filter.set('class', 'categorical')
+        raw_filter.set('column', column_ref)
+        ET.SubElement(raw_filter, 'groupfilter', {
+            'function': 'member',
+            'level': instance_name,
+            'member': '"Y"',
+        })
+        print(f"  Raw schedule prefilter: {start_key} ~ {end_key}")
+        return
+    raise RuntimeError('Tableau workbook is missing worksheet 1 datasource dependencies')
+
+
 def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_name=None, view2_yyyymm=None):
     """Download original TWB, modify filter, publish as temp workbook."""
     import xml.etree.ElementTree as ET
     start = start or BKG_SCHEDULE_START
     end = end or BKG_SCHEDULE_END
+    filter_end = inclusive_tableau_filter_end(end)
     workbook_name = workbook_name or TEMP_WB_NAME
     view2_yyyymm = normalize_yyyymm_values(view2_yyyymm or os.environ.get('FILTER_VIEW2_YYYYMM'))
     need_view2_date_filter = os.environ.get('FILTER_VIEW2_DATE') == '1'
@@ -605,20 +790,22 @@ def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_nam
             if 'Calculation_0356804709482497' in col:
                 min_el = f.find('min')
                 max_el = f.find('max')
-                schedule_ok = min_el is not None and start in (min_el.text or '') and max_el is not None and end in (max_el.text or '')
+                schedule_ok = min_el is not None and start in (min_el.text or '') and max_el is not None and filter_end in (max_el.text or '')
             if need_view2_date_filter and 'Calculation_501025459300655110' in col:
                 min_el = f.find('min')
                 max_el = f.find('max')
-                view2_date_ok = min_el is not None and start in (min_el.text or '') and max_el is not None and end in (max_el.text or '')
+                view2_date_ok = min_el is not None and start in (min_el.text or '') and max_el is not None and filter_end in (max_el.text or '')
             if need_view2_yyyymm_filter and VIEW2_YYYYMM_CALC in col:
                 view2_yyyymm_ok = yyyymm_members_from_filter(f) == view2_yyyymm
 
-        if schedule_ok and view2_date_ok and view2_yyyymm_ok:
+        customer_fields_ok = view2_customer_fields_present(tree)
+        if schedule_ok and view2_date_ok and view2_yyyymm_ok and customer_fields_ok:
             print(f"  Temp workbook exists with correct filter ({start} ~ {end})")
             return actual_content_url
 
-        # Filter wrong, delete and re-create
-        print(f"  Temp workbook filter outdated, re-publishing...")
+        # Filter or export schema is outdated, delete and re-create.
+        reason = 'filter' if not (schedule_ok and view2_date_ok and view2_yyyymm_ok) else 'View 2 customer fields'
+        print(f"  Temp workbook {reason} outdated, re-publishing...")
         s.delete(f'{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/workbooks/{wb_id}', timeout=60)
         time.sleep(3)
 
@@ -645,13 +832,15 @@ def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_nam
                 min_el.attrib.clear()
             max_el = f.find('max')
             if max_el is not None:
-                max_el.text = f'#{end}#'
+                max_el.text = f'#{filter_end}#'
                 max_el.attrib.clear()
             else:
                 # max 엘리먼트가 없으면 생성
                 max_el = ET.SubElement(f, 'max')
-                max_el.text = f'#{end}#'
-            print(f"  Filter: {start} ~ {end}")
+                max_el.text = f'#{filter_end}#'
+            print(f"  Filter: {start} ~ {filter_end}")
+
+    ensure_view1_raw_schedule_prefilter(tree, start, filter_end)
 
     if need_view2_date_filter:
         view2_filter = None
@@ -681,9 +870,9 @@ def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_nam
             max_el = view2_filter.find('max')
             if max_el is None:
                 max_el = ET.SubElement(view2_filter, 'max')
-            max_el.text = f'#{end}#'
+            max_el.text = f'#{filter_end}#'
             max_el.attrib.clear()
-            print(f"  View 2 Date_vsl filter: {start} ~ {end}")
+            print(f"  View 2 Date_vsl filter: {start} ~ {filter_end}")
         else:
             print("  WARNING: worksheet 2 view not found; Date_vsl filter not added")
 
@@ -707,6 +896,8 @@ def ensure_temp_workbook(s, api_ver, site_id, start=None, end=None, workbook_nam
             print(f"  View 2 YYYYMM filter: {','.join(view2_yyyymm)}")
         else:
             print("  WARNING: worksheet 2 view not found; YYYYMM filter not added")
+
+    ensure_view2_customer_fields(tree)
 
     twb_bytes = io.BytesIO()
     tree.write(twb_bytes, encoding='utf-8', xml_declaration=True)
@@ -873,6 +1064,78 @@ def download_csv_via_authenticated_http(ctx, csv_url, tmp_path):
         raise RuntimeError('CSV endpoint returned HTML instead of CSV')
 
     return bytes_written
+
+
+def download_csv_via_tableau_rest_view(
+    session, api_ver, site_id, workbook_name, view_name, save_path,
+    timeout_seconds=None,
+):
+    """Export a published view through Tableau REST without browser events."""
+    save_path = Path(save_path)
+    tmp_path = save_path.with_name(f'{save_path.name}.download')
+    tmp_path.unlink(missing_ok=True)
+    headers = {'Accept': 'application/json'}
+    timeout_seconds = max(
+        300,
+        int(timeout_seconds or TABLEAU_VIEW1_REST_TIMEOUT_SECONDS),
+    )
+
+    response = session.get(
+        f'{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/workbooks',
+        params={'filter': f'name:eq:{workbook_name}'},
+        headers=headers,
+        timeout=30,
+    )
+    response.raise_for_status()
+    workbooks = response.json().get('workbooks', {}).get('workbook', [])
+    if not workbooks:
+        raise RuntimeError(f'Tableau workbook not found for REST export: {workbook_name}')
+    workbook = workbooks[0]
+    response = session.get(
+        f"{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/workbooks/{workbook['id']}/views",
+        headers=headers,
+        timeout=60,
+    )
+    response.raise_for_status()
+    views = response.json().get('views', {}).get('view', [])
+    view = next((item for item in views if item.get('name') == str(view_name)), None)
+    if view is None:
+        raise RuntimeError(
+            f'Tableau view {view_name} not found in workbook {workbook_name}'
+        )
+
+    print(
+        f"  REST view export (timeout={timeout_seconds}s): "
+        f"{workbook_name}/{view_name}"
+    )
+    try:
+        with session.get(
+            f"{TABLEAU_SERVER}/api/{api_ver}/sites/{site_id}/views/{view['id']}/data",
+            params={'includeAllColumns': 'true'},
+            stream=True,
+            timeout=(30, timeout_seconds),
+        ) as response:
+            response.raise_for_status()
+            first_chunk = b''
+            bytes_written = 0
+            with tmp_path.open('wb') as handle:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if not chunk:
+                        continue
+                    if not first_chunk:
+                        first_chunk = chunk[:512]
+                    handle.write(chunk)
+                    bytes_written += len(chunk)
+        first_lower = first_chunk.lstrip().lower()
+        if bytes_written <= 0:
+            raise RuntimeError('Tableau REST view export returned an empty response')
+        if first_lower.startswith(b'<!doctype') or first_lower.startswith(b'<html'):
+            raise RuntimeError('Tableau REST view export returned HTML instead of CSV')
+        os.replace(tmp_path, save_path)
+        return os.path.getsize(save_path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def download_csv_via_browser_event(page, csv_url, tmp_path, timeout_ms=None):
@@ -1127,6 +1390,35 @@ def read_tableau_csv(path):
     return pd.read_csv(path, encoding='utf-8-sig', dtype=str)
 
 
+def trim_view1_schedule_window(frame, start, end):
+    """Remove only rows outside the requested inclusive schedule dates."""
+    schedule_col = next(
+        (col for col in frame.columns if str(col).startswith('Booking_schedule')),
+        None,
+    )
+    if schedule_col is None or frame.empty:
+        return frame
+
+    text = frame[schedule_col].fillna('').astype(str).str.strip()
+    normalized = (
+        text.str.replace('년 ', '-', regex=False)
+        .str.replace('월 ', '-', regex=False)
+        .str.replace('일', '', regex=False)
+    )
+    parsed = pd.to_datetime(normalized, errors='coerce')
+    start_date = pd.Timestamp(start[:10])
+    end_date = pd.Timestamp(end[:10])
+    outside = parsed.notna() & (
+        parsed.dt.normalize().lt(start_date) | parsed.dt.normalize().gt(end_date)
+    )
+    if outside.any():
+        print(
+            f"  View 1 boundary trim: dropped {int(outside.sum()):,} row(s) "
+            f"outside {start_date:%Y-%m-%d} ~ {end_date:%Y-%m-%d}"
+        )
+    return frame.loc[~outside].copy()
+
+
 def drop_tableau_total_rows(df, label):
     """Drop Tableau grand-total rows that look like regular CSV records."""
     total_markers = {'전체', 'Total', 'Grand Total'}
@@ -1205,23 +1497,23 @@ def window_week_chunks(start_str, end_str, max_weeks):
 
 
 def split_view1_chunk_window(start_str, end_str):
-    """Split a slow View 1 window directly into exact daily ranges.
-
-    Tableau currently renders single dates reliably while every multi-day
-    retry can consume the full timeout. Skipping intermediate week/day halves
-    prevents the same known-slow parent range from being retried repeatedly.
-    """
+    """Bisect a slow View 1 window, preserving weeks when possible."""
     start = datetime.strptime(start_str[:10], '%Y-%m-%d')
     end = datetime.strptime(end_str[:10], '%Y-%m-%d')
     day_count = (end - start).days + 1
     if day_count <= 1:
         return []
+    if day_count > 7:
+        left_days = max(7, (day_count // 2 // 7) * 7)
+        if left_days >= day_count:
+            left_days = 7
+    else:
+        left_days = day_count // 2
+    left_end = start + timedelta(days=left_days - 1)
+    right_start = left_end + timedelta(days=1)
     return [
-        (
-            f'{start + timedelta(days=offset):%Y-%m-%d} 00:00:00',
-            f'{start + timedelta(days=offset):%Y-%m-%d} 00:00:00',
-        )
-        for offset in range(day_count)
+        (f'{start:%Y-%m-%d} 00:00:00', f'{left_end:%Y-%m-%d} 00:00:00'),
+        (f'{right_start:%Y-%m-%d} 00:00:00', f'{end:%Y-%m-%d} 00:00:00'),
     ]
 
 
@@ -1388,7 +1680,7 @@ def download_view1_daily(path1):
         file_label = chunk_label.lower()
         window_label = (
             f"{file_label}_{cstart[:10].replace('-', '')}_"
-            f"{cend[:10].replace('-', '')}"
+            f"{cend[:10].replace('-', '')}_{TABLEAU_VIEW1_CHUNK_CACHE_VERSION}"
         )
         # Include the exact filter window in resumable artifacts. Chunk numbers
         # alone are unsafe when the configured width changes (for example,
@@ -1401,16 +1693,13 @@ def download_view1_daily(path1):
             return [part_path]
 
         split_windows = split_view1_chunk_window(cstart, cend)
-        child_specs = [
-            (f'D{index:02d}', window)
-            for index, window in enumerate(split_windows, start=1)
-        ]
+        child_specs = list(zip(('A', 'B'), split_windows))
         child_paths = []
         for suffix, (split_start, split_end) in child_specs:
             child_label = f'{chunk_label}{suffix}'.lower()
             child_window = (
                 f"{child_label}_{split_start[:10].replace('-', '')}_"
-                f"{split_end[:10].replace('-', '')}"
+                f"{split_end[:10].replace('-', '')}_{TABLEAU_VIEW1_CHUNK_CACHE_VERSION}"
             )
             child_paths.append(RUNTIME_DIR / f'1_{DATASET_ID}_{child_window}.csv')
         if child_paths and any(same_day_chunk_size_and_rows(path) for path in child_paths):
@@ -1429,35 +1718,26 @@ def download_view1_daily(path1):
             s, api_ver, site_id = tableau_rest_api()
             try:
                 wb_name = f'{TEMP_WB_NAME}_{window_label}'
-                wb_url = ensure_temp_workbook(
+                ensure_temp_workbook(
                     s, api_ver, site_id,
                     start=cstart, end=cend, workbook_name=wb_name,
+                )
+                psize = download_csv_via_tableau_rest_view(
+                    s, api_ver, site_id, wb_name, '1', part_path,
+                    timeout_seconds=TABLEAU_VIEW1_REST_TIMEOUT_SECONDS,
                 )
             finally:
                 try:
                     s.post(f'{TABLEAU_SERVER}/api/{api_ver}/auth/signout', timeout=10)
                 except Exception:
                     pass
-            psize = download_csv_from_tableau(
-                wb_url, '1', part_path,
-                use_http=TABLEAU_VIEW1_USE_HTTP_CSV_DOWNLOAD,
-                render_wait_seconds=TABLEAU_VIEW1_RENDER_WAIT_SECONDS,
-                browser_warmup_timeout_ms=0,
-                browser_download_timeout_ms=(
-                    TABLEAU_VIEW1_SPLIT_TRIGGER_TIMEOUT_MS
-                    if split_windows else TABLEAU_VIEW1_LEAF_TIMEOUT_MS
-                ),
-                # Pipeline retries resume checkpointed View 1 chunks, so one
-                # bounded attempt is safer than holding a bad range for 45m.
-                max_attempts=1,
-            )
         except Exception as exc:
             is_timeout = 'timeout' in str(exc).lower() or 'timed out' in str(exc).lower()
             if not split_windows or not is_timeout:
                 raise
             print(
                 f"    View 1 chunk {chunk_label} timed out; "
-                "splitting into daily windows and retrying."
+                "bisecting the date window and retrying."
             )
             recovered = []
             for suffix, (split_start, split_end) in child_specs:
@@ -1478,6 +1758,11 @@ def download_view1_daily(path1):
     combined = pd.concat(frames, ignore_index=True)
     before = len(combined)
     combined = combined.drop_duplicates()
+    combined = trim_view1_schedule_window(
+        combined,
+        BKG_SCHEDULE_START,
+        BKG_SCHEDULE_END,
+    )
     combined.to_csv(path1, index=False, encoding='utf-8-sig')
     for p in parts:
         p.unlink(missing_ok=True)
@@ -1630,6 +1915,57 @@ def download_bsa():
 # ═══════════════════════════════════════════════════════════
 # Phase 2: Booking Snapshot Processing
 # ═══════════════════════════════════════════════════════════
+def quarantine_customer_code_errors(frame, dataset_id=None, output_dir=None):
+    """Remove performance rows with no company code and write an audit trail."""
+    dataset_id = dataset_id or DATASET_ID
+    output_dir = Path(output_dir or (RUNTIME_DIR / 'output'))
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    code = frame.get('BKG_SHPR_CST_NO', pd.Series('', index=frame.index)).fillna('').astype(str).str.strip()
+    code_valid = code.ne('') & ~code.str.lower().isin({'nan', 'none', 'null', 'nat'})
+    fst = pd.to_numeric(frame.get('FST_TEU', pd.Series(0, index=frame.index)), errors='coerce').fillna(0)
+    lst = pd.to_numeric(frame.get('LST_TEU', pd.Series(0, index=frame.index)), errors='coerce').fillna(0)
+    status = frame.get('LST_Status', pd.Series('', index=frame.index)).fillna('').astype(str).str.strip()
+    invalid = ~code_valid & (fst.gt(0) | (status.eq('Normal') & lst.gt(0)))
+
+    errors = frame.loc[invalid].copy()
+    audit = {
+        'dataset_id': str(dataset_id),
+        'status': 'error_rows_quarantined' if invalid.any() else 'ok',
+        'rows_total_before': int(len(frame)),
+        'invalid_rows': int(invalid.sum()),
+        'invalid_fst_rows': int((invalid & fst.gt(0)).sum()),
+        'invalid_fst_teu': float(fst.where(invalid, 0).sum()),
+        'invalid_normal_lst_rows': int((invalid & status.eq('Normal') & lst.gt(0)).sum()),
+        'invalid_normal_lst_teu': float(lst.where(invalid & status.eq('Normal'), 0).sum()),
+        'rows_after': int((~invalid).sum()),
+    }
+    (output_dir / f'customer_code_quality_{dataset_id}.json').write_text(
+        json.dumps(audit, ensure_ascii=False, indent=2), encoding='utf-8'
+    )
+    audit_columns = [
+        col for col in (
+            'BKG_NO', 'BKG_SHPR_CST_NO', 'BKG_SHPR_CST_ENM', 'POR_CTR_CD',
+            'POR_PLC_CD', 'DLY_CTR_CD', 'DLY_PLC_CD', 'YYYYMM', 'FST_TEU',
+            'LST_Status', 'LST_TEU', 'Salesman_POR',
+        ) if col in errors.columns
+    ]
+    errors.loc[:, audit_columns].to_csv(
+        output_dir / f'customer_code_errors_{dataset_id}.csv',
+        index=False,
+        encoding='utf-8-sig',
+    )
+    if invalid.any():
+        print(
+            f"  ERROR: quarantined {int(invalid.sum()):,} performance rows without "
+            f"a company code (FST {audit['invalid_fst_teu']:,.1f} TEU / "
+            f"Normal LST {audit['invalid_normal_lst_teu']:,.1f} TEU)"
+        )
+    else:
+        print("  Customer-code quality gate: OK (0 performance rows quarantined)")
+    return frame.loc[~invalid].copy(), audit
+
+
 def process_snapshot():
     """Process 1.csv + 2.csv + template -> booking_snapshot_result.xlsx"""
     os.chdir(WORK_DIR)
@@ -1735,12 +2071,17 @@ def process_snapshot():
         m = re.match(r'(\d{4})\D+(\d{1,2})\D+(\d{1,2})', str(s))
         return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else pd.NaT
 
-    def df1_lookup(bkg_no, col):
-        if bkg_no not in df1_dedup.index: return None
-        try:
-            val = df1_dedup.loc[bkg_no, col]
-            return str(val) if pd.notna(val) else None
-        except: return None
+    def df1_lookup_series(col):
+        """Vectorized View 1 lookup aligned to the View 2 booking order."""
+        if col not in df1_dedup.columns:
+            return pd.Series('', index=range(len(bkg_index)), dtype=object)
+        return (
+            df1_dedup[col]
+            .reindex(bkg_index)
+            .reset_index(drop=True)
+            .fillna('')
+            .astype(str)
+        )
 
     def load_previous_actual_schedule():
         out_dir = RUNTIME_DIR / 'output'
@@ -1786,6 +2127,7 @@ def process_snapshot():
     print("[Process] Building output (2.csv base)...")
     output = pd.DataFrame()
     bkg_nos = df2_dedup['BKG_NO'].values
+    bkg_index = pd.Index(bkg_nos)
 
     # Columns from 2.csv directly
     output['BKG_NO'] = bkg_nos
@@ -1814,19 +2156,29 @@ def process_snapshot():
     date_vsl_col = next((c for c in df2_dedup.columns if 'Date_vsl' in c), None)
     output['Actual_Departure_schedule'] = df2_dedup[date_vsl_col].values if date_vsl_col else ''
 
-    # Columns from 1.csv via lookup
+    # Customer code/name now come directly from the annual View 2 export. View
+    # 1 remains a supplement for operational fields and a compatibility
+    # fallback for an older temp workbook during a one-run rollout.
     print("  Looking up 1.csv columns...")
-    for col in ['BKG_SHPR_CST_NO', 'BKG_SHPR_CST_ENM', 'POL_CTR_CD', 'POL_PORT_CD',
+    for col in ['BKG_SHPR_CST_NO', 'BKG_SHPR_CST_ENM']:
+        source_col = df2_col(col, 'Booking_Shipper_code' if col.endswith('_NO') else 'Booking_Shipper_name')
+        output[col] = df2_dedup[source_col].fillna('').astype(str).values if source_col else ''
+        empty = output[col].astype(str).str.strip().isin(['', 'nan', 'None', 'NaN'])
+        if empty.any():
+            fallback = df1_lookup_series(col)
+            output.loc[empty, col] = fallback.loc[empty].values
+
+    for col in ['POL_CTR_CD', 'POL_PORT_CD',
                 'POD_CTR_CD', 'POD_PORT_CD', 'VSL_CD', 'VOY_NO',
                 'Booking_date', 'Booking_schedule', 'Cancel_date', 'FST_TEU']:
-        output[col] = pd.Series([df1_lookup(b, col) for b in bkg_nos], dtype=object).fillna('')
+        output[col] = df1_lookup_series(col)
 
     # Fallback: POR/DLY from 1.csv if 2.csv is empty
     for f2col, f1col in [('POR_CTR_CD','POR_CTR_CD'),('POR_PLC_CD','POR_PLC_CD'),
                          ('DLY_CTR_CD','DLY_CTR_CD'),('DLY_PLC_CD','DLY_PLC_CD')]:
         mask = output[f2col].astype(str).str.strip().isin(['','nan'])
         if mask.any():
-            fb = pd.Series([df1_lookup(b, f1col) for b in bkg_nos], dtype=object).fillna('')
+            fb = df1_lookup_series(f1col)
             output.loc[mask, f2col] = fb[mask]
 
     # Fallback: Booking_schedule/Booking_date from Date_vsl if 1.csv lookup failed
@@ -1920,6 +2272,10 @@ def process_snapshot():
             f"{scope_stats['scopeRows']:,} canonical rows"
         )
 
+    # A performance row without a company code cannot be assigned to a current
+    # owner and must never enter dashboard, target, actual, or BSA metrics.
+    output, _customer_code_audit = quarantine_customer_code_errors(output)
+
     total = len(output)
     bkg_nos = output['BKG_NO'].values
     shpr_codes = output['BKG_SHPR_CST_NO'].values
@@ -1958,6 +2314,16 @@ def process_snapshot():
     else:
         print("  WARNING: salesman.csv not found; using raw Salesman_POR")
         output['Salesman_POR'] = output['Salesman_POR'].fillna('').astype(str).str.strip().replace('', MISSING_SALES)
+
+    # The raw Tableau frames are each hundreds of MB and are no longer needed
+    # once the output frame and owner mapping have been built. Releasing them
+    # here avoids page-file exhaustion during the groupby-heavy KPI formulas.
+    import gc
+    del df1, df2, df1_unique, df1_dedup, df2_dedup, bkg_nos
+    for transient_name in ('df2_bkg_set', 'df1_bkg_key', 'missing_from_2'):
+        if transient_name in locals():
+            del locals()[transient_name]
+    gc.collect()
 
     # --- Compute formulas ---
     print("[Process] Computing formulas...")
@@ -2024,11 +2390,13 @@ def process_snapshot():
     status_str = output['LST_Status'].astype(str).str.strip()
     # Normal + CM1 있는 건만 대상으로 루트 평균 및 화주별 CM1/TEU 계산
     mask = (status_str == 'Normal') & (cm1_num != 0) & (teu_num > 0)
-    calc_df = pd.DataFrame({
-        'shpr': output['BKG_SHPR_CST_NO'], 'por': output['POR_PLC_CD'],
-        'dly': output['DLY_PLC_CD'], 'cm1': cm1_num, 'teu': teu_num, 'mask': mask
-    })
-    valid = calc_df[calc_df['mask']]
+    valid = output.loc[
+        mask,
+        ['BKG_SHPR_CST_NO', 'POR_PLC_CD', 'DLY_PLC_CD'],
+    ].copy()
+    valid.columns = ['shpr', 'por', 'dly']
+    valid['cm1'] = cm1_num.loc[mask].to_numpy()
+    valid['teu'] = teu_num.loc[mask].to_numpy()
     # 루트 평균
     route_agg = valid.groupby(['por', 'dly']).agg(r_cm1=('cm1', 'sum'), r_teu=('teu', 'sum')).reset_index()
     route_agg['r_avg'] = route_agg['r_cm1'] / route_agg['r_teu']
@@ -2044,16 +2412,16 @@ def process_snapshot():
         for s, p, d in zip(output['BKG_SHPR_CST_NO'], output['POR_PLC_CD'], output['DLY_PLC_CD'])]
     hi_cnt = sum(1 for v in output['\uace0/\uc800'] if v == '고수익')
     lo_cnt = sum(1 for v in output['\uace0/\uc800'] if v == '저수익')
+    del route_agg, shpr_agg, pt_lookup
+    gc.collect()
 
     # 전월 기준 선적지별 고수익화주 태그
     print("  Computing 고수익태그 (전월 기준)...")
     # 월별 선적지별 평균 CM1/TEU 및 화주별 CM1/TEU
-    calc_df2 = pd.DataFrame({
-        'shpr': output['BKG_SHPR_CST_NO'], 'por': output['POR_PLC_CD'],
-        'yyyymm': output['YYYYMM'], 'cm1': cm1_num, 'teu': teu_num,
-        'mask': mask  # Normal & cm1!=0 & teu>0
-    })
-    valid2 = calc_df2[calc_df2['mask']]
+    valid2 = valid[['shpr', 'por', 'cm1', 'teu']].copy()
+    valid2['yyyymm'] = output.loc[mask, 'YYYYMM'].to_numpy()
+    del valid
+    gc.collect()
     # 월별 선적지 평균
     por_month_avg = valid2.groupby(['por', 'yyyymm']).agg(
         p_cm1=('cm1', 'sum'), p_teu=('teu', 'sum')).reset_index()

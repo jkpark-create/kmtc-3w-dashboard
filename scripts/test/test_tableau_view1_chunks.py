@@ -17,6 +17,33 @@ SPEC.loader.exec_module(dashboard)
 
 
 class TableauView1ChunkTest(unittest.TestCase):
+    def test_midnight_upper_bound_expands_to_next_midnight(self):
+        self.assertEqual(
+            dashboard.inclusive_tableau_filter_end("2026-08-15 00:00:00"),
+            "2026-08-16 00:00:00",
+        )
+        self.assertEqual(
+            dashboard.inclusive_tableau_filter_end("2026-08-15 12:34:56"),
+            "2026-08-15 12:34:56",
+        )
+
+    def test_boundary_trim_keeps_requested_dates_and_unparseable_rows(self):
+        frame = dashboard.pd.DataFrame({
+            "Booking_schedule": [
+                "2026년 8월 14일",
+                "2026년 8월 15일",
+                "2026년 8월 16일",
+                "unknown",
+            ],
+            "BKG_NO": ["A", "B", "C", "D"],
+        })
+        result = dashboard.trim_view1_schedule_window(
+            frame,
+            "2026-08-14 00:00:00",
+            "2026-08-15 00:00:00",
+        )
+        self.assertEqual(result["BKG_NO"].tolist(), ["A", "B", "D"])
+
     def test_five_week_chunks_cover_window_without_gaps_or_overlaps(self):
         chunks = dashboard.window_week_chunks(
             "2025-12-28 00:00:00",

@@ -22,6 +22,15 @@ WORKBOOK_XML = b"""<?xml version="1.0" encoding="utf-8"?>
     <min>#2026-01-01 00:00:00#</min>
     <max>#2026-01-31 00:00:00#</max>
   </filter>
+  <worksheet name="1"><table><view>
+    <datasource-dependencies datasource="booking">
+      <column datatype="string" name="[FST_VSL_DPO_DTM]" role="dimension" type="nominal" />
+    </datasource-dependencies>
+  </view></table></worksheet>
+  <worksheet name="2"><table><view>
+    <datasources><datasource name="booking" /></datasources>
+    <datasource-dependencies datasource="booking" />
+  </view><rows>[booking].[none:BKG_NO:nk]</rows></table></worksheet>
 </workbook>
 """
 
@@ -82,6 +91,8 @@ class TableauPublishTest(unittest.TestCase):
             kwargs["params"],
             {"overwrite": "true", "skipConnectionCheck": "true"},
         )
+        self.assertIn(b"#2026-02-01 00:00:00#", kwargs["data"])
+        self.assertNotIn(b"#2026-01-31 00:00:00#", kwargs["data"])
 
     def test_publish_http_error_is_raised_without_discovery_polling(self):
         session = FakeSession(
