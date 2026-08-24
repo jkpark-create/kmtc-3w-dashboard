@@ -101,6 +101,23 @@ class NewSalesmanDetectionTest(unittest.TestCase):
         self.assertEqual((matched, provisional, raw_fallback, unmatched), (6, 0, 0, 0))
         self.assertEqual(lookup["provisional_salesmen"], [])
 
+    def test_unassigned_is_not_detected_as_a_provisional_salesperson(self):
+        df = pd.DataFrame(
+            {
+                "BKG_SHPR_CST_NO": ["__INTEGRATED_AGGREGATE__"] * 3,
+                "POR_CTR_CD": ["CN"] * 3,
+                "POR_PLC_CD": ["SHA"] * 3,
+                "Salesman_POR": ["UNASSIGNED"] * 3,
+                "Actual_Departure_schedule": ["2026년 8월 2일"] * 3,
+            }
+        )
+        lookup = self.lookup()
+
+        dashboard.apply_salesman_mapping(df, lookup, as_of="20260824")
+
+        self.assertEqual(df["Salesman_POR"].tolist(), [dashboard.MISSING_SALES] * 3)
+        self.assertEqual(lookup["provisional_salesmen"], [])
+
     def test_old_unregistered_value_is_not_treated_as_new(self):
         df = pd.DataFrame(
             {
