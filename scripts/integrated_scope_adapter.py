@@ -46,6 +46,11 @@ REQUIRED_ACTUAL_SCOPE_SEGMENT_ALTERNATIVES = (
     "first BSA-bearing load segment",
     "valid BSA-bearing vessel",
 )
+PREPARED_LOCAL_ACTUAL_MODE = "sandbox_first_ocean"
+REQUIRED_PREPARED_LOCAL_SCOPE_MARKERS = (
+    "prepared CGO_PFM_CAT_CD='L' rows",
+    "domestic T/S duplicates",
+)
 
 
 def _clean(value: Any) -> str:
@@ -92,7 +97,16 @@ def _validate_source_contract(source_meta: dict[str, Any]) -> None:
     actual_scope = _clean(source_meta.get("iccActualScope"))
     missing = [marker for marker in REQUIRED_BSA_SCOPE_MARKERS if marker not in bsa_scope]
     missing.extend(marker for marker in REQUIRED_ACTUAL_SCOPE_MARKERS if marker not in actual_scope)
-    if not any(marker in actual_scope for marker in REQUIRED_ACTUAL_SCOPE_SEGMENT_ALTERNATIVES):
+    uses_legacy_segment_contract = any(
+        marker in actual_scope for marker in REQUIRED_ACTUAL_SCOPE_SEGMENT_ALTERNATIVES
+    )
+    uses_prepared_local_contract = (
+        _clean(source_meta.get("iccActualResolvedSourceMode")) == PREPARED_LOCAL_ACTUAL_MODE
+        and all(marker in actual_scope for marker in REQUIRED_PREPARED_LOCAL_SCOPE_MARKERS)
+        and "DMSAE_201DS historical weekly snapshots" in _clean(source_meta.get("iccActualSource"))
+        and "DMSAE_201DS_CUR" in _clean(source_meta.get("iccActualSource"))
+    )
+    if not (uses_legacy_segment_contract or uses_prepared_local_contract):
         missing.append("valid BSA-bearing load segment/vessel contract")
     if missing:
         raise RuntimeError(

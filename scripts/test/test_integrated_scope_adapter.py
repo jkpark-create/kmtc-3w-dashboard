@@ -128,6 +128,43 @@ class IntegratedScopeAdapterTests(unittest.TestCase):
         self.assertEqual(snapshot.space_opportunity_meta["candidateVoyages"], 1)
         self.assertEqual(snapshot.space_opportunity_meta["matchedGroups"], 3)
 
+    def test_current_prepared_local_contract_is_accepted(self):
+        adapter._validate_source_contract({
+            "bsaScope": (
+                "Single LOCAL first-vessel CGO_PFM_CAT_CD='L'; "
+                "BSA_CD='03' SPOT replaces BSA_CD='01' Original"
+            ),
+            "iccActualResolvedSourceMode": "sandbox_first_ocean",
+            "iccActualSource": (
+                "DMSAE_201DS historical weekly snapshots + "
+                "DMSAE_201DS_CUR latest prepared LOCAL facts"
+            ),
+            "iccActualScope": (
+                "B/L / SINGLE(TEAM) / individual prepared CGO_PFM_CAT_CD='L' rows; "
+                "domestic T/S duplicates are excluded; "
+                "Booking and actual B/L remain separate"
+            ),
+        })
+
+    def test_prepared_local_contract_requires_authoritative_source_mode(self):
+        with self.assertRaisesRegex(RuntimeError, "load segment/vessel contract"):
+            adapter._validate_source_contract({
+                "bsaScope": (
+                    "Single LOCAL first-vessel CGO_PFM_CAT_CD='L'; "
+                    "BSA_CD='03' SPOT replaces BSA_CD='01' Original"
+                ),
+                "iccActualResolvedSourceMode": "unknown",
+                "iccActualSource": (
+                    "DMSAE_201DS historical weekly snapshots + "
+                    "DMSAE_201DS_CUR latest prepared LOCAL facts"
+                ),
+                "iccActualScope": (
+                    "B/L / SINGLE(TEAM) / individual prepared CGO_PFM_CAT_CD='L' rows; "
+                    "domestic T/S duplicates are excluded; "
+                    "Booking and actual B/L remain separate"
+                ),
+            })
+
     def test_cutover_preserves_legacy_and_replaces_july(self):
         legacy = pd.DataFrame([
             {"YYYYMM": "202606", "TEU_BSA (Actual)": 10},
