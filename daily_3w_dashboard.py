@@ -1409,7 +1409,9 @@ def download_view1_daily(path1):
                 wb_url, '1', part_path,
                 use_http=TABLEAU_VIEW1_USE_HTTP_CSV_DOWNLOAD,
                 render_wait_seconds=TABLEAU_VIEW1_RENDER_WAIT_SECONDS,
-                browser_warmup_timeout_ms=TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS,
+                browser_warmup_timeout_ms=(
+                    0 if split_windows else TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS
+                ),
                 browser_download_timeout_ms=(
                     TABLEAU_VIEW1_SPLIT_TRIGGER_TIMEOUT_MS
                     if split_windows else None
