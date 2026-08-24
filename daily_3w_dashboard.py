@@ -411,6 +411,10 @@ TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS = max(
     0,
     int(os.environ.get('TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS', '180000')),
 )
+TABLEAU_VIEW1_SPLIT_TRIGGER_TIMEOUT_MS = max(
+    60000,
+    int(os.environ.get('TABLEAU_VIEW1_SPLIT_TRIGGER_TIMEOUT_MS', '300000')),
+)
 # Start View 1 at two fiscal weeks per render. A slow two-week export is
 # bisected to one-week exports by download_view1_daily.
 TABLEAU_VIEW1_CHUNK_WEEKS = max(
@@ -889,6 +893,7 @@ def download_csv_from_tableau(
     use_http=None,
     render_wait_seconds=None,
     browser_warmup_timeout_ms=0,
+    browser_download_timeout_ms=None,
     max_attempts=None,
 ):
     """Download CSV from Tableau with retry and HTTP fallback protection."""
@@ -903,6 +908,11 @@ def download_csv_from_tableau(
         else max(0, int(render_wait_seconds))
     )
     browser_warmup_timeout_ms = max(0, int(browser_warmup_timeout_ms or 0))
+    browser_download_timeout_ms = (
+        TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS
+        if browser_download_timeout_ms is None
+        else max(60000, int(browser_download_timeout_ms))
+    )
     download_retries = (
         TABLEAU_CSV_DOWNLOAD_RETRIES
         if max_attempts is None
@@ -911,7 +921,7 @@ def download_csv_from_tableau(
     warmup_pending = (
         not use_http
         and browser_warmup_timeout_ms > 0
-        and browser_warmup_timeout_ms < TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS
+        and browser_warmup_timeout_ms < browser_download_timeout_ms
     )
     last_error = None
     attempt = 1
@@ -944,9 +954,12 @@ def download_csv_from_tableau(
                         print(f"  HTTP stream failed: {http_exc}")
                         print(
                             f"  CSV download attempt {attempt}/{download_retries} "
-                            f"(browser event, timeout={TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS // 1000}s)..."
+                            f"(browser event, timeout={browser_download_timeout_ms // 1000}s)..."
                         )
-                        size = download_csv_via_browser_event(page, csv_url, tmp_path)
+                        size = download_csv_via_browser_event(
+                            page, csv_url, tmp_path,
+                            timeout_ms=browser_download_timeout_ms,
+                        )
                 else:
                     if is_warmup:
                         print(
@@ -964,9 +977,12 @@ def download_csv_from_tableau(
                         )
                         print(
                             f"  CSV download attempt {attempt}/{download_retries} "
-                            f"(browser event, timeout={TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS // 1000}s)..."
+                            f"(browser event, timeout={browser_download_timeout_ms // 1000}s)..."
                         )
-                        size = download_csv_via_browser_event(page, csv_url, tmp_path)
+                        size = download_csv_via_browser_event(
+                            page, csv_url, tmp_path,
+                            timeout_ms=browser_download_timeout_ms,
+                        )
 
                 if size <= 0:
                     raise RuntimeError('CSV download produced an empty file')
@@ -1185,19 +1201,23 @@ def window_week_chunks(start_str, end_str, max_weeks):
 
 
 def split_view1_chunk_window(start_str, end_str):
-    """Bisect a slow View 1 window on a whole-week boundary.
+    """Bisect a slow View 1 window, down to a single day when necessary.
 
-    One-week windows are the minimum and return an empty list. The returned
-    inclusive windows are contiguous, gap-free, and preserve the input bounds.
+    Wider windows retain whole-week boundaries. A slow one-week export falls
+    back to shorter day ranges so a single problematic week cannot block the
+    entire daily refresh. Returned inclusive windows are contiguous and exact.
     """
     start = datetime.strptime(start_str[:10], '%Y-%m-%d')
     end = datetime.strptime(end_str[:10], '%Y-%m-%d')
     day_count = (end - start).days + 1
-    if day_count <= 7:
+    if day_count <= 1:
         return []
-    left_days = max(7, (day_count // 2 // 7) * 7)
-    if left_days >= day_count:
-        left_days = 7
+    if day_count > 7:
+        left_days = max(7, (day_count // 2 // 7) * 7)
+        if left_days >= day_count:
+            left_days = 7
+    else:
+        left_days = day_count // 2
     left_end = start + timedelta(days=left_days - 1)
     right_start = left_end + timedelta(days=1)
     return [
@@ -1390,8 +1410,12 @@ def download_view1_daily(path1):
                 use_http=TABLEAU_VIEW1_USE_HTTP_CSV_DOWNLOAD,
                 render_wait_seconds=TABLEAU_VIEW1_RENDER_WAIT_SECONDS,
                 browser_warmup_timeout_ms=TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS,
+                browser_download_timeout_ms=(
+                    TABLEAU_VIEW1_SPLIT_TRIGGER_TIMEOUT_MS
+                    if split_windows else None
+                ),
                 # Try a wider window once, then bisect it. One-week windows
-                # retain the normal retry budget because they cannot split.
+                # can split further; only a single day retains normal retries.
                 max_attempts=1 if split_windows else None,
             )
         except Exception as exc:

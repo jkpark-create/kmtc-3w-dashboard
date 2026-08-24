@@ -50,8 +50,8 @@ class TableauDownloadDefaultsTest(unittest.TestCase):
                 calls,
                 [
                     ("1_20260824_c01_20260802_20260815.csv", 1),
-                    ("1_20260824_c01a_20260802_20260808.csv", None),
-                    ("1_20260824_c01b_20260809_20260815.csv", None),
+                    ("1_20260824_c01a_20260802_20260808.csv", 1),
+                    ("1_20260824_c01b_20260809_20260815.csv", 1),
                 ],
             )
 
@@ -66,10 +66,21 @@ class TableauDownloadDefaultsTest(unittest.TestCase):
             ],
         )
 
-    def test_one_week_window_is_the_minimum(self):
+    def test_one_week_window_can_split_to_shorter_ranges(self):
         self.assertEqual(
             dashboard.split_view1_chunk_window(
                 "2026-08-02 00:00:00", "2026-08-08 00:00:00"
+            ),
+            [
+                ("2026-08-02 00:00:00", "2026-08-04 00:00:00"),
+                ("2026-08-05 00:00:00", "2026-08-08 00:00:00"),
+            ],
+        )
+
+    def test_one_day_window_is_the_minimum(self):
+        self.assertEqual(
+            dashboard.split_view1_chunk_window(
+                "2026-08-02 00:00:00", "2026-08-02 00:00:00"
             ),
             [],
         )
