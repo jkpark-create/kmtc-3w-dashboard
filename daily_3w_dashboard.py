@@ -1409,16 +1409,11 @@ def download_view1_daily(path1):
                 wb_url, '1', part_path,
                 use_http=TABLEAU_VIEW1_USE_HTTP_CSV_DOWNLOAD,
                 render_wait_seconds=TABLEAU_VIEW1_RENDER_WAIT_SECONDS,
-                browser_warmup_timeout_ms=(
-                    0 if split_windows else TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS
-                ),
-                browser_download_timeout_ms=(
-                    TABLEAU_VIEW1_SPLIT_TRIGGER_TIMEOUT_MS
-                    if split_windows else None
-                ),
-                # Try a wider window once, then bisect it. One-week windows
-                # can split further; only a single day retains normal retries.
-                max_attempts=1 if split_windows else None,
+                browser_warmup_timeout_ms=0,
+                browser_download_timeout_ms=TABLEAU_VIEW1_SPLIT_TRIGGER_TIMEOUT_MS,
+                # Pipeline retries resume checkpointed View 1 chunks, so one
+                # bounded attempt is safer than holding a bad range for 45m.
+                max_attempts=1,
             )
         except Exception as exc:
             is_timeout = 'timeout' in str(exc).lower() or 'timed out' in str(exc).lower()
@@ -1433,7 +1428,14 @@ def download_view1_daily(path1):
                 recovered.extend(download_chunk(
                     f'{chunk_label}{suffix}', split_start, split_end,
                 ))
-            return recovered
+            frames = [read_tableau_csv(path) for path in recovered]
+            combined = pd.concat(frames, ignore_index=True).drop_duplicates()
+            combined.to_csv(part_path, index=False, encoding='utf-8-sig')
+            print(
+                f"    Checkpointed recovered chunk {part_path.name}: "
+                f"{part_path.stat().st_size:,} bytes ({len(combined):,} rows)"
+            )
+            return [part_path]
 
         prows = count_csv_rows(part_path)
         print(f"    {part_path.name}: {psize:,} bytes ({prows:,} rows)")
