@@ -415,6 +415,10 @@ TABLEAU_VIEW1_SPLIT_TRIGGER_TIMEOUT_MS = max(
     60000,
     int(os.environ.get('TABLEAU_VIEW1_SPLIT_TRIGGER_TIMEOUT_MS', '120000')),
 )
+TABLEAU_VIEW1_LEAF_TIMEOUT_MS = max(
+    TABLEAU_VIEW1_SPLIT_TRIGGER_TIMEOUT_MS,
+    int(os.environ.get('TABLEAU_VIEW1_LEAF_TIMEOUT_MS', '180000')),
+)
 # Start View 1 at two fiscal weeks per render. A slow two-week export is
 # bisected to one-week exports by download_view1_daily.
 TABLEAU_VIEW1_CHUNK_WEEKS = max(
@@ -1441,7 +1445,10 @@ def download_view1_daily(path1):
                 use_http=TABLEAU_VIEW1_USE_HTTP_CSV_DOWNLOAD,
                 render_wait_seconds=TABLEAU_VIEW1_RENDER_WAIT_SECONDS,
                 browser_warmup_timeout_ms=0,
-                browser_download_timeout_ms=TABLEAU_VIEW1_SPLIT_TRIGGER_TIMEOUT_MS,
+                browser_download_timeout_ms=(
+                    TABLEAU_VIEW1_SPLIT_TRIGGER_TIMEOUT_MS
+                    if split_windows else TABLEAU_VIEW1_LEAF_TIMEOUT_MS
+                ),
                 # Pipeline retries resume checkpointed View 1 chunks, so one
                 # bounded attempt is safer than holding a bad range for 45m.
                 max_attempts=1,
