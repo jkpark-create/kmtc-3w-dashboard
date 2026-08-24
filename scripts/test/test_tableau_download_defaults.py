@@ -23,9 +23,9 @@ class TableauDownloadDefaultsTest(unittest.TestCase):
 
         def fake_download(_workbook, _view, save_path, **kwargs):
             calls.append((Path(save_path).name, kwargs.get("max_attempts")))
-            if Path(save_path).name.endswith("_c01.csv"):
+            if Path(save_path).name.endswith("_c01_20260802_20260815.csv"):
                 raise TimeoutError("Tableau render timeout")
-            value = "A" if Path(save_path).name.endswith("c01a.csv") else "B"
+            value = "A" if "_c01a_" in Path(save_path).name else "B"
             Path(save_path).write_text(f"value\n{value}\n", encoding="utf-8")
             return Path(save_path).stat().st_size
 
@@ -49,9 +49,9 @@ class TableauDownloadDefaultsTest(unittest.TestCase):
             self.assertEqual(
                 calls,
                 [
-                    ("1_20260824_c01.csv", 1),
-                    ("1_20260824_c01a.csv", None),
-                    ("1_20260824_c01b.csv", None),
+                    ("1_20260824_c01_20260802_20260815.csv", 1),
+                    ("1_20260824_c01a_20260802_20260808.csv", None),
+                    ("1_20260824_c01b_20260809_20260815.csv", None),
                 ],
             )
 

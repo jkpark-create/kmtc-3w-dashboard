@@ -1357,7 +1357,14 @@ def download_view1_daily(path1):
     def download_chunk(chunk_label, cstart, cend):
         print(f"  View 1 chunk {chunk_label}: {cstart} ~ {cend}")
         file_label = chunk_label.lower()
-        part_path = RUNTIME_DIR / f'1_{DATASET_ID}_{file_label}.csv'
+        window_label = (
+            f"{file_label}_{cstart[:10].replace('-', '')}_"
+            f"{cend[:10].replace('-', '')}"
+        )
+        # Include the exact filter window in resumable artifacts. Chunk numbers
+        # alone are unsafe when the configured width changes (for example,
+        # one-week C01 and two-week C01 are different Tableau queries).
+        part_path = RUNTIME_DIR / f'1_{DATASET_ID}_{window_label}.csv'
         reusable = same_day_chunk_size_and_rows(part_path)
         if reusable:
             psize, prows = reusable
@@ -1368,7 +1375,7 @@ def download_view1_daily(path1):
         try:
             s, api_ver, site_id = tableau_rest_api()
             try:
-                wb_name = f'{TEMP_WB_NAME}_{file_label}'
+                wb_name = f'{TEMP_WB_NAME}_{window_label}'
                 wb_url = ensure_temp_workbook(
                     s, api_ver, site_id,
                     start=cstart, end=cend, workbook_name=wb_name,
