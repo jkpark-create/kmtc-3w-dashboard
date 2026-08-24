@@ -411,9 +411,11 @@ TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS = max(
     0,
     int(os.environ.get('TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS', '180000')),
 )
+# Start View 1 at two fiscal weeks per render. A slow two-week export is
+# bisected to one-week exports by download_view1_daily.
 TABLEAU_VIEW1_CHUNK_WEEKS = max(
     1,
-    int(os.environ.get('TABLEAU_VIEW1_CHUNK_WEEKS', '5')),
+    int(os.environ.get('TABLEAU_VIEW1_CHUNK_WEEKS', '2')),
 )
 TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW1_EXISTING_FALLBACK_MAX_HOURS', '0'))
 TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS = int(os.environ.get('TABLEAU_VIEW2_EXISTING_FALLBACK_MAX_HOURS', '0'))
@@ -887,6 +889,7 @@ def download_csv_from_tableau(
     use_http=None,
     render_wait_seconds=None,
     browser_warmup_timeout_ms=0,
+    max_attempts=None,
 ):
     """Download CSV from Tableau with retry and HTTP fallback protection."""
     from playwright.sync_api import sync_playwright
@@ -900,6 +903,11 @@ def download_csv_from_tableau(
         else max(0, int(render_wait_seconds))
     )
     browser_warmup_timeout_ms = max(0, int(browser_warmup_timeout_ms or 0))
+    download_retries = (
+        TABLEAU_CSV_DOWNLOAD_RETRIES
+        if max_attempts is None
+        else max(1, int(max_attempts))
+    )
     warmup_pending = (
         not use_http
         and browser_warmup_timeout_ms > 0
@@ -908,7 +916,7 @@ def download_csv_from_tableau(
     last_error = None
     attempt = 1
 
-    while attempt <= TABLEAU_CSV_DOWNLOAD_RETRIES:
+    while attempt <= download_retries:
         is_warmup = warmup_pending
         tmp_path.unlink(missing_ok=True)
         with sync_playwright() as p:
@@ -929,13 +937,13 @@ def download_csv_from_tableau(
                     time.sleep(render_wait_seconds)
 
                 if use_http:
-                    print(f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} (HTTP stream)...")
+                    print(f"  CSV download attempt {attempt}/{download_retries} (HTTP stream)...")
                     try:
                         size = download_csv_via_authenticated_http(ctx, csv_url, tmp_path)
                     except Exception as http_exc:
                         print(f"  HTTP stream failed: {http_exc}")
                         print(
-                            f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} "
+                            f"  CSV download attempt {attempt}/{download_retries} "
                             f"(browser event, timeout={TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS // 1000}s)..."
                         )
                         size = download_csv_via_browser_event(page, csv_url, tmp_path)
@@ -951,11 +959,11 @@ def download_csv_from_tableau(
                         )
                     else:
                         print(
-                            f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} "
+                            f"  CSV download attempt {attempt}/{download_retries} "
                             "(browser event, HTTP stream disabled)..."
                         )
                         print(
-                            f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} "
+                            f"  CSV download attempt {attempt}/{download_retries} "
                             f"(browser event, timeout={TABLEAU_BROWSER_DOWNLOAD_TIMEOUT_MS // 1000}s)..."
                         )
                         size = download_csv_via_browser_event(page, csv_url, tmp_path)
@@ -973,8 +981,8 @@ def download_csv_from_tableau(
                     print(f"  CSV warm-up did not finish: {short_error(exc)}")
                     print("  Continuing with full browser download attempts...")
                     continue
-                print(f"  CSV download attempt {attempt}/{TABLEAU_CSV_DOWNLOAD_RETRIES} failed: {exc}")
-                if attempt < TABLEAU_CSV_DOWNLOAD_RETRIES:
+                print(f"  CSV download attempt {attempt}/{download_retries} failed: {exc}")
+                if attempt < download_retries:
                     time.sleep(30 * attempt)
                 attempt += 1
             finally:
@@ -1176,6 +1184,28 @@ def window_week_chunks(start_str, end_str, max_weeks):
     return chunks
 
 
+def split_view1_chunk_window(start_str, end_str):
+    """Bisect a slow View 1 window on a whole-week boundary.
+
+    One-week windows are the minimum and return an empty list. The returned
+    inclusive windows are contiguous, gap-free, and preserve the input bounds.
+    """
+    start = datetime.strptime(start_str[:10], '%Y-%m-%d')
+    end = datetime.strptime(end_str[:10], '%Y-%m-%d')
+    day_count = (end - start).days + 1
+    if day_count <= 7:
+        return []
+    left_days = max(7, (day_count // 2 // 7) * 7)
+    if left_days >= day_count:
+        left_days = 7
+    left_end = start + timedelta(days=left_days - 1)
+    right_start = left_end + timedelta(days=1)
+    return [
+        (f'{start:%Y-%m-%d} 00:00:00', f'{left_end:%Y-%m-%d} 00:00:00'),
+        (f'{right_start:%Y-%m-%d} 00:00:00', f'{end:%Y-%m-%d} 00:00:00'),
+    ]
+
+
 def current_dataset_date():
     try:
         return datetime.strptime(DATASET_ID, '%Y%m%d').date()
@@ -1324,36 +1354,61 @@ def download_view1_daily(path1):
         f"[1/3] Downloading View 1 in {len(chunks)} chunk(s) "
         f"(max {TABLEAU_VIEW1_CHUNK_WEEKS} weeks each) -> {path1.name}..."
     )
-    parts = []
-    for chunk_no, cstart, cend in chunks:
-        chunk_label = f'C{chunk_no:02d}'
+    def download_chunk(chunk_label, cstart, cend):
         print(f"  View 1 chunk {chunk_label}: {cstart} ~ {cend}")
-        part_path = RUNTIME_DIR / f'1_{DATASET_ID}_c{chunk_no:02d}.csv'
+        file_label = chunk_label.lower()
+        part_path = RUNTIME_DIR / f'1_{DATASET_ID}_{file_label}.csv'
         reusable = same_day_chunk_size_and_rows(part_path)
         if reusable:
             psize, prows = reusable
             print(f"    Reusing same-day chunk {part_path.name}: {psize:,} bytes ({prows:,} rows)")
-            parts.append(part_path)
-            continue
+            return [part_path]
 
-        s, api_ver, site_id = tableau_rest_api()
+        split_windows = split_view1_chunk_window(cstart, cend)
         try:
-            wb_name = f'{TEMP_WB_NAME}_c{chunk_no:02d}'
-            wb_url = ensure_temp_workbook(s, api_ver, site_id, start=cstart, end=cend, workbook_name=wb_name)
-        finally:
+            s, api_ver, site_id = tableau_rest_api()
             try:
-                s.post(f'{TABLEAU_SERVER}/api/{api_ver}/auth/signout', timeout=10)
-            except Exception:
-                pass
-        psize = download_csv_from_tableau(
-            wb_url, '1', part_path,
-            use_http=TABLEAU_VIEW1_USE_HTTP_CSV_DOWNLOAD,
-            render_wait_seconds=TABLEAU_VIEW1_RENDER_WAIT_SECONDS,
-            browser_warmup_timeout_ms=TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS,
-        )
+                wb_name = f'{TEMP_WB_NAME}_{file_label}'
+                wb_url = ensure_temp_workbook(
+                    s, api_ver, site_id,
+                    start=cstart, end=cend, workbook_name=wb_name,
+                )
+            finally:
+                try:
+                    s.post(f'{TABLEAU_SERVER}/api/{api_ver}/auth/signout', timeout=10)
+                except Exception:
+                    pass
+            psize = download_csv_from_tableau(
+                wb_url, '1', part_path,
+                use_http=TABLEAU_VIEW1_USE_HTTP_CSV_DOWNLOAD,
+                render_wait_seconds=TABLEAU_VIEW1_RENDER_WAIT_SECONDS,
+                browser_warmup_timeout_ms=TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS,
+                # Try a wider window once, then bisect it. One-week windows
+                # retain the normal retry budget because they cannot split.
+                max_attempts=1 if split_windows else None,
+            )
+        except Exception as exc:
+            is_timeout = 'timeout' in str(exc).lower() or 'timed out' in str(exc).lower()
+            if not split_windows or not is_timeout:
+                raise
+            print(
+                f"    View 1 chunk {chunk_label} timed out; "
+                "splitting on a week boundary and retrying."
+            )
+            recovered = []
+            for suffix, (split_start, split_end) in zip(('A', 'B'), split_windows):
+                recovered.extend(download_chunk(
+                    f'{chunk_label}{suffix}', split_start, split_end,
+                ))
+            return recovered
+
         prows = count_csv_rows(part_path)
         print(f"    {part_path.name}: {psize:,} bytes ({prows:,} rows)")
-        parts.append(part_path)
+        return [part_path]
+
+    parts = []
+    for chunk_no, cstart, cend in chunks:
+        parts.extend(download_chunk(f'C{chunk_no:02d}', cstart, cend))
 
     frames = [read_tableau_csv(p) for p in parts]
     combined = pd.concat(frames, ignore_index=True)
