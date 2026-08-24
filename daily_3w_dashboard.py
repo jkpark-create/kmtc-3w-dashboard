@@ -413,7 +413,7 @@ TABLEAU_VIEW1_BROWSER_WARMUP_TIMEOUT_MS = max(
 )
 TABLEAU_VIEW1_SPLIT_TRIGGER_TIMEOUT_MS = max(
     60000,
-    int(os.environ.get('TABLEAU_VIEW1_SPLIT_TRIGGER_TIMEOUT_MS', '180000')),
+    int(os.environ.get('TABLEAU_VIEW1_SPLIT_TRIGGER_TIMEOUT_MS', '120000')),
 )
 # Start View 1 at two fiscal weeks per render. A slow two-week export is
 # bisected to one-week exports by download_view1_daily.
