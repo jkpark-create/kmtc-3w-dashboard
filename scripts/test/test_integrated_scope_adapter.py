@@ -29,6 +29,19 @@ class IntegratedScopeAdapterTests(unittest.TestCase):
         self.assertIn("integrated-dashboard-runtime", str(data_root))
         self.assertNotIn("Integrated dashboard project", str(data_root))
 
+    def test_friday_snapshot_is_current_during_weekend(self):
+        with patch.dict(os.environ, {"KMTC_INTEGRATED_SCOPE_MAX_AGE_DAYS": "1"}):
+            adapter._validate_freshness("20260828", "20260830")
+
+    def test_snapshot_fails_after_more_than_one_business_day(self):
+        with patch.dict(os.environ, {"KMTC_INTEGRATED_SCOPE_MAX_AGE_DAYS": "1"}):
+            with self.assertRaisesRegex(RuntimeError, "age_business_days=2"):
+                adapter._validate_freshness("20260828", "20260901")
+
+    def test_future_snapshot_still_fails(self):
+        with self.assertRaisesRegex(RuntimeError, "freshness check failed"):
+            adapter._validate_freshness("20260831", "20260830")
+
     def write_fixture(self, root: Path):
         month_dir = root / "months"
         month_dir.mkdir(parents=True)
@@ -210,6 +223,18 @@ class IntegratedScopeAdapterTests(unittest.TestCase):
         self.assertEqual(result.loc[0, "Booking_schedule"], "2026년 6월 28일")
         self.assertEqual(result.loc[0, "LST_TEU"], "8")
         self.assertEqual(stats["matchedRows"], 1)
+
+    def test_empty_booking_scope_returns_complete_stats_contract(self):
+        output = pd.DataFrame([{"BKG_NO": "BKG1"}])
+        result, stats = adapter.apply_booking_performance_scope(
+            output,
+            pd.DataFrame(),
+        )
+        self.assertEqual(result.to_dict("records"), output.to_dict("records"))
+        self.assertEqual(stats["scopeRows"], 0)
+        self.assertEqual(stats["matchedRows"], 0)
+        self.assertEqual(stats["unmatchedRows"], 1)
+        self.assertEqual(stats["syntheticRows"], 0)
 
     def test_missing_canonical_booking_is_added_without_wos_schedule(self):
         output = pd.DataFrame([{

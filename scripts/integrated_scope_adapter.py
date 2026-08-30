@@ -149,11 +149,30 @@ def _validate_freshness(source_date: str, reference_date: str | None) -> None:
     max_age_days = max(0, int(os.environ.get("KMTC_INTEGRATED_SCOPE_MAX_AGE_DAYS", "1")))
     source_dt = datetime.strptime(source_date, "%Y%m%d")
     reference_dt = datetime.strptime(reference_date, "%Y%m%d")
-    age_days = (reference_dt.date() - source_dt.date()).days
-    if age_days < 0 or age_days > max_age_days:
+    calendar_age_days = (reference_dt.date() - source_dt.date()).days
+    if calendar_age_days < 0:
         raise RuntimeError(
             "Integrated dashboard snapshot freshness check failed: "
-            f"source={source_date}, reference={reference_date}, allowed_age_days={max_age_days}"
+            f"source={source_date}, reference={reference_date}, "
+            f"age_business_days={calendar_age_days}, allowed_age_business_days={max_age_days}"
+        )
+
+    # The integrated Oracle snapshot is produced on business days. A Friday
+    # snapshot is therefore still the current source on Saturday/Sunday (and
+    # one business day old on Monday), even though its calendar age is 2-3
+    # days. Count weekdays after the source date through the reference date so
+    # weekend scheduler runs do not reject the latest valid Friday snapshot.
+    age_business_days = sum(
+        1
+        for offset in range(1, calendar_age_days + 1)
+        if (source_dt + timedelta(days=offset)).weekday() < 5
+    )
+    if age_business_days > max_age_days:
+        raise RuntimeError(
+            "Integrated dashboard snapshot freshness check failed: "
+            f"source={source_date}, reference={reference_date}, "
+            f"age_business_days={age_business_days}, "
+            f"allowed_age_business_days={max_age_days}"
         )
 
 
@@ -615,7 +634,15 @@ def apply_booking_performance_scope(
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     result = output.copy()
     if booking_scope.empty or result.empty:
-        return result, {"matchedRows": 0, "eligibleRows": 0, "cutoverMonth": cutover_month}
+        return result, {
+            "cutoverMonth": cutover_month,
+            "scopeRows": int(len(booking_scope)),
+            "eligibleRows": 0,
+            "matchedRows": 0,
+            "excludedLegacyRows": 0,
+            "syntheticRows": 0,
+            "unmatchedRows": int(len(result)),
+        }
 
     mutable_columns = (
         "Actual_Departure_schedule", "LST_route", "LST_VSL", "LST_VOY",
