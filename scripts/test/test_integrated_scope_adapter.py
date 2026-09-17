@@ -137,7 +137,7 @@ class IntegratedScopeAdapterTests(unittest.TestCase):
             }):
                 snapshot = adapter.load_integrated_scope_snapshot("20260814", 2026)
         self.assertEqual(snapshot.source_date, "20260814")
-        self.assertEqual(sorted(snapshot.bsa["WW"].unique().tolist()), ["1", "2"])
+        self.assertEqual(sorted(snapshot.bsa["WW"].unique().tolist()), ["27", "28"])
         self.assertEqual(snapshot.bsa["TEU_BSA (Actual)"].sum(), 280)
         self.assertEqual(snapshot.booking_scope.iloc[0]["performance_vessel"], "JAAA")
         self.assertEqual(len(snapshot.space_opportunities), 1)
@@ -149,6 +149,19 @@ class IntegratedScopeAdapterTests(unittest.TestCase):
         self.assertEqual(opportunity["reusable_teu"], 50)
         self.assertEqual(snapshot.space_opportunity_meta["candidateVoyages"], 1)
         self.assertEqual(snapshot.space_opportunity_meta["matchedGroups"], 3)
+
+    def test_bsa_keeps_continuous_fiscal_week_for_five_week_month(self):
+        rows = [
+            {
+                "month": "202609", "week": f"202609{week}", "team": "OBT",
+                "origin": "CN", "por": "SHA", "dest": "TH", "dly": "BKK",
+                "bsaTeu": 100,
+            }
+            for week in range(35, 40)
+        ]
+        bsa = adapter._canonical_bsa_rows(rows)
+        self.assertEqual(sorted(bsa["WW"].unique().tolist()), ["35", "36", "37", "38", "39"])
+        self.assertEqual(bsa["TEU_BSA (Actual)"].sum(), 500)
 
     def test_current_prepared_local_contract_is_accepted(self):
         adapter._validate_source_contract({

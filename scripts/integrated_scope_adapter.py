@@ -273,23 +273,30 @@ def _choose_booking_scope_rows(rows: list[dict[str, Any]]) -> pd.DataFrame:
 
 def _canonical_bsa_rows(weekly_rows: list[dict[str, Any]]) -> pd.DataFrame:
     records: list[dict[str, Any]] = []
-    month_weeks: dict[str, set[str]] = {}
-    for row in weekly_rows:
-        month = _clean(row.get("month"))
-        week = _clean(row.get("week"))
-        if month >= DEFAULT_CUTOVER_MONTH and week:
-            month_weeks.setdefault(month, set()).add(week)
-    ordinals = {
-        (month, week): index
-        for month, weeks in month_weeks.items()
-        for index, week in enumerate(sorted(weeks), start=1)
-    }
 
     for row in weekly_rows:
         month = _clean(row.get("month"))
         week = _clean(row.get("week"))
         bsa_teu = _number(row.get("bsaTeu"))
         if month < DEFAULT_CUTOVER_MONTH or not week or bsa_teu == 0:
+            continue
+        # The dashboard's WW contract is the continuous fiscal-week number
+        # (July 2026 = 27-30, September = 35-39), not the ordinal inside a
+        # month.  Integrated week keys already carry that number as
+        # YYYYMMWW.  Using 1-5 here made monthly BSA correct while every
+        # selected-week lookup in the main dashboard returned zero.
+        week_suffix = week[len(month):] if week.startswith(month) else ""
+        if not week_suffix.isdigit():
+            continue
+        week_number = int(week_suffix)
+        if not 1 <= week_number <= 53:
+            continue
+        canonical_week_key = f"{month}{week_number:02d}"
+        try:
+            fiscal_weeks = _week_start_by_key(int(month[:4]))
+        except (KeyError, ValueError):
+            continue
+        if canonical_week_key not in fiscal_weeks:
             continue
         team = _clean(row.get("team")).upper()
         records.append({
@@ -298,7 +305,7 @@ def _canonical_bsa_rows(weekly_rows: list[dict[str, Any]]) -> pd.DataFrame:
             "POR_Country": _clean(row.get("origin")),
             "POR_PORT": _clean(row.get("por")),
             "Sales Team": team,
-            "WW": str(ordinals[(month, week)]),
+            "WW": str(week_number),
             "YYYYMM": month,
             "TEU_BSA (Actual)": bsa_teu,
             "team": team,
