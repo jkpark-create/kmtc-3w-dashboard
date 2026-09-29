@@ -140,7 +140,9 @@ class IntegratedScopeAdapterTests(unittest.TestCase):
         self.assertEqual(sorted(snapshot.bsa["WW"].unique().tolist()), ["27", "28"])
         self.assertEqual(snapshot.bsa["TEU_BSA (Actual)"].sum(), 280)
         self.assertEqual(snapshot.booking_scope.iloc[0]["performance_vessel"], "JAAA")
-        self.assertEqual(len(snapshot.space_opportunities), 1)
+        self.assertEqual(len(snapshot.space_opportunities), 2)
+        self.assertEqual(snapshot.space_opportunities[1]["current_port"], "HKG")
+        self.assertEqual(len(snapshot.space_opportunities[1]["prior_calls"]), 2)
         opportunity = snapshot.space_opportunities[0]
         self.assertEqual(opportunity["previous_port"], "SHA")
         self.assertEqual(opportunity["current_port"], "NBO")
@@ -149,6 +151,20 @@ class IntegratedScopeAdapterTests(unittest.TestCase):
         self.assertEqual(opportunity["reusable_teu"], 50)
         self.assertEqual(snapshot.space_opportunity_meta["candidateVoyages"], 1)
         self.assertEqual(snapshot.space_opportunity_meta["matchedGroups"], 3)
+
+    def test_space_candidates_include_30_but_exclude_below_30(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            manifest = json.loads((root / "manifest.json").read_text())
+            with gzip.open(root / "months/202607.json.gz", "rt") as stream:
+                weekly = json.load(stream)["weeklyLaneRows"]
+            manifest["robMaxRows"][1]["unusedTeu"] = 30
+            manifest["robMaxRows"][2]["unusedTeu"] = 29.99
+            rows, meta = adapter._space_reuse_opportunities(weekly, manifest["robMaxRows"], {})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["reusable_teu"], 30)
+        self.assertEqual(rows[0]["prior_calls"], [{"port": "SHA", "bsa_teu": 100, "booking_teu": 40}])
 
     def test_bsa_keeps_continuous_fiscal_week_for_five_week_month(self):
         rows = [

@@ -31,8 +31,8 @@ DEFAULT_INTEGRATED_ROOT = Path(
     r"C:\Users\JKPARK\OneDrive\Documents\Claude\Integrated dashboard project"
 )
 SPACE_MIN_PRIOR_UNUSED_BSA_TEU = 30.0
-SPACE_MIN_PHYSICAL_UNUSED_TEU = 20.0
-SPACE_MIN_REUSABLE_TEU = 20.0
+SPACE_MIN_PHYSICAL_UNUSED_TEU = 30.0
+SPACE_MIN_REUSABLE_TEU = 30.0
 
 REQUIRED_BSA_SCOPE_MARKERS = (
     "Single LOCAL first-vessel",
@@ -334,8 +334,8 @@ def _space_reuse_opportunities(
     Booking/BSA is first aggregated at OBT + voyage + POL grain.  A physical
     ROB fact is accepted only on an exact operational key or, for vessel
     substitutions, when Route+Voyage+Bound+POL resolves to one ROB fact.  The
-    output keeps one strongest candidate per voyage so the dashboard does not
-    repeat the same carry-over opportunity at several later calls.
+    output keeps every later call. Consumers must deduplicate capacity totals
+    by voyage and assess prior-port booking pace before treating gaps as risk.
     """
 
     exact: dict[tuple[str, ...], dict[str, Any]] = {}
@@ -448,6 +448,7 @@ def _space_reuse_opportunities(
         cumulative_bsa = 0.0
         cumulative_booking = 0.0
         previous_port = ""
+        prior_calls: list[dict[str, Any]] = []
         candidates: list[dict[str, Any]] = []
         for item in sorted(calls, key=lambda value: (
             _number(value["fact"].get("polSequence")),
@@ -490,6 +491,7 @@ def _space_reuse_opportunities(
                     "booking_teu": item["booking_teu"],
                     "own_gap_teu": own_gap,
                     "prior_unused_bsa_teu": prior_unused,
+                    "prior_calls": list(prior_calls),
                     "physical_unused_teu": physical_unused,
                     "reusable_teu": reusable_teu,
                     "rob_occupancy": _number(fact.get("occupancy")),
@@ -501,14 +503,11 @@ def _space_reuse_opportunities(
                 })
             cumulative_bsa += item["bsa_teu"]
             cumulative_booking += item["booking_teu"]
+            prior_calls.append({"port": current_port, "bsa_teu": item["bsa_teu"],
+                                "booking_teu": item["booking_teu"]})
             previous_port = current_port
 
-        if candidates:
-            # One action row per voyage: later calls carrying the same unused
-            # amount are alternate selling points, not additional capacity.
-            opportunities.append(max(candidates, key=lambda row: (
-                row["reusable_teu"], row["physical_unused_teu"], row["departure_date"],
-            )))
+        opportunities.extend(candidates)
 
     opportunities.sort(key=lambda row: (
         row["week"], -row["reusable_teu"], row["route"], row["vessel_code"], row["voyage_no"],
@@ -531,7 +530,7 @@ def _space_reuse_opportunities(
             "matchCoverage": matched_count / eligible_count if eligible_count else 0.0,
         }
     meta = {
-        "basis": "OBT BSA/Booking by voyage POL + MAX ROB physical unused; one candidate per voyage",
+        "basis": "OBT BSA/Booking by voyage POL + MAX ROB physical unused; all later-port candidates; pace assessment required",
         "bookingBasis": "referencePerformanceTeu (fallback bookingTeu); B/L is not substituted",
         "physicalSource": _clean(source_meta.get("robMaxSource")),
         "physicalSourceMode": _clean(source_meta.get("robMaxSourceMode")),
@@ -543,11 +542,12 @@ def _space_reuse_opportunities(
         "matchedFactCalls": len(fact_groups),
         "matchCoverage": matched_groups / len(eligible_groups) if eligible_groups else 0.0,
         "coverageByWeek": coverage_by_week,
-        "candidateVoyages": len(opportunities),
+        "candidateVoyages": len({(r["week"], r["route"], r["vessel_code"], r["voyage_no"], r["bound"]) for r in opportunities}),
+        "candidateCalls": len(opportunities),
         "minPriorUnusedBsaTeu": SPACE_MIN_PRIOR_UNUSED_BSA_TEU,
         "minPhysicalUnusedTeu": SPACE_MIN_PHYSICAL_UNUSED_TEU,
         "minReusableTeu": SPACE_MIN_REUSABLE_TEU,
-        "deduplication": "strongest later-port candidate per week/route/vessel/voyage/bound",
+        "deduplication": "all calls displayed; maximum per week/route/vessel/voyage/bound for capacity totals only",
     }
     return opportunities, meta
 
