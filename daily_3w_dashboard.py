@@ -3048,6 +3048,7 @@ def upload_to_gdrive():
         'shipper': pack_records(shipper_records),
         'bsa': pack_records(bsa_records),
         'space_opportunity': pack_records(space_opportunity_records),
+        'voyage_risk_calls': pack_records(compact_records(integrated.voyage_risk_calls)) if integrated else [],
         'obt_salesmen': obt_salesmen,
         'provisional_salesmen': provisional_salesmen,
         'provisional_obt_salesmen': provisional_obt_salesmen,

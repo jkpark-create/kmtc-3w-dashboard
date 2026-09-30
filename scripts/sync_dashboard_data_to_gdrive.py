@@ -17,6 +17,8 @@ import os
 import re
 import threading
 import time
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -50,12 +52,46 @@ LOCAL_STATE_ROOT = Path(
 )
 STATE_PATH = LOCAL_STATE_ROOT / "gdrive_runtime_manifest.json"
 THREAD_LOCAL = threading.local()
+USE_STDLIB_TLS = False
 LEGACY_FOLDER_ID = "1JIxg6Y-_gRfI1HueXZ1Q9j4-Z5bxvNgv"
 HISTORICAL_CACHE_PATH = RUNTIME_ROOT / "output" / "_cache_2025.parquet"
 OBT_HISTORY_PATH = RUNTIME_ROOT / "obt-exception-monitor" / "history.json"
 
 
+def stdlib_request(method: str, url: str, **kwargs: Any) -> requests.Response:
+    """Use certificate-verified stdlib TLS when requests' TLS handshake fails."""
+    prepared = requests.Request(
+        method.upper(), url, headers=kwargs.get("headers"),
+        params=kwargs.get("params"), data=kwargs.get("data"), json=kwargs.get("json"),
+    ).prepare()
+    body = prepared.body
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    native = urllib.request.Request(
+        prepared.url, data=body,
+        headers={**dict(prepared.headers), "Accept-Encoding": "identity"},
+        method=method.upper(),
+    )
+    try:
+        raw = urllib.request.urlopen(native, timeout=kwargs.get("timeout", 180))
+    except urllib.error.HTTPError as error:
+        raw = error
+    except (OSError, urllib.error.URLError) as error:
+        raise requests.ConnectionError(str(error)) from error
+    response = requests.Response()
+    response.status_code = raw.status
+    response.headers = requests.structures.CaseInsensitiveDict(raw.headers)
+    response.url = prepared.url
+    response.raw = raw
+    if not kwargs.get("stream"):
+        with raw:
+            response._content = raw.read()
+        response._content_consumed = True
+    return response
+
+
 def refresh_access_token(*, retries: int = 6) -> str:
+    global USE_STDLIB_TLS
     credentials = json.loads(
         (CREDS_DIR / "credentials.json").read_text(encoding="utf-8-sig")
     )["installed"]
@@ -71,11 +107,14 @@ def refresh_access_token(*, retries: int = 6) -> str:
     last_error: Exception | None = None
     for attempt in range(1, max(1, retries) + 1):
         try:
-            response = requests.post(
-                "https://oauth2.googleapis.com/token",
-                data=payload,
-                timeout=30,
-            )
+            url = "https://oauth2.googleapis.com/token"
+            try:
+                response = (stdlib_request("POST", url, data=payload, timeout=30)
+                            if USE_STDLIB_TLS else requests.post(url, data=payload, timeout=30))
+            except requests.exceptions.SSLError:
+                USE_STDLIB_TLS = True
+                print("[auth] requests TLS handshake failed; using verified stdlib TLS")
+                response = stdlib_request("POST", url, data=payload, timeout=30)
             if response.status_code in {408, 425, 429} or response.status_code >= 500:
                 response.raise_for_status()
             if not response.ok:
@@ -117,11 +156,23 @@ def request(
     retries: int = 6,
     **kwargs: Any,
 ) -> requests.Response:
+    global USE_STDLIB_TLS
     kwargs.setdefault("timeout", 180)
     last_error: Exception | None = None
     for attempt in range(1, retries + 1):
         try:
-            response = session(access_token).request(method, url, **kwargs)
+            try:
+                if USE_STDLIB_TLS:
+                    response = stdlib_request(method, url, **{
+                        **kwargs, "headers": {"Authorization": f"Bearer {access_token}", **kwargs.get("headers", {})},
+                    })
+                else:
+                    response = session(access_token).request(method, url, **kwargs)
+            except requests.exceptions.SSLError:
+                USE_STDLIB_TLS = True
+                response = stdlib_request(method, url, **{
+                    **kwargs, "headers": {"Authorization": f"Bearer {access_token}", **kwargs.get("headers", {})},
+                })
             if response.status_code in {408, 425, 429} or response.status_code >= 500:
                 response.raise_for_status()
             if not response.ok:

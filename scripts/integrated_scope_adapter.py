@@ -22,6 +22,7 @@ import sys
 from typing import Any
 
 import pandas as pd
+from scripts.obt_voyage_risks import build_voyage_calls
 
 
 DEFAULT_CUTOVER_MONTH = "202607"
@@ -560,6 +561,7 @@ class IntegratedScopeSnapshot:
     source_meta: dict[str, Any]
     space_opportunities: list[dict[str, Any]]
     space_opportunity_meta: dict[str, Any]
+    voyage_risk_calls: list[dict[str, Any]]
 
 
 @lru_cache(maxsize=4)
@@ -607,6 +609,7 @@ def load_integrated_scope_snapshot(
         source_meta,
         space_opportunities,
         space_opportunity_meta,
+        build_voyage_calls(weekly_rows, {k: f"{v.year}년 {v.month:02d}월 {v.day:02d}일" for k,v in _week_start_by_key(dataset_year).items()}),
     )
 
 
