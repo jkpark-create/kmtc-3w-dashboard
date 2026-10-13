@@ -573,6 +573,14 @@ def runtime_groups() -> dict[str, list[tuple[Path, str]]]:
         (path, path.name)
         for path in sorted((RUNTIME_ROOT / "dist" / "sales-target" / "data").glob("*.json"))
     ]
+    if 'sales' in groups:
+        from sales_target_release import release_entries
+        release_groups = release_entries(RUNTIME_ROOT / 'dist' / 'sales-target')
+        if release_groups:
+            extras = [(path, name) for path, name in groups['sales']
+                      if name not in {'index.json', 'manifest.json', 'base2025.json'}]
+            groups['sales'] = release_groups['sales'] + extras
+            groups['sales_data'] = release_groups['sales_data']
     missing = [
         str(path)
         for entries in groups.values()
@@ -920,6 +928,14 @@ def main() -> int:
             workers=args.workers,
         )
     verify_remote_groups(access_token, synced)
+    if 'sales' in local_groups and (RUNTIME_ROOT / 'dist' / 'sales-target' / 'sales-target-release.json').exists():
+        from sales_target_release import publish_release_pointer, release_entries
+        sales_site = RUNTIME_ROOT / 'dist' / 'sales-target'
+        if release_entries(sales_site):
+            pointer_result = publish_release_pointer(access_token, DRIVE_FOLDERS['sales'], sales_site,
+                                                     list_files, sync_one, request, DRIVE_API)
+            synced['sales'].append(pointer_result)
+            local_groups['sales'].append((sales_site / 'sales-target-release.json', 'sales-target-release.json'))
     write_state(synced)
     if args.migrate_legacy:
         migrate_legacy_files(access_token, workers=args.workers)

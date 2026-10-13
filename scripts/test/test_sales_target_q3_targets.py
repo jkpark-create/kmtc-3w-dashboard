@@ -35,7 +35,7 @@ SPEC.loader.exec_module(MODULE)
 
 
 class ParseSummaryQ3TargetTest(unittest.TestCase):
-    def test_q3_reuses_target_input_adjusted_q2_targets(self) -> None:
+    def test_q3_does_not_reuse_q2_when_source_has_no_q3_targets(self) -> None:
         headers = [[], [], [], []]
         row = [
             "CN_SHA",
@@ -72,9 +72,15 @@ class ParseSummaryQ3TargetTest(unittest.TestCase):
         parsed = MODULE.parse_summary(headers + [row])
         self.assertEqual(len(parsed), 1)
         kpi = parsed[0]["kpi"]
-        self.assertEqual(kpi["booking"]["q3"]["target"], 0.65)
-        self.assertEqual(kpi["lifting"]["q3"]["target"], 0.70)
-        self.assertEqual(kpi["high_profit"]["q3"]["target"], 0.45)
+        self.assertIsNone(kpi["booking"]["q3"]["target"])
+        self.assertEqual(kpi["booking"]["q2"]["target"], 0.65)
+        self.assertIsNone(kpi["booking"]["q4"]["target"])
+        self.assertIsNone(kpi["lifting"]["q3"]["target"])
+        self.assertEqual(kpi["lifting"]["q2"]["target"], 0.70)
+        self.assertIsNone(kpi["lifting"]["q4"]["target"])
+        self.assertIsNone(kpi["high_profit"]["q3"]["target"])
+        self.assertEqual(kpi["high_profit"]["q2"]["target"], 0.45)
+        self.assertIsNone(kpi["high_profit"]["q4"]["target"])
         self.assertNotEqual(kpi["booking"]["q3"]["target"], row[25])
         self.assertNotEqual(kpi["lifting"]["q3"]["target"], row[26])
         self.assertNotEqual(kpi["high_profit"]["q3"]["target"], row[27])

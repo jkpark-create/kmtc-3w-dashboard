@@ -8,6 +8,7 @@ import math
 import os
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -17,6 +18,8 @@ import numpy as np
 import openpyxl
 import pandas as pd
 from google.auth.transport.requests import Request
+from google_verified_transport import GoogleSession
+from sync_dashboard_data_to_gdrive import refresh_access_token
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -30,9 +33,27 @@ SALES_OWNER_SOURCE_ID = "1aGn2YyvKRx35mOsHLQAMaas6sa81LTOf4pNPugIUajg"
 TARGET_SPREADSHEET_ID = "1YxZkwvoMaQXIEw07qUDZtCPDFZBf8GOZyr5knkxnLxo"
 SALES_OWNER_INPUT_SHEET = "Sales_Owner_Input"
 ID_OUT_ORIGIN = "ID-IDO"
-REQUIRED_ORIGIN_TABS = (ID_OUT_ORIGIN,)
-ORIGIN_INSERT_AFTER = {ID_OUT_ORIGIN: "SUB"}
-PINNED_SALES_BY_ORIGIN = {ID_OUT_ORIGIN: ("NINA", "ZUL", "ALFAN")}
+JAPAN_ORIGIN = "JP"
+JAPAN_TEAM = "JBT"
+REQUIRED_ORIGIN_TABS = (ID_OUT_ORIGIN, JAPAN_ORIGIN)
+ORIGIN_INSERT_AFTER = {ID_OUT_ORIGIN: "SUB", JAPAN_ORIGIN: "TW"}
+PINNED_SALES_BY_ORIGIN = {ID_OUT_ORIGIN: ("MUMPUNI",)}
+INDONESIA_CONTACT_HOME = {"NINA": "JKT", "ZUL": "JKT", "ALFAN": "JKT", "MUMPUNI": ID_OUT_ORIGIN}
+MODE_INPUT_ORIGINS = frozenset({JAPAN_ORIGIN})
+# Active customer owners verified against the 2026-08-18 Sales Target audit but
+# absent from the contact-point roster.  These are additive (unlike the pinned
+# ID-out roster) and receive the same 2025-base + Target_Input formulas as every
+# other salesperson when the workbook is rebuilt.
+REQUIRED_ACTIVE_SALES_BY_ORIGIN = {
+    "BH": ("NELSON",),
+    "CN_SHK_DCB": ("TOMSONG",),
+    "CN_TAO": ("TIGER",),
+    "IN": ("SHRIDHAR", "VIGNESH"),
+    "JKT": ("NINA", "ZUL", "ALFAN"),
+    "TH": ("THATCHA",),
+    "TW": ("JACKY",),
+    "VN_SGN_CMP": ("SGNIB",),
+}
 
 CURRENT_DATASET_ID = datetime.now().strftime("%Y%m%d")
 CURRENT_DATE_INT = int(CURRENT_DATASET_ID)
@@ -96,6 +117,7 @@ Q2_PROGRESS_WEEKS = q2_progress_weeks_for(CURRENT_DATE_INT)
 
 # Target workbook tab -> source organization-chart sheet / column / row span.
 SALES_OWNER_RANGES: dict[str, list[tuple[str, str, int, int]]] = {
+    JAPAN_ORIGIN: [("JP", "G", 10, 20), ("JP", "G", 37, 37), ("JP", "G", 39, 40)],
     "CN_SHA": [("SHA", "H", 19, 24)],
     "CN_NKG": [("YZR", "F", 17, 19)],
     "CN_NBO": [("NBO", "G", 16, 18)],
@@ -162,6 +184,9 @@ PREFERRED_ALIASES = {
     "MANOJ": "ARYA",
     "PAPADA": "PAPHADA",
     "WINNIE": "WINNIESIA",
+    # The Japan contact sheet uses MSATO, while the active customer-owner
+    # roster assigns the same representative under MUSATO.
+    "MSATO": "MUSATO",
 }
 
 
@@ -222,6 +247,7 @@ class OwnerEntry:
     match_status: str
     source_type: str
     customer_count: int
+    current_booking_verified: bool = False
 
 
 def load_module(name: str, path: Path) -> Any:
@@ -329,7 +355,7 @@ def get_creds() -> Credentials:
         client_id=installed["client_id"],
         client_secret=installed["client_secret"],
     )
-    creds.refresh(Request())
+    creds.token = refresh_access_token(retries=6)
     return creds
 
 
@@ -416,20 +442,23 @@ def workbook_values(path: Path, *, read_only: bool = True) -> dict[str, list[lis
 
 def read_existing_target_input(target_path: Path, mod: Any) -> dict[str, tuple[float, float, float, str]]:
     wb = openpyxl.load_workbook(target_path, data_only=True, read_only=True)
-    if mod.INPUT_SHEET not in wb.sheetnames:
-        return {}
-    ws = wb[mod.INPUT_SHEET]
-    existing: dict[str, tuple[float, float, float, str]] = {}
-    for row in ws.iter_rows(min_row=4, values_only=True):
-        tab = clean_text(row[0] if row else "")
-        if not tab:
-            continue
-        booking = mod.clean_number(row[1]) or 0.0
-        lifting = mod.clean_number(row[3]) or 0.0
-        hp = mod.clean_number(row[5]) or 0.0
-        memo = "" if len(row) < 8 or row[7] is None else str(row[7])
-        existing[tab] = (booking, lifting, hp, memo)
-    return existing
+    try:
+        if mod.INPUT_SHEET not in wb.sheetnames:
+            return {}
+        ws = wb[mod.INPUT_SHEET]
+        existing: dict[str, tuple[float, float, float, str]] = {}
+        for row in ws.iter_rows(min_row=4, values_only=True):
+            tab = clean_text(row[0] if row else "")
+            if not tab:
+                continue
+            booking = mod.clean_number(row[1] if len(row) > 1 else None)
+            lifting = mod.clean_number(row[3] if len(row) > 3 else None)
+            hp = mod.clean_number(row[5] if len(row) > 5 else None)
+            memo = "" if len(row) < 8 or row[7] is None else str(row[7])
+            existing[tab] = (booking, lifting, hp, memo)
+        return existing
+    finally:
+        wb.close()
 
 
 def salesman_activity_dates(frame: pd.DataFrame) -> pd.Series:
@@ -479,11 +508,15 @@ def infer_provisional_customer_owners(
     origins = frame.get("POR_CTR_CD", pd.Series("", index=frame.index)).map(clean_text)
     ports = frame.get("POR_PLC_CD", pd.Series("", index=frame.index)).map(clean_text)
     destinations = frame.get("DLY_CTR_CD", pd.Series("", index=frame.index)).map(clean_text)
-    obt = pd.Series(
-        [classify_team(origin, dest) == TEAM_FILTER for origin, dest in zip(origins, destinations)],
+    target_scope = pd.Series(
+        [
+            classify_team(origin, dest) == TEAM_FILTER
+            or (clean_text(origin) == JAPAN_ORIGIN and classify_team(origin, dest) == JAPAN_TEAM)
+            for origin, dest in zip(origins, destinations)
+        ],
         index=frame.index,
     )
-    candidate_mask = simple & unregistered & recent & obt & customers.ne("")
+    candidate_mask = simple & unregistered & recent & target_scope & customers.ne("")
     counts = raw_keys[candidate_mask].value_counts()
     accepted_keys = set(counts[counts >= RAW_NEW_SALESMAN_MIN_ROWS].index)
     if not accepted_keys:
@@ -539,9 +572,10 @@ def infer_provisional_customer_owners(
 def active_salesman_mapping(
     dataset_path: Path | None = None,
 ) -> tuple[pd.DataFrame, pd.Series, dict[str, int], dict[str, list[str]], dict[str, int]]:
-    path = ROOT / "saleman.csv"
+    # Match the canonical source used by the refresh and dashboard jobs.
+    path = ROOT / "salesman.csv"
     if not path.exists():
-        path = ROOT / "salesman.csv"
+        path = ROOT / "saleman.csv"
     if not path.exists():
         raise FileNotFoundError("Missing saleman.csv or salesman.csv")
     sales = pd.read_csv(path, dtype=str, encoding="utf-8-sig", low_memory=False)
@@ -665,7 +699,12 @@ CONTACT_POINT_SHEETS = [
 ]
 
 
+if "JED,SKN,AQJ" not in CONTACT_POINT_SHEETS:
+    CONTACT_POINT_SHEETS.append("JED,SKN,AQJ")
+
+
 SHEET_DEFAULT_TARGET = {
+    "JP": "JP",
     "TH ": "TH",
     "TW": "TW",
     "HK": "HK",
@@ -687,6 +726,8 @@ SHEET_DEFAULT_TARGET = {
 
 
 PORT_TARGET_MAP = {
+    "TYO": "JP", "OSA": "JP", "UKB": "JP", "NGO": "JP",
+    "SKN": "EG", "AQJ": "JO", "SOH": "OM", "HMA": "QA", "MEX": "MX",
     "SHA": "CN_SHA",
     **{port: "CN_NKG" for port in CN_NKG_PORTS},
     "XGG": "CN_XGG",
@@ -866,70 +907,100 @@ def load_owner_entries(
     customer_counts: dict[str, int],
 ) -> dict[str, list[OwnerEntry]]:
     wb = openpyxl.load_workbook(owner_path, data_only=True, read_only=True)
-    available = sorted({clean_text(x) for x in active_sales["SALESMAN_NO"].dropna() if clean_text(x)})
-    available_by_key = {norm_key(name): name for name in available if norm_key(name)}
-    parsed: dict[str, list[OwnerEntry]] = {}
-    seen: set[tuple[str, str]] = set()
-    for sheet in CONTACT_POINT_SHEETS:
-        if sheet not in wb.sheetnames:
+    try:
+        available = sorted({clean_text(x) for x in active_sales["SALESMAN_NO"].dropna() if clean_text(x)})
+        available_by_key = {norm_key(name): name for name in available if norm_key(name)}
+        parsed: dict[str, list[OwnerEntry]] = {}
+        seen: set[tuple[str, str]] = set()
+        for sheet in CONTACT_POINT_SHEETS:
+            if sheet not in wb.sheetnames:
+                continue
+            header: dict[str, int | None] | None = None
+            current_port = ""
+            current_dept = ""
+            current_target = SHEET_DEFAULT_TARGET.get(sheet)
+            for row_num, row in enumerate(contact_sheet_rows(wb[sheet]), start=1):
+                found = contact_header(row)
+                if found:
+                    header = found
+                    current_port = ""
+                    current_dept = ""
+                    current_target = SHEET_DEFAULT_TARGET.get(sheet)
+                    continue
+                if header is None:
+                    continue
+
+                port_idx = header.get("port")
+                dept_idx = header.get("dept")
+                job_idx = header.get("job")
+                icc_idx = header.get("icc")
+                port_text = clean_text(row[port_idx]) if port_idx is not None and port_idx < len(row) else ""
+                dept = clean_text(row[dept_idx]) if dept_idx is not None and dept_idx < len(row) else ""
+                job = clean_text(row[job_idx]) if job_idx is not None and job_idx < len(row) else ""
+                icc = clean_text(row[icc_idx]) if icc_idx is not None and icc_idx < len(row) else ""
+                name = contact_name(row, header)
+
+                port_key = contact_port_key(port_text)
+                if port_key in PORT_TARGET_MAP:
+                    current_port = port_key
+                    current_target = PORT_TARGET_MAP[port_key]
+                if dept:
+                    current_dept = dept
+                if not name or norm_key(name) == "NAME" or len(norm_key(name)) < 2 or not looks_like_contact_name(name):
+                    continue
+
+                target_tab = PORT_TARGET_MAP.get(current_port, current_target)
+                if not target_tab or not contact_saleslike(current_dept, job):
+                    continue
+
+                keys = [id_key(icc), person_key(name), norm_key(name)]
+                resolved, status = resolve_sales_from_keys(keys, available_by_key)
+                dedupe_key = (target_tab, resolved or name)
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                entry = OwnerEntry(
+                    target_tab=target_tab,
+                    source_sheet=sheet,
+                    source_cell=f"R{row_num}",
+                    input_name=name,
+                    sales_key="/".join(key for key in keys if key),
+                    resolved_sales=resolved,
+                    match_status=status,
+                    source_type="contact_point",
+                    customer_count=customer_counts.get(resolved, 0),
+                )
+                parsed.setdefault(target_tab, []).append(entry)
+        return parsed
+    finally:
+        wb.close()
+
+
+def validate_indonesia_contact_offices(owner_path: Path) -> None:
+    """Guard the fixed Indonesia roster against changes in today's contact list."""
+    expected = INDONESIA_CONTACT_HOME
+    wb = openpyxl.load_workbook(owner_path, data_only=True, read_only=True)
+    if "ID" not in wb.sheetnames:
+        raise ValueError("Indonesia contact sheet is missing")
+    found: dict[str, str] = {}
+    header = None
+    for row in contact_sheet_rows(wb["ID"]):
+        current_header = contact_header(row)
+        if current_header:
+            header = current_header
             continue
-        header: dict[str, int | None] | None = None
-        current_port = ""
-        current_dept = ""
-        current_target = SHEET_DEFAULT_TARGET.get(sheet)
-        for row_num, row in enumerate(contact_sheet_rows(wb[sheet]), start=1):
-            found = contact_header(row)
-            if found:
-                header = found
-                current_port = ""
-                current_dept = ""
-                current_target = SHEET_DEFAULT_TARGET.get(sheet)
-                continue
-            if header is None:
-                continue
-
-            port_idx = header.get("port")
-            dept_idx = header.get("dept")
-            job_idx = header.get("job")
-            icc_idx = header.get("icc")
-            port_text = clean_text(row[port_idx]) if port_idx is not None and port_idx < len(row) else ""
-            dept = clean_text(row[dept_idx]) if dept_idx is not None and dept_idx < len(row) else ""
-            job = clean_text(row[job_idx]) if job_idx is not None and job_idx < len(row) else ""
-            icc = clean_text(row[icc_idx]) if icc_idx is not None and icc_idx < len(row) else ""
-            name = contact_name(row, header)
-
-            port_key = contact_port_key(port_text)
-            if port_key in PORT_TARGET_MAP:
-                current_port = port_key
-                current_target = PORT_TARGET_MAP[port_key]
-            if dept:
-                current_dept = dept
-            if not name or norm_key(name) == "NAME" or len(norm_key(name)) < 2 or not looks_like_contact_name(name):
-                continue
-
-            target_tab = PORT_TARGET_MAP.get(current_port, current_target)
-            if not target_tab or not contact_saleslike(current_dept, job):
-                continue
-
-            keys = [id_key(icc), person_key(name), norm_key(name)]
-            resolved, status = resolve_sales_from_keys(keys, available_by_key)
-            dedupe_key = (target_tab, resolved or name)
-            if dedupe_key in seen:
-                continue
-            seen.add(dedupe_key)
-            entry = OwnerEntry(
-                target_tab=target_tab,
-                source_sheet=sheet,
-                source_cell=f"R{row_num}",
-                input_name=name,
-                sales_key="/".join(key for key in keys if key),
-                resolved_sales=resolved,
-                match_status=status,
-                source_type="contact_point",
-                customer_count=customer_counts.get(resolved, 0),
-            )
-            parsed.setdefault(target_tab, []).append(entry)
-    return parsed
+        if not header:
+            continue
+        icc_idx, port_idx = header.get("icc"), header.get("port")
+        if icc_idx is None or port_idx is None:
+            raise ValueError("Indonesia contact sheet lacks ICC ID or Area")
+        icc = id_key(row[icc_idx]) if icc_idx < len(row) else ""
+        if icc not in expected:
+            continue
+        port = contact_port_key(row[port_idx]) if port_idx < len(row) else ""
+        found[icc] = PORT_TARGET_MAP.get(port, "")
+    if found != expected:
+        raise ValueError(f"Indonesia contact offices changed: observed={found}, expected={expected}")
 
 
 def tab_key(origin: object, ori_port: object) -> str:
@@ -972,6 +1043,13 @@ def classify_team(origin: object, dest: object) -> str:
     if o != "JP" and d == "KR":
         return "IST"
     return "JBT"
+
+
+def target_team_mask(frame: pd.DataFrame) -> pd.Series:
+    """Keep the existing OBT scope and Japan-origin JBT business."""
+    team = frame["team"].fillna("").astype(str).str.strip()
+    tab = frame["tab"].fillna("").astype(str).str.strip()
+    return team.eq(TEAM_FILTER) | (team.eq(JAPAN_TEAM) & tab.eq(JAPAN_ORIGIN))
 
 
 def ensure_2025_cache() -> Path:
@@ -1054,6 +1132,9 @@ def normalize_booking_frame(path: Path, customer_to_sales: pd.Series) -> pd.Data
     out["fst"] = to_number(out.get("fst", pd.Series(dtype=str)))
     out["lst"] = to_number(out.get("lst", pd.Series(dtype=str)))
     out["shipper_code_key"] = out["shipper_code"].str.upper()
+    # Rows without a company code cannot be attributed to a current owner and
+    # therefore cannot contribute to target, actual, or BSA redistribution.
+    out = out.loc[out["shipper_code_key"].ne("")].copy()
     mapped = out["shipper_code_key"].map(customer_to_sales)
     out["sales"] = mapped.map(clean_text).replace("", np.nan).fillna(MISSING_SALES)
     out["mapped_current_owner"] = mapped.notna() & mapped.map(clean_text).ne("")
@@ -1061,7 +1142,7 @@ def normalize_booking_frame(path: Path, customer_to_sales: pd.Series) -> pd.Data
     out["tab"] = [tab_key(o, p) for o, p in zip(out["origin"], out["ori_port"])]
     out["is_high"] = out["high_source"].str.contains(HIGH_TOKEN, regex=False, na=False)
     out["fiscal_week"] = out["week_start"].map(fiscal_week)
-    out = out.loc[out["yyyymm"].isin(TARGET_MONTHS) & out["team"].eq(TEAM_FILTER)].copy()
+    out = out.loc[out["yyyymm"].isin(TARGET_MONTHS) & target_team_mask(out)].copy()
     keep = [
         "bkg_no",
         "shipper_code",
@@ -1117,7 +1198,7 @@ def load_bsa(week_filter: set[int] | None = None) -> pd.DataFrame:
     bsa["team"] = bsa.get("team", bsa.get("Sales Team", "")).map(clean_text).str.upper()
     bsa["route_bsa"] = to_number(bsa["route_bsa"])
     bsa["tab"] = [tab_key(o, p) for o, p in zip(bsa["origin"], bsa["ori_port"])]
-    bsa = bsa.loc[bsa["yyyymm"].isin(TARGET_MONTHS) & bsa["team"].eq(TEAM_FILTER) & bsa["route_bsa"].gt(0)].copy()
+    bsa = bsa.loc[bsa["yyyymm"].isin(TARGET_MONTHS) & target_team_mask(bsa) & bsa["route_bsa"].gt(0)].copy()
     keys = ["yyyymm", "tab", "team", "origin", "ori_port", "dest", "dst_port"]
     return bsa.groupby(keys, dropna=False)["route_bsa"].sum().reset_index()
 
@@ -1135,6 +1216,125 @@ def target_origins_from_workbook(path: Path, mod: Any) -> list[str]:
         else:
             origins.append(required)
     return origins
+
+
+def registered_owner_candidates(
+    active_sales: pd.DataFrame,
+    current: pd.DataFrame,
+    as_of_int: int,
+) -> tuple[dict[str, list[str]], list[dict[str, Any]]]:
+    """Find rostered owners missed by the contact/department allowlist.
+
+    A current, dated customer assignment is required, as is a non-cancel
+    booking for that customer under the same owner and home-origin tab in
+    the last 45 days. This does not change customer ownership or personnel
+    department labels. Run against the current raw cache, before the legacy
+    2025/Q1/Q2 target-period filter, so later-year starters are discoverable.
+    """
+    required = {"BKG_SHPR_CST_NO", "Salesman_POR", "POR_CTR_CD", "POR_PLC_CD", "DLY_CTR_CD", "LST_Status"}
+    if current.empty or active_sales.empty:
+        return {}, []
+    missing = sorted(required - set(current.columns))
+    if missing:
+        raise ValueError("Registered-owner coverage: missing cache columns: " + ", ".join(missing))
+
+    # Do not rely on callers to have filtered assignment dates correctly.
+    active = active_sales.copy()
+    for col in ("CUSTOMER_NO", "SALESMAN_NO", "COUNTRY", "PORT", "SALES_START_DATE", "SALES_END_DATE"):
+        if col not in active.columns:
+            raise ValueError("Registered-owner coverage: missing roster column: " + col)
+        active[col] = active[col].map(clean_text).str.strip()
+    starts = pd.to_numeric(active["SALES_START_DATE"].str.replace(".0", "", regex=False), errors="coerce")
+    ends = pd.to_numeric(active["SALES_END_DATE"].str.replace(".0", "", regex=False), errors="coerce")
+    active = active.loc[starts.le(as_of_int) & ends.ge(as_of_int)].copy()
+    assignments: dict[tuple[str, str, str], str] = {}
+    for row in active.to_dict("records"):
+        country, port = row["COUNTRY"].upper(), row["PORT"].upper()
+        owner, customer = row["SALESMAN_NO"], row["CUSTOMER_NO"].upper()
+        if not country or not port or not customer or not RAW_SALESMAN_ID_RE.fullmatch(owner):
+            continue
+        assignments[(tab_key(country, port), id_key(owner), customer)] = owner
+
+    # Per-row coalescing avoids dropping rows merely because the preferred
+    # date field is blank for part of a mixed snapshot.
+    dates = pd.Series(pd.NaT, index=current.index, dtype="datetime64[ns]")
+    for col in ("Booking_date", "Actual_Departure_schedule", "Booking_schedule"):
+        if col not in current.columns:
+            continue
+        value = current[col].map(clean_text)
+        value = (value.str.replace("년 ", "-", regex=False)
+                 .str.replace("월 ", "-", regex=False)
+                 .str.replace("일", "", regex=False)
+                 .str.replace("/", "-", regex=False)
+                 .str.replace(r"^(\d{4})(\d{2})(\d{2})(?:\.0)?$", r"\1-\2-\3", regex=True))
+        parsed = pd.to_datetime(value.str.slice(0, 10), errors="coerce")
+        dates = dates.fillna(parsed)
+    if dates.notna().sum() == 0:
+        raise ValueError("Registered-owner coverage: no usable booking/activity dates in current cache")
+    as_of = pd.Timestamp(datetime.strptime(str(as_of_int), "%Y%m%d"))
+    cutoff = as_of - pd.Timedelta(days=RAW_NEW_SALESMAN_RECENT_DAYS)
+    status = current["LST_Status"].map(clean_text).str.upper()
+    eligible = dates.ge(cutoff) & dates.le(as_of) & status.isin({"NORMAL", "CONFIRM", "01", "1", "04", "4"})
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for ix, row in current.loc[eligible, list(required)].iterrows():
+        country = clean_text(row["POR_CTR_CD"]).upper()
+        port = clean_text(row["POR_PLC_CD"]).upper()
+        dest = clean_text(row["DLY_CTR_CD"]).upper()
+        customer = clean_text(row["BKG_SHPR_CST_NO"]).upper()
+        raw_owner = clean_text(row["Salesman_POR"])
+        if not country or not port or not dest or not customer or not RAW_SALESMAN_ID_RE.fullmatch(raw_owner):
+            continue
+        team = classify_team(country, dest)
+        if team != TEAM_FILTER and not (country == JAPAN_ORIGIN and team == JAPAN_TEAM):
+            continue
+        origin = tab_key(country, port)
+        owner = assignments.get((origin, id_key(raw_owner), customer))
+        if not owner:
+            continue
+        record = grouped.setdefault((origin, owner), {"customers": set(), "rows": 0, "last_activity": ""})
+        record["customers"].add(customer)
+        record["rows"] += 1
+        record["last_activity"] = max(record["last_activity"], dates.loc[ix].strftime("%Y-%m-%d"))
+    candidates: dict[str, list[str]] = {}
+    evidence: list[dict[str, Any]] = []
+    for (origin, owner), record in sorted(grouped.items()):
+        if origin in PINNED_SALES_BY_ORIGIN:
+            continue  # The existing manually pinned team remains authoritative.
+        candidates.setdefault(origin, []).append(owner)
+        evidence.append({
+            "target_tab": origin, "salesman": owner,
+            "current_customer_count": len(record["customers"]),
+            "evidence_rows": record["rows"], "last_activity": record["last_activity"],
+            "basis": "active_assignment_and_recent_non_cancel_booking_same_home_origin",
+        })
+    return candidates, evidence
+
+
+def protected_current_owner(entry: OwnerEntry) -> bool:
+    """Do not hide a proven new owner for lacking a 2025/Q1/Q2 KPI base."""
+    return entry.customer_count > 0 and (
+        entry.current_booking_verified or entry.source_type in {
+            "booking_verified_active_owner", "live_booking_provisional",
+            "verified_missing_active_sales", "pinned_sales", "contact_point",
+        }
+    )
+
+
+def validate_registered_owner_coverage(
+    entries_by_origin: dict[str, list[OwnerEntry]],
+    candidates: dict[str, list[str]],
+) -> None:
+    """Fail before publication on a missing eligible owner or duplicate ID."""
+    missing: list[str] = []
+    duplicates: list[str] = []
+    for origin, entries in entries_by_origin.items():
+        keys = [id_key(e.resolved_sales) for e in entries if e.resolved_sales and e.match_status != "unmatched"]
+        duplicates.extend(f"{origin}/{key}" for key, n in Counter(keys).items() if n > 1)
+        if origin in PINNED_SALES_BY_ORIGIN:
+            continue
+        missing.extend(f"{origin}/{owner}" for owner in candidates.get(origin, []) if id_key(owner) not in keys)
+    if missing or duplicates:
+        raise ValueError(f"Sales-owner coverage failed: missing={missing}; duplicates={duplicates}")
 
 
 def candidate_sales_by_origin(booking: pd.DataFrame) -> dict[str, list[str]]:
@@ -1173,8 +1373,10 @@ def complete_owner_entries(
     fallback_sales: dict[str, list[str]],
     customer_counts: dict[str, int],
     provisional_sales: dict[str, list[str]] | None = None,
+    registered_sales: dict[str, list[str]] | None = None,
 ) -> dict[str, list[OwnerEntry]]:
     provisional_sales = provisional_sales or {}
+    registered_sales = registered_sales or {}
     out: dict[str, list[OwnerEntry]] = {}
     for origin in origins:
         pinned = PINNED_SALES_BY_ORIGIN.get(origin)
@@ -1213,9 +1415,31 @@ def complete_owner_entries(
                     )
                     for sales in fallback_sales.get(origin, [])
                 ]
-        seen_sales = {entry.resolved_sales for entry in entries if entry.resolved_sales}
+        # contact entries contain slash-joined ICC/name aliases in sales_key;
+        # compare the canonical resolved ID, not that diagnostic string.
+        seen_sales = {id_key(entry.resolved_sales) for entry in entries
+                      if entry.resolved_sales and entry.match_status != "unmatched"}
+        for sales in REQUIRED_ACTIVE_SALES_BY_ORIGIN.get(origin, ()):
+            norm_sales = norm_key(sales)
+            if norm_sales in seen_sales:
+                continue
+            entries.append(
+                OwnerEntry(
+                    target_tab=origin,
+                    source_sheet="salesman.csv",
+                    source_cell="verified 2026-08-18 missing-owner audit",
+                    input_name=sales,
+                    sales_key=norm_sales,
+                    resolved_sales=sales,
+                    match_status="verified_active_customer_owner",
+                    source_type="verified_missing_active_sales",
+                    customer_count=customer_counts.get(sales, 0),
+                )
+            )
+            seen_sales.add(norm_sales)
         for sales in provisional_sales.get(origin, []):
-            if sales in seen_sales:
+            norm_sales = norm_key(sales)
+            if norm_sales in seen_sales:
                 continue
             entries.append(
                 OwnerEntry(
@@ -1223,14 +1447,42 @@ def complete_owner_entries(
                     source_sheet=f"_cache_{CURRENT_DATASET_ID}.parquet",
                     source_cell="recent booking customer ownership",
                     input_name=sales,
-                    sales_key=norm_key(sales),
+                    sales_key=norm_sales,
                     resolved_sales=sales,
                     match_status="live_booking_provisional",
                     source_type="live_booking_provisional",
                     customer_count=customer_counts.get(sales, 0),
                 )
             )
-            seen_sales.add(sales)
+            seen_sales.add(norm_sales)
+        if origin not in PINNED_SALES_BY_ORIGIN:
+            for sales in registered_sales.get(origin, []):
+                key = id_key(sales)
+                if not key or customer_counts.get(sales, 0) <= 0:
+                    continue
+                if key in seen_sales:
+                    # A correctly classified new contact can also have no
+                    # historical KPI base. Keep its provenance and protect it.
+                    entries = [OwnerEntry(**{**e.__dict__, "current_booking_verified": True})
+                               if id_key(e.resolved_sales) == key and e.match_status != "unmatched" else e
+                               for e in entries]
+                    continue
+                replacement = OwnerEntry(
+                    target_tab=origin, source_sheet="salesman.csv + current booking cache",
+                    source_cell="active assignment + recent non-cancel home-origin booking",
+                    input_name=sales, sales_key=key, resolved_sales=sales,
+                    match_status="verified_booking_owner",
+                    source_type="booking_verified_active_owner",
+                    customer_count=customer_counts.get(sales, 0),
+                    current_booking_verified=True,
+                )
+                unresolved = next((i for i, e in enumerate(entries)
+                                   if e.match_status == "unmatched" and id_key(e.resolved_sales or e.input_name) == key), None)
+                if unresolved is not None:
+                    entries[unresolved] = replacement
+                else:
+                    entries.append(replacement)
+                seen_sales.add(key)
         out[origin] = entries
     return out
 
@@ -1394,6 +1646,28 @@ def build_display_row(origin: str, sales: str, raw: dict[str, float], team_raw: 
     }
 
 
+def fill_missing_sales_bases_from_team(rows: list[dict[str, Any]]) -> None:
+    """Guarantee a measurable goal for rostered salespeople.
+
+    A salesperson can own active customers while lacking an individual 2025
+    denominator for one KPI (for example, no allocatable route BSA).  The normal
+    goal remains individual 2025 base + the origin Target_Input.  Only the
+    missing KPI base falls back to the origin Team Total base so its target cell
+    is not left blank.
+    """
+    if not rows:
+        return
+    team = rows[0]
+    for row in rows[1:]:
+        for key in (
+            "booking_base_2025",
+            "lifting_base_2025",
+            "high_profit_base_2025",
+        ):
+            if row.get(key) is None:
+                row[key] = team.get(key)
+
+
 def should_exclude_zero_activity_sales(
     origin: str,
     sales: str,
@@ -1433,7 +1707,7 @@ def filter_zero_activity_owner_entries(
                 kept.append(entry)
                 continue
             raw = raw_by_sales.get(entry.resolved_sales, {key: 0.0 for key in RAW_KEYS})
-            if should_exclude_zero_activity_sales(origin, entry.resolved_sales, raw, team_raw, counts):
+            if not protected_current_owner(entry) and should_exclude_zero_activity_sales(origin, entry.resolved_sales, raw, team_raw, counts):
                 removed += 1
                 continue
             kept.append(entry)
@@ -1449,6 +1723,7 @@ def rows_for_origin(
     explicit_order: bool,
     counts: dict[tuple[str, str], tuple[int, int, float | None]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, float]]]:
+    protected_sales = {entry.resolved_sales for entry in entries if protected_current_owner(entry)}
     raw_by_sales = {
         entry.resolved_sales: raw_for_sales(frames, origin, entry.resolved_sales)
         for entry in entries
@@ -1458,7 +1733,7 @@ def rows_for_origin(
         raw_by_sales = {
             sales: raw
             for sales, raw in raw_by_sales.items()
-            if raw["lst_2025"] > 0 or raw["w3_2025"] > 0 or raw["w3_q1"] > 0 or raw["bsa_2025"] > 0 or raw["bsa_q1"] > 0
+            if sales in protected_sales or raw["lst_2025"] > 0 or raw["w3_2025"] > 0 or raw["w3_q1"] > 0 or raw["bsa_2025"] > 0 or raw["bsa_q1"] > 0
         }
     team_raw = {key: 0.0 for key in RAW_KEYS}
     for raw in raw_by_sales.values():
@@ -1468,7 +1743,7 @@ def rows_for_origin(
         raw_by_sales = {
             sales: raw
             for sales, raw in raw_by_sales.items()
-            if not should_exclude_zero_activity_sales(origin, sales, raw, team_raw, counts)
+            if sales in protected_sales or not should_exclude_zero_activity_sales(origin, sales, raw, team_raw, counts)
         }
         team_raw = {key: 0.0 for key in RAW_KEYS}
         for raw in raw_by_sales.values():
@@ -1480,6 +1755,7 @@ def rows_for_origin(
         sales_order.sort(key=lambda s: (-raw_by_sales[s]["lst_2025"], s))
     for sales in sales_order:
         rows.append(build_display_row(origin, sales, raw_by_sales[sales], team_raw, is_total=False))
+    fill_missing_sales_bases_from_team(rows)
     return rows, raw_by_sales
 
 
@@ -1610,11 +1886,26 @@ def rationale(suggestion: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def most_applied_target_inputs(
+    existing: dict[str, tuple[float, float, float, str]],
+) -> tuple[float, float, float]:
+    """Return the modal applied quantum for booking, lifting, and high-profit."""
+    defaults = (0.10, 0.05, 0.05)
+    if not existing:
+        return defaults
+    modes: list[float] = []
+    for index, fallback in enumerate(defaults):
+        values = [round(float(row[index]), 9) for row in existing.values() if row[index] is not None]
+        modes.append(Counter(values).most_common(1)[0][0] if values else fallback)
+    return modes[0], modes[1], modes[2]
+
+
 def build_input_values(
     origins: list[str],
     existing: dict[str, tuple[float, float, float, str]],
     suggestions: dict[str, dict[str, Any]],
 ) -> list[list[Any]]:
+    modal_inputs = most_applied_target_inputs(existing)
     values: list[list[Any]] = [
         ["Origin-level 2026 target input and suggestions"],
         ["Input columns are percentage-point additions to the 2025 base. Per-origin tabs reference columns B, D, and F."],
@@ -1631,13 +1922,20 @@ def build_input_values(
     ]
     for origin in origins:
         suggestion = suggestions.get(origin, {})
-        initial = (
-            suggestion.get("booking_pp", 0.10),
-            suggestion.get("lifting_pp", 0.10),
-            suggestion.get("hp_pp", 0.10),
-            "",
-        )
+        if origin in MODE_INPUT_ORIGINS:
+            initial = (*modal_inputs, "Initialized from the most-applied quantum by KPI.")
+        else:
+            initial = (
+                suggestion.get("booking_pp", 0.10),
+                suggestion.get("lifting_pp", 0.10),
+                suggestion.get("hp_pp", 0.10),
+                "",
+            )
         booking, lifting, hp, memo = existing.get(origin, initial)
+        # Only blank input cells receive defaults. Explicit zero remains zero.
+        booking = initial[0] if booking is None else booking
+        lifting = initial[1] if lifting is None else lifting
+        hp = initial[2] if hp is None else hp
         values.append(
             [
                 origin,
@@ -1647,7 +1945,7 @@ def build_input_values(
                 suggestion.get("lifting_pp", 0.10),
                 hp,
                 suggestion.get("hp_pp", 0.10),
-                rationale(suggestion) or memo,
+                memo if origin in existing else (rationale(suggestion) or memo),
             ]
         )
     return values
@@ -2092,6 +2390,9 @@ def write_audit_files(report: dict[str, Any], owner_entries: dict[str, list[Owne
 
 
 def main() -> None:
+    if os.environ.get("SKIP_SALES_TARGET_BUILD", "").strip() == "1":
+        print("Sales Target skipped by SKIP_SALES_TARGET_BUILD=1 before any reads or writes", flush=True)
+        return
     global CURRENT_DATASET_ID, CURRENT_DATE_INT, Q2_PROGRESS_WEEKS
 
     parser = argparse.ArgumentParser()
@@ -2110,12 +2411,25 @@ def main() -> None:
     sheets = build("sheets", "v4", credentials=creds)
 
     owner_path = export_sheet(drive, SALES_OWNER_SOURCE_ID, f"contact_point_sales_owner_source_export_{CURRENT_DATASET_ID}.xlsx")
+    validate_indonesia_contact_offices(owner_path)
     target_path = export_sheet(drive, TARGET_SPREADSHEET_ID, f"target_workbook_before_current_customer_owner_update_{CURRENT_DATASET_ID}.xlsx")
 
     current_cache = OUT_DIR / f"_cache_{CURRENT_DATASET_ID}.parquet"
     active_sales, customer_to_sales, customer_counts, provisional_sales, provisional_evidence = active_salesman_mapping(
         current_cache
     )
+    registered_sales, registered_evidence = registered_owner_candidates(
+        active_sales, pd.read_parquet(current_cache), CURRENT_DATE_INT,
+    )
+    registered_sales = {
+        origin: [sales for sales in names
+                 if INDONESIA_CONTACT_HOME.get(sales, origin) == origin]
+        for origin, names in registered_sales.items()
+    }
+    registered_evidence = [
+        item for item in registered_evidence
+        if INDONESIA_CONTACT_HOME.get(item["salesman"], item["target_tab"]) == item["target_tab"]
+    ]
     explicit_entries = load_owner_entries(owner_path, active_sales, customer_counts)
     booking = load_booking(customer_to_sales)
     bsa = load_bsa()
@@ -2129,11 +2443,18 @@ def main() -> None:
         fallback_sales,
         customer_counts,
         provisional_sales,
+        registered_sales,
     )
+    owner_entries = {
+        origin: [entry for entry in entries
+                 if INDONESIA_CONTACT_HOME.get(entry.resolved_sales, origin) == origin]
+        for origin, entries in owner_entries.items()
+    }
     allowed = allowed_sales_by_origin(owner_entries)
     frames = build_metric_frames(booking, bsa, q2_progress_bsa, allowed)
     counts = account_counts(booking, owner_entries)
     owner_entries, zero_activity_removed = filter_zero_activity_owner_entries(owner_entries, frames, counts)
+    validate_registered_owner_coverage(owner_entries, registered_sales)
     allowed = allowed_sales_by_origin(owner_entries)
     frames = build_metric_frames(booking, bsa, q2_progress_bsa, allowed)
     counts = account_counts(booking, owner_entries)
@@ -2170,7 +2491,7 @@ def main() -> None:
     report = {
         "target_spreadsheet_id": TARGET_SPREADSHEET_ID,
         "sales_owner_source_id": SALES_OWNER_SOURCE_ID,
-        "customer_owner_file": str(ROOT / ("saleman.csv" if (ROOT / "saleman.csv").exists() else "salesman.csv")),
+        "customer_owner_file": str(ROOT / ("salesman.csv" if (ROOT / "salesman.csv").exists() else "saleman.csv")),
         "dataset_id": CURRENT_DATASET_ID,
         "as_of": CURRENT_DATE_INT,
         "booking_rows": int(len(booking)),
@@ -2182,11 +2503,35 @@ def main() -> None:
         "owner_rows": owner_row_count,
         "unmatched_owner_rows": unmatched,
         "zero_activity_owner_rows_removed": zero_activity_removed,
+        "registered_owner_candidates": registered_sales,
+        "registered_owner_candidate_evidence": registered_evidence,
+        "registered_owner_additions": [entry.__dict__ for entries in owner_entries.values()
+                                       for entry in entries if entry.source_type == "booking_verified_active_owner"],
+        "registered_owner_coverage": "passed",
         "provisional_salespeople": provisional_sales,
         "provisional_salesperson_recent_rows": provisional_evidence,
         "origin_rowcounts": origin_rowcounts,
         "dry_run": args.dry_run,
     }
+    # The drill builder consumes the roster that was actually written to
+    # Summary_All, rather than the larger set of source candidates.
+    approved_pairs = [
+        [origin, row["sales"]]
+        for origin, rows in rows_by_origin.items()
+        for row in rows
+        if row.get("row_type") == "SALES"
+    ]
+    if len(approved_pairs) != len({tuple(pair) for pair in approved_pairs}):
+        raise ValueError("Duplicate Sales Target office/person row")
+    affiliation = {
+        "policy": "sales-target-roster-v1",
+        "dataset_id": CURRENT_DATASET_ID,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "approved_pairs": approved_pairs,
+        "validation": "passed",
+        "dry_run": args.dry_run,
+    }
+    report["office_affiliation"] = affiliation
     write_audit_files(report, owner_entries, audit, CURRENT_DATASET_ID)
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
@@ -2213,6 +2558,9 @@ def main() -> None:
             SALES_OWNER_INPUT_SHEET: len(owner_input_values),
             mod.SUMMARY_SHEET: len(summary_values),
         },
+    )
+    (OUT_DIR / f"sales_owner_affiliation_{CURRENT_DATASET_ID}.json").write_text(
+        json.dumps(affiliation, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
 

@@ -57,6 +57,9 @@ SUMMARY_SHEET = "Summary_All"
 MISSING_SALES = "(미지정)"
 SALESMAN_CSV_CANDIDATES = ("salesman.csv", "saleman.csv")
 TEAM_FILTER = "OBT"
+JAPAN_TEAM = "JBT"
+JAPAN_ORIGIN = "JP"
+JAPAN_START_MONTH = "202604"
 RAW_NEW_SALESMAN_MIN_ROWS = 3
 RAW_NEW_SALESMAN_RECENT_DAYS = 45
 RAW_SALESMAN_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{1,63}$")
@@ -67,6 +70,7 @@ QUARTER_MONTHS = {
     "q1": frozenset({"202601", "202602", "202603"}),
     "q2": frozenset({"202604", "202605", "202606"}),
     "q3": frozenset({"202607", "202608", "202609"}),
+    "q4": frozenset({"202610", "202611", "202612"}),
 }
 CN_NKG_PORTS = frozenset({
     "AIA", "AQG", "CGD", "CGS", "CKG", "CKQ", "CSX", "CZH",
@@ -206,6 +210,14 @@ def classify_team(origin: Any, dest: Any) -> str:
     return "JBT"
 
 
+def target_team_mask(df: pd.DataFrame) -> pd.Series:
+    """OBT rows plus Japan-origin JBT rows requested from 2026 Q2 onward."""
+    if "_original_target_team_scope" in df:return df["_original_target_team_scope"].astype(bool)
+    team = df["team"].fillna("").astype(str).str.strip()
+    tab = df["tab"].fillna("").astype(str).str.strip()
+    return team.eq(TEAM_FILTER) | (team.eq(JAPAN_TEAM) & tab.eq(JAPAN_ORIGIN))
+
+
 def safe_filename_token(name: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name.strip())
     cleaned = cleaned.strip("_")
@@ -242,6 +254,15 @@ def find_salesman_csv() -> Path | None:
     return None
 
 
+def cached_tab_keys(origins,ports):
+    cache={};result=[]
+    for origin,port in zip(origins,ports):
+        key=(str(origin),str(port))
+        if key not in cache:cache[key]=tab_key(origin,port)
+        result.append(cache[key])
+    return result
+
+
 def load_active_salesman_mapping(path: Path, as_of: str | None = None) -> dict[str, str]:
     """salesman.csv → {CUSTOMER_NO_UPPER: SALESMAN_NO} for rows active on `as_of` (YYYYMMDD).
 
@@ -264,7 +285,19 @@ def load_active_salesman_mapping(path: Path, as_of: str | None = None) -> dict[s
     return active.set_index("CUSTOMER_NO_KEY")["SALESMAN_NO"].to_dict()
 
 
-def load_w3_2025_teu(cache_path: Path, salesman_map: dict[str, str] | None) -> tuple[dict[tuple[str, str], float], dict[str, float]]:
+def apply_official_history_offices(df: pd.DataFrame, owner_offices: dict[str, Any] | None, owner_map: dict[str,str] | None) -> None:
+    if owner_offices is None:return
+    original_scope=target_team_mask(df)
+    keys=df['BKG_SHPR_CST_NO'].str.upper()
+    if owner_map is not None:df['Salesman_POR']=keys.map(owner_map).fillna(MISSING_SALES)
+    unique={customer:offices[0] for customer,offices in owner_offices.items() if len(offices)==1}
+    homes=keys.map(unique)
+    df['physical_tab']=df['tab']
+    df.loc[original_scope & homes.notna(),'tab']=homes.loc[original_scope & homes.notna()]
+    df['_original_target_team_scope']=original_scope
+
+
+def load_w3_2025_teu(cache_path: Path, salesman_map: dict[str, str] | None, owner_offices: dict[str, Any] | None = None) -> tuple[dict[tuple[str, str], float], dict[str, float]]:
     """Return ({(tab, Salesman_POR): w3_2025_FST_TEU sum}, {tab: team total}).
 
     Reads _cache_2025.parquet, filters WOS-3 + OBT, optionally remaps Salesman_POR
@@ -299,14 +332,15 @@ def load_w3_2025_teu(cache_path: Path, salesman_map: dict[str, str] | None) -> t
     df["BKG_SHPR_CST_NO"] = df["BKG_SHPR_CST_NO"].fillna("").astype(str).str.strip()
     df["Salesman_POR"] = df["Salesman_POR"].fillna("").astype(str).str.strip()
     apply_salesman_map_with_raw_fallback(df, salesman_map)
-    df["tab"] = [tab_key(o, p) for o, p in zip(df["POR_CTR_CD"], df["POR_PLC_CD"])]
+    df["tab"] = cached_tab_keys(df["POR_CTR_CD"], df["POR_PLC_CD"])
     if "team" not in df.columns:
         df["team"] = [classify_team(o, d) for o, d in zip(df["POR_CTR_CD"], df["DLY_CTR_CD"])]
     else:
         df["team"] = df["team"].fillna("").astype(str).str.strip()
+    apply_official_history_offices(df,owner_offices,salesman_map)
     df["fst_num"] = pd.to_numeric(df["FST_TEU"].astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
     scoped = df.loc[
-        df["team"].astype(str).eq("OBT")
+        target_team_mask(df)
         & df["Lead_time (BKG_Sche)"].astype(str).eq("WOS-3")
         & df["fst_num"].gt(0)
         & df["tab"].ne("UNKNOWN")
@@ -316,7 +350,7 @@ def load_w3_2025_teu(cache_path: Path, salesman_map: dict[str, str] | None) -> t
     return by_pair, by_tab
 
 
-def load_2025_base_cells(cache_path: Path, salesman_map: dict[str, str] | None) -> dict[tuple[str, str], list[dict[str, Any]]]:
+def load_2025_base_cells(cache_path: Path, salesman_map: dict[str, str] | None, owner_offices: dict[str, Any] | None = None) -> dict[tuple[str, str], list[dict[str, Any]]]:
     """Return {(tab, Salesman_POR): [numerator cells]} for the 2025 base recompute.
 
     Each cell is a dimensional bucket keyed by (DLY country, DLY port, grade-first,
@@ -358,14 +392,15 @@ def load_2025_base_cells(cache_path: Path, salesman_map: dict[str, str] | None) 
             df[col] = ""
         df[col] = df[col].fillna("").astype(str).str.strip()
     apply_salesman_map_with_raw_fallback(df, salesman_map)
-    df["tab"] = [tab_key(o, p) for o, p in zip(df["POR_CTR_CD"], df["POR_PLC_CD"])]
+    df["tab"] = cached_tab_keys(df["POR_CTR_CD"], df["POR_PLC_CD"])
     if "team" not in df.columns:
         df["team"] = [classify_team(o, d) for o, d in zip(df["POR_CTR_CD"], df["DLY_CTR_CD"])]
     else:
         df["team"] = df["team"].fillna("").astype(str).str.strip()
+    apply_official_history_offices(df,owner_offices,salesman_map)
     df["fst_num"] = pd.to_numeric(df["FST_TEU"].astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
     df["lst_num"] = pd.to_numeric(df["LST_TEU"].astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
-    df = df.loc[df["team"].astype(str).eq(TEAM_FILTER) & df["tab"].ne("UNKNOWN")].copy()
+    df = df.loc[target_team_mask(df) & df["tab"].ne("UNKNOWN")].copy()
     if df.empty:
         return {}
     is_w3 = df["Lead_time (BKG_Sche)"].astype(str).eq("WOS-3") if "Lead_time (BKG_Sche)" in df.columns else pd.Series(False, index=df.index)
@@ -404,7 +439,7 @@ def load_2025_base_cells(cache_path: Path, salesman_map: dict[str, str] | None) 
     return out
 
 
-def load_2025_shipper_cells(cache_path: Path, salesman_map: dict[str, str] | None) -> tuple[dict[tuple[str, str], list[dict[str, Any]]], dict[tuple[str, str], dict[str, list[str]]]]:
+def load_2025_shipper_cells(cache_path: Path, salesman_map: dict[str, str] | None, owner_offices: dict[str, Any] | None = None) -> tuple[dict[tuple[str, str], list[dict[str, Any]]], dict[tuple[str, str], dict[str, list[str]]]]:
     """Return (cells, meta):
       cells = {(tab, Salesman_POR): [{dlyc, dly, sk, nlst}]} — each shipper's 2025
               Normal LST_TEU per (route, owning salesperson).
@@ -450,14 +485,15 @@ def load_2025_shipper_cells(cache_path: Path, salesman_map: dict[str, str] | Non
             df[col] = ""
         df[col] = df[col].fillna("").astype(str).str.strip()
     apply_salesman_map_with_raw_fallback(df, salesman_map)
-    df["tab"] = [tab_key(o, p) for o, p in zip(df["POR_CTR_CD"], df["POR_PLC_CD"])]
+    df["tab"] = cached_tab_keys(df["POR_CTR_CD"], df["POR_PLC_CD"])
     if "team" not in df.columns:
         df["team"] = [classify_team(o, d) for o, d in zip(df["POR_CTR_CD"], df["DLY_CTR_CD"])]
     else:
         df["team"] = df["team"].fillna("").astype(str).str.strip()
+    apply_official_history_offices(df,owner_offices,salesman_map)
     df["lst_num"] = pd.to_numeric(df["LST_TEU"].astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
     df = df.loc[
-        df["team"].astype(str).eq(TEAM_FILTER)
+        target_team_mask(df)
         & df["tab"].ne("UNKNOWN")
         & df["LST_Status"].eq("Normal")
         & df["lst_num"].gt(0)
@@ -624,14 +660,14 @@ def load_allocation_basis(cache_path: Path, salesman_map: dict[str, str] | None)
             df[col] = ""
         df[col] = df[col].fillna("").astype(str).str.strip()
     apply_salesman_map_with_raw_fallback(df, salesman_map)
-    df["tab"] = [tab_key(o, p) for o, p in zip(df["POR_CTR_CD"], df["POR_PLC_CD"])]
+    df["tab"] = cached_tab_keys(df["POR_CTR_CD"], df["POR_PLC_CD"])
     if "team" not in df.columns:
         df["team"] = [classify_team(o, d) for o, d in zip(df["POR_CTR_CD"], df["DLY_CTR_CD"])]
     else:
         df["team"] = df["team"].fillna("").astype(str).str.strip()
     df["lst_num"] = pd.to_numeric(df["LST_TEU"].astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
     basis = df.loc[
-        df["team"].eq(TEAM_FILTER)
+        target_team_mask(df)
         & df["YYYYMM"].astype(str).str.startswith("2025")
         & df["LST_Status"].eq("Normal")
         & df["lst_num"].gt(0)
@@ -680,7 +716,7 @@ def load_bsa_routes(path: Path, months: set[str]) -> pd.DataFrame:
     bsa["route_bsa"] = pd.to_numeric(bsa["route_bsa"].fillna("").astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
     bsa["tab"] = [tab_key(o, p) for o, p in zip(bsa["origin"], bsa["ori_port"])]
     bsa = bsa.loc[
-        bsa["team"].eq(TEAM_FILTER)
+        target_team_mask(bsa)
         & bsa["YYYYMM"].isin(months)
         & bsa["route_bsa"].gt(0)
         & bsa["tab"].ne("UNKNOWN")
@@ -699,7 +735,7 @@ def activity_basis_from_snapshot(df: pd.DataFrame, months: set[str]) -> pd.DataF
     if df is None or df.empty or not months:
         return pd.DataFrame(columns=cols)
     sub = df.loc[
-        df["team"].astype(str).eq(TEAM_FILTER)
+        target_team_mask(df)
         & df["YYYYMM"].astype(str).isin(months)
         & df["tab"].ne("UNKNOWN")
         & df["fst_teu_num"].gt(0)
@@ -844,9 +880,9 @@ def parse_summary(rows: list[list[Any]]) -> list[dict[str, Any]]:
         W ac_total, X ac_w3, Y ac_pct,
         Z booking_2025_base, AA lifting_2025_base, AB hp_2025_base, AC row_type.
 
-        Summary_All has no separate Q3 target columns. Q1/Q2 targets both use
-        2025 base + the origin's Target_Input, so Q3 must reuse the computed Q2
-        target cells instead of the hidden base columns.
+        Summary_All A:AC supplies Q1/Q2 target columns only. Q3/Q4 source
+        targets are unavailable. Keep their actual monthly/quarter progress
+        without copying an earlier quarter's targets or inventing a gap.
     """
     parsed: list[dict[str, Any]] = []
     for raw in rows[4:]:  # data starts at row 5 (index 4)
@@ -880,7 +916,12 @@ def parse_summary(rows: list[list[Any]]) -> list[dict[str, Any]]:
                         "gap": parse_pct(raw[9] if len(raw) > 9 else None),
                     },
                     "q3": {
-                        "target": parse_pct(raw[7] if len(raw) > 7 else None),
+                        "target": None,
+                        "progress": None,
+                        "gap": None,
+                    },
+                    "q4": {
+                        "target": None,
                         "progress": None,
                         "gap": None,
                     },
@@ -897,7 +938,12 @@ def parse_summary(rows: list[list[Any]]) -> list[dict[str, Any]]:
                         "gap": parse_pct(raw[15] if len(raw) > 15 else None),
                     },
                     "q3": {
-                        "target": parse_pct(raw[13] if len(raw) > 13 else None),
+                        "target": None,
+                        "progress": None,
+                        "gap": None,
+                    },
+                    "q4": {
+                        "target": None,
                         "progress": None,
                         "gap": None,
                     },
@@ -914,7 +960,12 @@ def parse_summary(rows: list[list[Any]]) -> list[dict[str, Any]]:
                         "gap": parse_pct(raw[21] if len(raw) > 21 else None),
                     },
                     "q3": {
-                        "target": parse_pct(raw[19] if len(raw) > 19 else None),
+                        "target": None,
+                        "progress": None,
+                        "gap": None,
+                    },
+                    "q4": {
+                        "target": None,
                         "progress": None,
                         "gap": None,
                     },
@@ -964,10 +1015,13 @@ SNAPSHOT_COLUMNS = [
 ]
 
 
+OPTIONAL_SNAPSHOT_COLUMNS = ["WOS_LST_Status", "WOS_LST_TEU", "WOS_CM1", "BL_NO", "Related_BKG_NO", "Performance_Metric_Kind", "Source_Salesman"]
+
+
 def load_snapshot(path: Path, salesman_map: dict[str, str] | None = None) -> pd.DataFrame:
     df = pd.read_csv(
         path,
-        usecols=SNAPSHOT_COLUMNS,
+        usecols=lambda name: name in SNAPSHOT_COLUMNS or name in OPTIONAL_SNAPSHOT_COLUMNS,
         dtype=str,
         encoding="utf-8-sig",
         low_memory=False,
@@ -979,7 +1033,7 @@ def load_snapshot(path: Path, salesman_map: dict[str, str] | None = None) -> pd.
     # customer is absent from salesman.csv so real performance rows are not lost.
     apply_salesman_map_with_raw_fallback(df, salesman_map)
     df["team"] = [classify_team(o, d) for o, d in zip(df["POR_CTR_CD"], df["DLY_CTR_CD"])]
-    df["tab"] = [tab_key(o, p) for o, p in zip(df["POR_CTR_CD"], df["POR_PLC_CD"])]
+    df["tab"] = cached_tab_keys(df["POR_CTR_CD"], df["POR_PLC_CD"])
     df["fst_teu_num"] = pd.to_numeric(df["FST_TEU"].str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
     df["lst_teu_num"] = pd.to_numeric(df["LST_TEU"].str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
     df["cm1_num"] = pd.to_numeric(df["CM1"].str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
@@ -991,6 +1045,16 @@ def load_snapshot(path: Path, salesman_map: dict[str, str] | None = None) -> pd.
     df["is_hi"] = df["is_route_hi"]
     df["norm_lst_teu_num"] = df["lst_teu_num"].where(df["is_normal"], 0.0)
     df["norm_cm1_num"] = df["cm1_num"].where(df["is_normal"] & df["cm1_num"].ne(0), 0.0)
+    # WOS is the original booking cohort conversion; physical lifting uses BL rows.
+    for optional in OPTIONAL_SNAPSHOT_COLUMNS:
+        if optional in df:
+            df[optional] = df[optional].fillna("").astype(str).str.strip()
+    wos_status = df["WOS_LST_Status"] if "WOS_LST_Status" in df else df["LST_Status"]
+    wos_teu = df["WOS_LST_TEU"] if "WOS_LST_TEU" in df else df["LST_TEU"]
+    wos_cm1 = df["WOS_CM1"] if "WOS_CM1" in df else df["CM1"]
+    wos_normal = wos_status.str.lower().eq("normal")
+    df["wos_norm_lst_teu_num"] = pd.to_numeric(wos_teu, errors="coerce").fillna(0).where(wos_normal, 0.0)
+    df["wos_norm_cm1_num"] = pd.to_numeric(wos_cm1, errors="coerce").fillna(0).where(wos_normal, 0.0)
     df["is_lifted"] = df["is_normal"]
     df["is_cancel"] = status.str.contains("캔슬|cancel", case=False, na=False) | df["Cancel_date"].ne("")
     return df
@@ -1002,11 +1066,17 @@ def sales_target_scope_mask(df: pd.DataFrame) -> pd.Series:
     The main dashboard includes zero-FST rows in the actual lifting numerator
     when they have Normal LST_TEU, so the Sales Target chunks must keep them too.
     """
+    if "Original_Target_Scope" in df:
+        return df["Original_Target_Scope"].fillna(False).astype(bool)
+    customer = df["BKG_SHPR_CST_NO"].fillna("").astype(str).str.strip()
+    valid_customer = customer.ne("") & ~customer.str.lower().isin({"nan", "none", "null", "nat"})
     return (
-        df["team"].eq(TEAM_FILTER)
-        & (df["fst_teu_num"].gt(0) | df["norm_lst_teu_num"].gt(0))
+        target_team_mask(df)
+        & (df["fst_teu_num"].gt(0) | df["norm_lst_teu_num"].gt(0) | df["wos_norm_lst_teu_num"].gt(0))
         & df["YYYYMM"].ne("")
         & df["tab"].ne("UNKNOWN")
+        & (~df["tab"].eq(JAPAN_ORIGIN) | df["YYYYMM"].ge(JAPAN_START_MONTH))
+        & valid_customer
     )
 
 
@@ -1140,6 +1210,7 @@ def _empty_kpi() -> dict[str, dict[str, dict[str, float | None]]]:
             "q1": {"target": None, "perform": None, "gap": None},
             "q2": {"target": None, "progress": None, "gap": None},
             "q3": {"target": None, "progress": None, "gap": None},
+            "q4": {"target": None, "progress": None, "gap": None},
         }
         for key in ("booking", "lifting", "high_profit")
     }
@@ -1266,6 +1337,7 @@ def aggregate_chunks(
     def _record_month_metrics(origin: str, salesman: str, yyyymm: str, totals: dict[str, Any]) -> None:
         month_metrics.setdefault(origin, {}).setdefault(salesman, {})[yyyymm] = {
             "w3f": float(totals.get("w3_fst") or 0.0),
+            "goal_w3f": float(totals.get("goal_basis_w3_fst", totals.get("w3_fst")) or 0.0),
             "w3l": float(totals.get("w3_lst") or 0.0),
             "w3h": float(totals.get("w3_hi_fst") or 0.0),
             "bsa": float(totals.get("allocated_bsa") or 0.0),
@@ -1341,14 +1413,14 @@ def attach_month_progress(rows: list[dict[str, Any]], month_metrics: dict[str, A
         if not per_sales:
             continue
         mp: dict[str, dict[str, float | None]] = {}
-        if row.get("row_type") == "SALES":
+        if row.get("row_type") in {"SALES", "PERFORMANCE_ONLY"}:
             for ym, m in (per_sales.get(clean_text(row.get("name"))) or {}).items():
                 mp[ym] = _month_progress_rates(m)
         elif row.get("row_type") == "TOTAL":
             agg: dict[str, dict[str, float]] = {}
             for byym in per_sales.values():
                 for ym, m in byym.items():
-                    a = agg.setdefault(ym, {"w3f": 0.0, "w3l": 0.0, "w3h": 0.0, "bsa": 0.0})
+                    a = agg.setdefault(ym, {"w3f": 0.0, "w3l": 0.0, "w3h": 0.0, "bsa": 0.0, "goal_w3f": 0.0})
                     for k in a:
                         a[k] += m.get(k, 0.0)
             for ym, m in agg.items():
@@ -1358,12 +1430,12 @@ def attach_month_progress(rows: list[dict[str, Any]], month_metrics: dict[str, A
 
 
 def _period_metrics(per_month: dict[str, dict[str, float]], months: frozenset[str]) -> dict[str, float | None]:
-    agg = {"w3f": 0.0, "w3l": 0.0, "w3h": 0.0, "bsa": 0.0}
+    agg = {"w3f": 0.0, "w3l": 0.0, "w3h": 0.0, "bsa": 0.0, "goal_w3f": 0.0}
     for ym, vals in (per_month or {}).items():
         if ym not in months:
             continue
         for key in agg:
-            agg[key] += float(vals.get(key) or 0.0)
+            agg[key] += float(vals.get(key, vals.get("w3f") if key=="goal_w3f" else 0.0) or 0.0)
     w3f = agg["w3f"]
     return {
         "booking": (agg["w3f"] / agg["bsa"]) if agg["bsa"] else None,
@@ -1375,16 +1447,16 @@ def _period_metrics(per_month: dict[str, dict[str, float]], months: frozenset[st
 def _row_month_metrics(row: dict[str, Any], month_metrics: dict[str, Any]) -> dict[str, dict[str, float]]:
     tab = clean_text(row.get("tab"))
     per_sales = month_metrics.get(tab, {})
-    if row.get("row_type") == "SALES":
+    if row.get("row_type") in {"SALES", "PERFORMANCE_ONLY"}:
         return per_sales.get(clean_text(row.get("name")), {}) or {}
     if row.get("row_type") != "TOTAL":
         return {}
     agg: dict[str, dict[str, float]] = {}
     for by_month in per_sales.values():
         for ym, vals in by_month.items():
-            bucket = agg.setdefault(ym, {"w3f": 0.0, "w3l": 0.0, "w3h": 0.0, "bsa": 0.0})
+            bucket = agg.setdefault(ym, {"w3f": 0.0, "w3l": 0.0, "w3h": 0.0, "bsa": 0.0, "goal_w3f": 0.0})
             for key in bucket:
-                bucket[key] += float(vals.get(key) or 0.0)
+                bucket[key] += float(vals.get(key, vals.get("w3f") if key=="goal_w3f" else 0.0) or 0.0)
     return agg
 
 
@@ -1418,12 +1490,12 @@ def attach_quarter_metrics(rows: list[dict[str, Any]], month_metrics: dict[str, 
             continue
         qm: dict[str, dict[str, float]] = {}
         for quarter, months in QUARTER_MONTHS.items():
-            agg = {"w3f": 0.0, "w3l": 0.0, "w3h": 0.0, "bsa": 0.0}
+            agg = {"w3f": 0.0, "w3l": 0.0, "w3h": 0.0, "bsa": 0.0, "goal_w3f": 0.0}
             for ym, vals in per_month.items():
                 if ym not in months:
                     continue
                 for key in agg:
-                    agg[key] += float(vals.get(key) or 0.0)
+                    agg[key] += float(vals.get(key, vals.get("w3f") if key=="goal_w3f" else 0.0) or 0.0)
             if any(agg.values()):
                 qm[quarter] = {key: round(value, 3) for key, value in agg.items()}
         if qm:
@@ -1433,8 +1505,9 @@ def attach_quarter_metrics(rows: list[dict[str, Any]], month_metrics: dict[str, 
 def serialize_bsa_allocations(bsa_block: pd.DataFrame | None) -> tuple[float, list[dict[str, Any]]]:
     if bsa_block is None or bsa_block.empty:
         return 0.0, []
+    keys=["dest","dst_port"]+[key for key in ('physical_tab','shipper_no') if key in bsa_block]
     grouped = (
-        bsa_block.groupby(["dest", "dst_port"], dropna=False)["allocated_bsa"]
+        bsa_block.groupby(keys, dropna=False)["allocated_bsa"]
         .sum()
         .reset_index()
     )
@@ -1447,13 +1520,19 @@ def serialize_bsa_allocations(bsa_block: pd.DataFrame | None) -> tuple[float, li
             "pod_country": clean_text(item.dest),
             "pod": clean_text(item.dst_port),
             "allocated_bsa": value,
+            **({"physical_origin":clean_text(item.physical_tab)} if 'physical_tab' in keys else {}),
+            **({"shipper_no":clean_text(item.shipper_no)} if 'shipper_no' in keys else {}),
         })
     return total, rows
 
 
 def build_empty_bsa_chunk(origin: str, salesman: str, yyyymm: str, bsa_block: pd.DataFrame) -> dict[str, Any]:
     allocated_bsa, bsa_rows = serialize_bsa_allocations(bsa_block)
+    capacity_only = salesman == NO_BASIS_SALES
+    if capacity_only:
+        for row in bsa_rows:row["goal_eligible"] = False
     return {
+        "capacity_only": capacity_only,
         "origin": origin,
         "salesman": salesman,
         "yyyymm": yyyymm,
@@ -1501,9 +1580,17 @@ def build_chunk(origin: str, salesman: str, yyyymm: str, block: pd.DataFrame, bs
             "lead_time_bkg_sche": r["Lead_time (BKG_Sche)"],
             "yyyymm_bkg_sche": r["YYYYMM_BKG_Sche"],
             "lst_status": r["LST_Status"],
+            "bl_no": r.get("BL_NO", ""),
+            "related_booking_no": r.get("Related_BKG_NO", ""),
+            "performance_metric_kind": r.get("Performance_Metric_Kind", ""),
+            "source_salesman": r.get("Source_Salesman", ""),
+            "customer_cohort": r.get("Customer_Cohort", "history_unconfirmed"),
+            "target_eligible": bool(r.get("Target_Eligible", True)),
+            "goal_exclusion_reason": clean_text(r.get("Goal_Exclusion_Reason", "")),
             "fst_teu": float(r["fst_teu_num"]),
             "lst_teu": float(r["lst_teu_num"]),
             "norm_lst_teu": float(r["norm_lst_teu_num"]),
+            "wos_norm_lst_teu": float(r["wos_norm_lst_teu_num"]),
             "cm1": float(r["cm1_num"]),
             "norm_cm1": float(r["norm_cm1_num"]),
             "cm1_per_teu": float(r["cm1_per_teu_num"]),
@@ -1525,19 +1612,22 @@ def build_chunk(origin: str, salesman: str, yyyymm: str, block: pd.DataFrame, bs
         lst = float(g["norm_lst_teu_num"].sum())
         cm1 = float(g["norm_cm1_num"].sum())
         w3_fst = float(g.loc[g["is_w3"], "fst_teu_num"].sum())
-        w3_lst = float(g.loc[g["is_w3"], "norm_lst_teu_num"].sum())
+        w3_lst = float(g.loc[g["is_w3"], "wos_norm_lst_teu_num"].sum())
         hi_w3_fst = float(g.loc[g["is_w3"] & g["is_route_hi"], "fst_teu_num"].sum())
         grade_values = sorted(set(g["grade"].dropna().tolist()))
         grade_label = grade_values[0] if len(grade_values) == 1 else (", ".join(grade_values) if grade_values else "")
         shippers.append({
             "shipper_no": clean_text(cst_no),
             "shipper_name": clean_text(cst_nm),
+            "target_eligible": bool(g.get("Target_Eligible", pd.Series(True, index=g.index)).all()),
             "grade": grade_label,
-            "bkg_count": int(len(g)),
+            "bkg_count": int(g.get("Performance_Metric_Kind", pd.Series("", index=g.index)).ne("bl").sum()),
+            "bl_count": int(g.get("Performance_Metric_Kind", pd.Series("", index=g.index)).eq("bl").sum()),
             "fst_teu": fst,
             "lst_teu": lst,
             "cm1": cm1,
             "w3_fst": w3_fst,
+            "goal_basis_w3_fst": float(g.loc[g["is_w3"] & g.get("Target_Eligible", pd.Series(True, index=g.index)), "fst_teu_num"].sum()),
             "w3_lst": w3_lst,
             "hi_w3_fst": hi_w3_fst,
             "cancel_teu": float(g.loc[g["is_cancel"], "fst_teu_num"].sum()),
@@ -1550,8 +1640,9 @@ def build_chunk(origin: str, salesman: str, yyyymm: str, block: pd.DataFrame, bs
     total_lst = float(block["norm_lst_teu_num"].sum())
     total_cm1 = float(block["norm_cm1_num"].sum())
     w3_fst = float(block.loc[block["is_w3"], "fst_teu_num"].sum())
-    w3_lst = float(block.loc[block["is_w3"], "norm_lst_teu_num"].sum())
+    w3_lst = float(block.loc[block["is_w3"], "wos_norm_lst_teu_num"].sum())
     w3_hi_fst = float(block.loc[block["is_w3"] & block["is_route_hi"], "fst_teu_num"].sum())
+    goal_basis_w3_fst = float(block.loc[block["is_w3"] & block.get("Target_Eligible", pd.Series(True, index=block.index)), "fst_teu_num"].sum())
     allocated_bsa, bsa_rows = serialize_bsa_allocations(bsa_block)
 
     return {
@@ -1559,12 +1650,14 @@ def build_chunk(origin: str, salesman: str, yyyymm: str, block: pd.DataFrame, bs
         "salesman": salesman,
         "yyyymm": yyyymm,
         "totals": {
-            "bkg_count": int(len(block)),
+            "bkg_count": int(block.get("Performance_Metric_Kind", pd.Series("", index=block.index)).ne("bl").sum()),
+            "bl_count": int(block.get("Performance_Metric_Kind", pd.Series("", index=block.index)).eq("bl").sum()),
             "shipper_count": int(block["BKG_SHPR_CST_NO"].nunique()),
             "fst_teu": total_fst,
             "lst_teu": total_lst,
             "cm1": total_cm1,
             "w3_fst": w3_fst,
+            "goal_basis_w3_fst": goal_basis_w3_fst,
             "w3_lst": w3_lst,
             "w3_hi_fst": w3_hi_fst,
             "allocated_bsa": allocated_bsa,
@@ -1577,39 +1670,228 @@ def build_chunk(origin: str, salesman: str, yyyymm: str, block: pd.DataFrame, bs
     }
 
 
+
+def fetch_verified_monthly_target_source(creds: Any, file_id: str) -> dict[str, Any]:
+    """Read the reviewed Drive source entirely in memory; no local raw copies."""
+    drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+    raw = drive.files().get_media(fileId=file_id).execute(num_retries=2)
+    source = json.loads(raw.decode("utf-8-sig") if isinstance(raw, bytes) else raw)
+    if source.get("format") != "sales-target-monthly-input-v1" or source.get("verification") != "confirmed":
+        raise ValueError("Monthly target source is not confirmed")
+    return source
+
+
+def target_period_availability(rows: list[dict[str, Any]]) -> dict[str, bool]:
+    return {quarter: any(row.get("kpi", {}).get(key, {}).get(quarter, {}).get("target") is not None
+                         for row in rows for key in ("booking", "lifting", "high_profit"))
+            for quarter in QUARTER_MONTHS}
+
+
+
+def mark_confirmed_new_customers(df: pd.DataFrame, cache_2025: Path, source: dict[str, Any] | None = None) -> None:
+    """Registration-backed new cohort has performance, but no target basis."""
+    from sales_target_customer_cohorts import classify_customer, fetch_registration_evidence, evidence_day
+    classes = (source or {}).get("customer_classes")
+    if classes is None:
+        baseline_frame = pd.read_parquet(cache_2025, columns=["BKG_SHPR_CST_NO"])
+        baseline = set(baseline_frame["BKG_SHPR_CST_NO"].fillna("").astype(str).str.strip().str.upper())
+        customers = set(df["BKG_SHPR_CST_NO"].str.upper())
+        records, audit = fetch_registration_evidence(customers - baseline)
+        date_lookup = {value: evidence_day(value) for value in df["Booking_date"].dropna().unique()}
+        observed = df.assign(_trade_day=df["Booking_date"].map(date_lookup).fillna("99999999"))
+        first_trade = observed.groupby("BKG_SHPR_CST_NO")["_trade_day"].min().to_dict()
+        classes = {customer: classify_customer(customer, baseline, records.get(customer), first_trade.get(customer)) for customer in customers}
+        print("      Customer registration audit: " + json.dumps(audit), flush=True)
+    keys = df["BKG_SHPR_CST_NO"].str.upper()
+    df["Customer_Cohort"] = keys.map(lambda customer: classes.get(customer, {}).get("class", "history_unconfirmed"))
+    df["Target_Eligible"] = df["Customer_Cohort"].ne("confirmed_new")
+    if (source or {}).get('target_basis_policy')=='company_2025_actuals_official_office_attribution':
+        no_history=keys.isin(source.get('no_historical_goal_customers',[]))
+        df.loc[no_history,'Target_Eligible']=False
+        df['Goal_Exclusion_Reason']=''
+        df.loc[no_history,'Goal_Exclusion_Reason']='no_historical_performance'
+
+
+
+def ensure_performance_only_rows(rows: list[dict[str, Any]], df: pd.DataFrame) -> set[tuple[str, str]]:
+    """Keep confirmed-new actuals even when the target roster has no goal row."""
+    if "Target_Eligible" not in df:
+        return set()
+    actual = df.loc[sales_target_scope_mask(df) & ~df["Target_Eligible"]]
+    pairs = {(clean_text(r.tab), clean_text(r.Salesman_POR)) for r in actual.itertuples(index=False)}
+    existing = {(r["tab"], r["name"]) for r in rows if r.get("row_type") in {"SALES", "PERFORMANCE_ONLY"}}
+    for origin, owner in sorted(pairs - existing):
+        group=actual.loc[actual["tab"].eq(origin)&actual["Salesman_POR"].eq(owner)]
+        unassigned=group.get("Goal_Exclusion_Reason",pd.Series("",index=group.index)).eq("unassigned_current_owner").any()
+        rows.append({"tab": origin, "name": owner, "row_type": "PERFORMANCE_ONLY", "target_eligible": False,
+                     "goal_exclusion_reason":"unassigned_current_owner" if unassigned else "no_historical_performance" if group.get("Goal_Exclusion_Reason",pd.Series("",index=group.index)).eq("no_historical_performance").any() else "confirmed_new",
+                     "performance_owner_basis": "dated_snapshot_owner; effective-month history not asserted",
+                     "accounts": {}, "kpi": _empty_kpi()})
+    return pairs
+
+
+
+def apply_monthly_owner_maps(df: pd.DataFrame, monthly_maps: dict[str, Any], monthly_target_source: dict[str, Any]) -> None:
+    if "Goal_Exclusion_Reason" not in df:
+        df["Goal_Exclusion_Reason"] = ""
+    else:
+        df["Goal_Exclusion_Reason"] = df["Goal_Exclusion_Reason"].fillna("").astype(str)
+    company_basis=monthly_target_source.get('target_basis_policy')=='company_2025_actuals_official_office_attribution'
+    if company_basis:
+        df['Original_Target_Scope']=sales_target_scope_mask(df)
+        df['physical_tab']=df['tab']
+    customer_keys=df['BKG_SHPR_CST_NO'].str.upper()
+    for month, mapping in monthly_maps.items():
+        mask = df["YYYYMM"].eq(month)
+        excluded_pairs={(origin,customer) for origin,customers in monthly_target_source.get("excluded_unassigned_by_month",{}).get(month,{}).items() for customer in customers}
+        if excluded_pairs:
+            excluded=mask & pd.MultiIndex.from_arrays([df['tab'],customer_keys]).isin(excluded_pairs)
+            df.loc[excluded,'Target_Eligible']=False
+            df.loc[excluded,'Goal_Exclusion_Reason']='unassigned_current_owner'
+        scope = mask & sales_target_scope_mask(df) & df["Target_Eligible"]
+        customers = set(customer_keys.loc[scope])
+        if any(customer not in mapping or mapping[customer] == MISSING_SALES for customer in customers):
+            raise ValueError("Monthly live customer coverage incomplete; unresolved treatment awaits a decision")
+        goal_mask = mask & df["Target_Eligible"]
+        df.loc[goal_mask, "Salesman_POR"] = (customer_keys.loc[goal_mask]
+                                                .map(mapping).fillna(MISSING_SALES))
+        if company_basis:
+            office_map=monthly_target_source.get('owner_offices_by_month',{}).get(month,{})
+            keys=customer_keys
+            homes=keys.map({customer:offices[0] for customer,offices in office_map.items() if len(offices)==1})
+            office_mask=mask & df['Original_Target_Scope'] & homes.notna()
+            df.loc[office_mask,'tab']=homes.loc[office_mask]
+            verified=office_mask & keys.isin(mapping)
+            df.loc[verified,'Salesman_POR']=keys.loc[verified].map(mapping)
+            multiple={customer:set(offices) for customer,offices in office_map.items() if len(offices)>1}
+            multi_mask=mask & df['Original_Target_Scope'] & keys.isin(multiple)
+            indices=[index for index in df.index[multi_mask] if df.at[index,'physical_tab'] in multiple[keys.at[index]]]
+            df.loc[indices,'tab']=df.loc[indices,'physical_tab']
+            df.loc[indices,'Salesman_POR']=keys.loc[indices].map(mapping).fillna(df.loc[indices,'Salesman_POR'])
+        for origin, customers in monthly_target_source.get("performance_only_by_month", {}).get(month, {}).items():
+            performance_mask = mask & ~df["Target_Eligible"] & df["tab"].eq(origin)
+            original = df.loc[performance_mask, "Salesman_POR"]
+            df.loc[performance_mask, "Salesman_POR"] = (customer_keys.loc[performance_mask]
+                .map(customers).fillna(original))
+
+
+
+def monthly_source_bsa_allocations(source: dict[str, Any]) -> pd.DataFrame:
+    """Use conserved source route shares; never reweight excluded customers."""
+    rows=[]
+    for month,ledger in source.get("bsa_route_goal_ledger",{}).items():
+        if ledger.get("pending"):
+            raise ValueError("Unresolved route ownership still blocks publication")
+        assigned=ledger.get("assigned",[]);reserved=ledger.get("reserved",[])
+        totals=ledger.get("totals",{})
+        raw=float(totals.get("raw",0))
+        if abs(raw-sum(float(row["allocated_bsa"]) for row in assigned+reserved))>1e-6:
+            raise ValueError("Monthly route ledger cannot lose or reassign capacity")
+        rows.extend(dict(row) for row in assigned)
+        # This existing technical chunk label holds capacity only. It never
+        # creates a salesperson/index goal row or customer target.
+        rows.extend({**row,"Salesman_POR":NO_BASIS_SALES} for row in reserved)
+    columns=["tab","Salesman_POR","YYYYMM","dest","dst_port"]
+    if source.get('target_basis_policy')=='company_2025_actuals_official_office_attribution':columns+=['physical_tab','shipper_no']
+    columns+=['allocated_bsa']
+    if not rows:return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows).groupby(columns[:-1],dropna=False).allocated_bsa.sum().reset_index()
+
+
 def main() -> int:
+    if os.environ.get("SKIP_SALES_TARGET_BUILD", "").strip() == "1":
+        print("Sales Target skipped by SKIP_SALES_TARGET_BUILD=1 before any reads or writes", flush=True)
+        return 0
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workbook", default=DEFAULT_WORKBOOK)
     parser.add_argument("--snapshot", default=None, help="Path to booking_snapshot_result_YYYYMMDD.csv (default: latest)")
     parser.add_argument("--salesman-csv", default=None, help="Path to salesman.csv (default: project root)")
     parser.add_argument("--as-of", default=None, help="YYYYMMDD for active-row filter (default: today)")
     parser.add_argument("--no-remap", action="store_true", help="Skip salesman.csv override (use raw Salesman_POR)")
+    parser.add_argument("--monthly-target-from-existing-sources", action="store_true",
+                        help="Build monthly input in memory from existing Drive/workbook/cache sources")
+    parser.add_argument("--monthly-target-verify-only", action="store_true",
+                        help="Read and quantify existing monthly sources without generating output files")
+    parser.add_argument('--monthly-target-source-local-url',default=None,help='Read verified goal JSON from an existing loopback memory diagnostic; no raw copies')
+    parser.add_argument("--monthly-target-source-drive-id", default=None,
+                        help="Reviewed monthly owner intervals, roster and target measures on Drive; unresolved inputs are rejected")
+    parser.add_argument('--official-roster-stdin',action='store_true',help='Connected official role projection/provenance JSON on stdin; no raw local copy')
     parser.add_argument("--out", default=str(RUNTIME_ROOT / "dist" / "sales-target"))
     args = parser.parse_args()
+    official_input=json.load(sys.stdin) if args.official_roster_stdin else None
 
+    if args.monthly_target_verify_only:
+        if not args.monthly_target_from_existing_sources:
+            raise ValueError("Verification requires --monthly-target-from-existing-sources")
+        from build_sales_target_monthly_input import read_existing_evidence, produce_monthly_input
+        source, audit = produce_monthly_input(sys.modules[__name__], read_existing_evidence(
+            sys.modules[__name__], args.as_of or datetime.now().strftime("%Y%m%d"),
+            official_projection=official_input['records'] if official_input else None,
+            official_meta=official_input['meta'] if official_input else None))
+        print(json.dumps({"verification": source["verification"], "months": audit,
+                          "source_references": source["source_references"],
+                          "basis_reconciliation_required": source["basis_reconciliation_required"]}, ensure_ascii=False))
+        return 0
+    if not (args.monthly_target_from_existing_sources or args.monthly_target_source_drive_id or args.monthly_target_source_local_url):
+        raise ValueError("Sales Target generation blocked: verified monthly target source is required; no output written")
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     started = time.time()
     print(f"[1/3] Loading target workbook Summary_All ({args.workbook}) ...", flush=True)
+    from google_verified_transport import GoogleSession
+    from google.auth.transport.requests import Request
     creds = get_creds()
-    service = build("sheets", "v4", credentials=creds, cache_discovery=False)
-    summary_rows = fetch_summary_rows(service, args.workbook)
+    session=GoogleSession();session.prefer_verified_stdlib=True
+    try:
+        creds.refresh(Request(session=session));session.headers['Authorization']='Bearer '+creds.token
+        response=session.get('https://sheets.googleapis.com/v4/spreadsheets/'+args.workbook+'/values/Summary_All!A1:AC400',
+            params={'valueRenderOption':'UNFORMATTED_VALUE'},timeout=60)
+        response.raise_for_status();summary_rows=response.json().get('values',[])
+    finally:session.close()
     parsed_summary = parse_summary(summary_rows)
+    monthly_target_source = (fetch_verified_monthly_target_source(creds, args.monthly_target_source_drive_id)
+                             if args.monthly_target_source_drive_id else None)
+    if args.monthly_target_source_local_url:
+        from urllib.parse import urlparse
+        from urllib.request import urlopen
+        parsed=urlparse(args.monthly_target_source_local_url)
+        if parsed.scheme!='http' or parsed.hostname!='127.0.0.1' or parsed.path!='/monthly-source.json':
+            raise ValueError('Memory input is restricted to the read-only local diagnostic endpoint')
+        if args.monthly_target_source_drive_id or args.monthly_target_from_existing_sources:
+            raise ValueError('Choose exactly one reviewed monthly source')
+        with urlopen(args.monthly_target_source_local_url,timeout=30) as response:
+            monthly_target_source=json.load(response)
+        if monthly_target_source.get('verification')!='confirmed':raise ValueError('Memory source is not confirmed')
+    if args.monthly_target_from_existing_sources:
+        if args.monthly_target_source_drive_id:
+            raise ValueError("Choose one monthly source path")
+        from build_sales_target_monthly_input import read_existing_evidence, produce_monthly_input
+        monthly_target_source, audit = produce_monthly_input(sys.modules[__name__], read_existing_evidence(
+            sys.modules[__name__], args.as_of or datetime.now().strftime("%Y%m%d"),
+            official_projection=official_input['records'] if official_input else None,
+            official_meta=official_input['meta'] if official_input else None))
+        if monthly_target_source["verification"] != "confirmed":
+            raise ValueError("Existing monthly sources incomplete; run --monthly-target-verify-only. No fallback selected.")
+    if (monthly_target_source or {}).get('target_basis_policy')!='company_2025_actuals_official_office_attribution':
+        raise ValueError('Production target generation requires verified company-owned 2025 basis and latest official offices; no legacy fallback')
+    company_basis=True
     print(f"      Parsed {len(parsed_summary)} target rows.", flush=True)
 
-    # Build the 2025 WOS-3 BKG TEU map up front so we can splice it into the rows.
-    try:
-        cache_2025 = ensure_2025_cache()
-    except Exception as exc:
-        cache_2025 = RUNTIME_ROOT / "output" / "_cache_2025.parquet"
-        print(f"      WARN: _cache_2025.parquet could not be prepared ({exc}).", flush=True)
+    # Existing immutable cache only; never start an extraction here.
+    cache_2025=RUNTIME_ROOT/'output'/'_cache_2025.parquet'
+    if not cache_2025.exists():cache_2025=Path(__file__).resolve().parents[1]/'output'/'_cache_2025.parquet'
+    if not cache_2025.exists():raise FileNotFoundError('Existing immutable 2025 cache is required')
     pre_salesman_map: dict[str, str] = {}
     if not args.no_remap:
         sm_csv = Path(args.salesman_csv) if args.salesman_csv else find_salesman_csv()
         if sm_csv and sm_csv.exists():
             pre_salesman_map = load_active_salesman_mapping(sm_csv, args.as_of)
-    w3_2025_by_pair, w3_2025_by_tab = load_w3_2025_teu(cache_2025, pre_salesman_map)
+    reference_month=(monthly_target_source['dataset_id'])[:6]
+    current_goal_owner_map=monthly_target_source['owner_maps_by_month'][reference_month]
+    current_goal_offices=monthly_target_source['owner_offices_by_month'][reference_month]
+    pre_salesman_map=current_goal_owner_map
+    w3_2025_by_pair, w3_2025_by_tab = load_w3_2025_teu(cache_2025, pre_salesman_map,current_goal_offices)
     if w3_2025_by_pair:
         for row in parsed_summary:
             if row["row_type"] == "TOTAL":
@@ -1647,25 +1929,30 @@ def main() -> int:
         )
     print(f"      Loaded {len(df):,} booking rows.", flush=True)
 
-    provisional_pairs = add_provisional_salespeople_to_summary(
-        parsed_summary,
-        df,
-        salesman_map,
-        args.as_of or data_date,
-    )
-    if provisional_pairs:
-        print(
-            "      Added provisional live salespeople missing from Summary_All: "
-            + ", ".join(f"{tab}/{name}" for tab, name in provisional_pairs),
-            flush=True,
-        )
+    if monthly_target_source.get('dataset_id')!=data_date:
+        raise ValueError('Reviewed goal input must match the dated actual snapshot')
+    # Current Q3/Q4 offices come from the separately verified latest directory.
+    # Native Q1/Q2 rows remain frozen, with explicit quarter roster evidence.
+    meta=monthly_target_source.get('official_roster_meta',{})
+    if meta.get('verification')!='confirmed' or not meta.get('source_id') or not meta.get('modified_time'):
+        raise ValueError('Verified latest official office provenance is required')
+    native_pairs={(clean_text(r.get('tab')),clean_text(r.get('name'))) for r in parsed_summary if r.get('row_type')=='SALES'}
+    current_pairs={tuple(pair) for pair in monthly_target_source.get('approved_goal_roster',[])}
+    if not current_pairs:raise ValueError('Verified current goal roster is empty')
+    affiliation={'policy':'sales-target-roster-v1','dataset_id':data_date,'validation':'passed','dry_run':False,
+                 'approved_pairs':[list(pair) for pair in sorted(current_pairs)],
+                 'source':'verified_company_2025_official_offices','official_roster_meta':meta,
+                 'native_quarter_roster_evidence':{'q1':[list(pair) for pair in sorted(native_pairs)],'q2':[list(pair) for pair in sorted(native_pairs)]}}
+    approved=current_pairs|native_pairs
+    print(f"      Official company-2025 office gate passed: {len(current_pairs)} current owners; native Q1/Q2 preserved.",flush=True)
+    (out_dir/'office_affiliation.json').write_text(json.dumps(affiliation,ensure_ascii=False,separators=(',',':')),encoding='utf-8')
 
-    provisional_customer_owners = provisional_customer_owner_mapping(
+    provisional_customer_owners = {} if company_basis else provisional_customer_owner_mapping(
         df,
         salesman_map,
         args.as_of or data_date,
     )
-    if provisional_customer_owners:
+    if provisional_customer_owners and not company_basis:
         salesman_map = dict(salesman_map or {})
         salesman_map.update(provisional_customer_owners)
         df = load_snapshot(snapshot_path, salesman_map=salesman_map)
@@ -1683,28 +1970,92 @@ def main() -> int:
                     w3_2025_by_pair.get((row["tab"], row["name"]), 0.0)
                 )
 
+    mark_confirmed_new_customers(df, cache_2025, monthly_target_source)
+    monthly_maps = {}
+    monthly_rosters = {}
+    if monthly_target_source is not None:
+        from sales_target_monthly import attach_verified_target_source
+        monthly_maps, monthly_rosters = attach_verified_target_source(parsed_summary, monthly_target_source)
+        apply_monthly_owner_maps(df, monthly_maps, monthly_target_source)
+        for roster in monthly_rosters.values():
+            approved.update((origin, owner) for origin, owners in roster.items() for owner in owners)
+
+    performance_pairs = ensure_performance_only_rows(parsed_summary, df)
+    approved.update(performance_pairs)
+
     print("[3/3] Writing chunk JSONs ...", flush=True)
     alloc_months = set(df.loc[sales_target_scope_mask(df), "YYYYMM"].dropna().astype(str))
     allowed_sales_by_origin: dict[str, set[str]] = {}
     for row in parsed_summary:
-        if row.get("row_type") == "SALES":
+        if row.get("row_type") in {"SALES", "PERFORMANCE_ONLY"}:
             allowed_sales_by_origin.setdefault(clean_text(row.get("tab")), set()).add(clean_text(row.get("name")))
-    bsa_allocations = build_allocated_bsa(
-        alloc_months,
-        salesman_map,
-        args.as_of or data_date,
-        allowed_sales_by_origin,
-        activity_basis_from_snapshot(df, alloc_months),
-    )
+    if monthly_target_source and monthly_target_source.get('goal_exclusion_policy') == 'exclude_unassigned_without_redistribution':
+        if not monthly_target_source.get('bsa_route_goal_ledger'):
+            raise ValueError('Exclusion policy requires a conserved route ledger; no fallback reallocation')
+        bsa_allocations = monthly_source_bsa_allocations(monthly_target_source)
+        legacy_months = alloc_months-set(monthly_target_source['bsa_route_goal_ledger'])
+        if legacy_months:
+            legacy_bsa = build_allocated_bsa(legacy_months,salesman_map,args.as_of or data_date,allowed_sales_by_origin,activity_basis_from_snapshot(df.loc[df['Target_Eligible']],legacy_months))
+            bsa_allocations = pd.concat([legacy_bsa,bsa_allocations],ignore_index=True)
+    elif monthly_maps:
+        pieces = [build_allocated_bsa(
+            {month}, monthly_maps.get(month, salesman_map), args.as_of or data_date,
+            {origin: set(inputs["approved_salespeople"]) for origin, inputs in monthly_target_source["months"].get(month, {}).items()}
+                if month in monthly_target_source["months"] else allowed_sales_by_origin,
+            activity_basis_from_snapshot(df.loc[df["Target_Eligible"]], {month}),
+        ) for month in sorted(alloc_months)]
+        bsa_allocations = pd.concat(pieces, ignore_index=True) if pieces else pd.DataFrame()
+    else:
+        bsa_allocations = build_allocated_bsa(
+            alloc_months, salesman_map, args.as_of or data_date, allowed_sales_by_origin,
+            activity_basis_from_snapshot(df.loc[df["Target_Eligible"]], alloc_months),
+        )
     manifest, month_metrics = aggregate_chunks(df, out_dir, bsa_allocations, allowed_sales_by_origin)
+    if monthly_target_source and monthly_target_source.get('goal_exclusion_policy') == 'exclude_unassigned_without_redistribution':
+        manifest['capacity_reserve_chunks']=[cell for cell in manifest['chunks'] if cell['salesman']==NO_BASIS_SALES]
+        manifest['chunks']=[cell for cell in manifest['chunks'] if cell['salesman']!=NO_BASIS_SALES]
+        manifest['chunk_count']=len(manifest['chunks'])
+        manifest['bsa_capacity_reconciliation']={month:ledger['totals'] for month,ledger in monthly_target_source['bsa_route_goal_ledger'].items()}
+    # The personnel filter includes verified office owners with zero volume.
+    manifest["salespeople_by_origin"] = {origin: sorted(names) for origin, names in allowed_sales_by_origin.items()}
+    manifest["origins"] = sorted(allowed_sales_by_origin)
+    if any((c["origin"], c["salesman"]) not in approved for c in manifest["chunks"]):
+        raise ValueError("Cross-office chunk detected before publication")
     # Live month-level Progress for the main dashboard's target overlay (selected-month
     # values that match the Sales Target screen, not the workbook's static quarter snapshot).
     attach_month_progress(parsed_summary, month_metrics)
     attach_missing_quarter_progress(parsed_summary, month_metrics)
     attach_quarter_metrics(parsed_summary, month_metrics)
+    for chunk in manifest["chunks"]:
+        roster = monthly_rosters.get(chunk["yyyymm"])
+        if roster is not None and chunk["salesman"] not in roster.get(chunk["origin"], set()) and (chunk["origin"],chunk["salesman"]) not in performance_pairs:
+            raise ValueError("Chunk differs from verified monthly office roster")
+    period_support = target_period_availability(parsed_summary)
+    current_goal_pairs = {tuple(pair) for pair in affiliation["approved_pairs"]}
+    historical_goal_pairs = {(row["tab"], row["name"]) for row in parsed_summary if row.get("row_type") == "SALES"} - current_goal_pairs
+    performance_only_pairs = {(row["tab"], row["name"]) for row in parsed_summary if row.get("row_type") == "PERFORMANCE_ONLY"}
+    roster_metadata = {
+        "current_target_roster_pairs": [list(pair) for pair in sorted(current_goal_pairs)],
+        "historical_target_roster_pairs": [list(pair) for pair in sorted(historical_goal_pairs)],
+        "performance_only_roster_pairs": [list(pair) for pair in sorted(performance_only_pairs)],
+        "monthly_target_rosters": {month: {origin: sorted(inputs["approved_salespeople"]) for origin, inputs in origins.items()}
+                                   for month, origins in (monthly_target_source or {}).get("months", {}).items()},
+        "monthly_target_source_verification": (monthly_target_source or {}).get("verification"),
+        "target_basis_policy": monthly_target_source['target_basis_policy'],
+        "official_roster_meta": monthly_target_source['official_roster_meta'],
+        "historical_roster_by_quarter": affiliation.get('native_quarter_roster_evidence',{}),
+        "historical_roster_source": 'preserved_native_Summary_All_Q1_Q2',
+
+    }
 
     index_payload = {
         "_format": "sales-target-index-v1",
+        **roster_metadata,
+        "office_policy": affiliation["policy"],
+        "target_period_support": period_support,
+        "target_period_basis": ("verified monthly owner intervals and ratio-of-sums targets"
+                                if monthly_target_source is not None else "Summary_All supplied targets; monthly history not connected"),
+        "monthly_target_source_drive_id": args.monthly_target_source_drive_id,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "data_date": data_date,
         "workbook_id": args.workbook,
@@ -1720,6 +2071,12 @@ def main() -> int:
 
     manifest_payload = {
         "_format": "sales-target-manifest-v1",
+        **roster_metadata,
+        "office_policy": affiliation["policy"],
+        "target_period_support": period_support,
+        "target_period_basis": ("verified monthly owner intervals and ratio-of-sums targets"
+                                if monthly_target_source is not None else "Summary_All supplied targets; monthly history not connected"),
+        "monthly_target_source_drive_id": args.monthly_target_source_drive_id,
         "generated_at": index_payload["generated_at"],
         "data_date": data_date,
         "chunk_count": manifest["chunk_count"],
@@ -1730,6 +2087,10 @@ def main() -> int:
         "dest_countries": manifest["dest_countries"],
         "dest_ports_by_country": manifest["dest_ports_by_country"],
         "chunks": manifest["chunks"],
+        "capacity_reserve_chunks": manifest.get("capacity_reserve_chunks",[]),
+        "bsa_capacity_reconciliation": manifest.get("bsa_capacity_reconciliation",{}),
+        "target_basis_policy": (monthly_target_source or {}).get("target_basis_policy"),
+        "official_roster_meta": (monthly_target_source or {}).get("official_roster_meta"),
     }
     (out_dir / "manifest.json").write_text(
         json.dumps(manifest_payload, ensure_ascii=False, separators=(",", ":")),
@@ -1737,9 +2098,9 @@ def main() -> int:
     )
 
     print("      Building 2025 base cells for filter-linked '25/Target columns ...", flush=True)
-    base_num_cells = load_2025_base_cells(cache_2025, salesman_map)
-    base_shipper_cells, base_shipper_meta = load_2025_shipper_cells(cache_2025, salesman_map)
-    bsa_2025 = build_allocated_bsa(MONTHS_2025, salesman_map, args.as_of or data_date, allowed_sales_by_origin)
+    base_num_cells = load_2025_base_cells(cache_2025, current_goal_owner_map,current_goal_offices)
+    base_shipper_cells, base_shipper_meta = load_2025_shipper_cells(cache_2025,current_goal_owner_map,current_goal_offices)
+    bsa_2025 = pd.DataFrame(monthly_target_source['annual_bsa_goal_allocations'],columns=['tab','Salesman_POR','dest','dst_port','allocated_bsa'])
     base2025_payload = build_base2025_payload(base_num_cells, bsa_2025, data_date, index_payload["generated_at"], allowed_sales_by_origin, base_shipper_cells, base_shipper_meta)
     (out_dir / "base2025.json").write_text(
         json.dumps(base2025_payload, ensure_ascii=False, separators=(",", ":")),
@@ -1751,6 +2112,10 @@ def main() -> int:
         f"{base2025_bytes / 1024:.0f} KB.",
         flush=True,
     )
+
+    from sales_target_release import prepare_release
+    release = prepare_release(out_dir)
+    print(f"      Immutable Sales Target release: {release['release_id']}", flush=True)
 
     duration = time.time() - started
     print(
