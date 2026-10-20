@@ -1591,6 +1591,7 @@ def build_chunk(origin: str, salesman: str, yyyymm: str, block: pd.DataFrame, bs
             "lst_teu": float(r["lst_teu_num"]),
             "norm_lst_teu": float(r["norm_lst_teu_num"]),
             "wos_norm_lst_teu": float(r["wos_norm_lst_teu_num"]),
+            "wos_norm_cm1": float(r["wos_norm_cm1_num"]),
             "cm1": float(r["cm1_num"]),
             "norm_cm1": float(r["norm_cm1_num"]),
             "cm1_per_teu": float(r["cm1_per_teu_num"]),

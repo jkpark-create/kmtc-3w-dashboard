@@ -164,6 +164,7 @@ class NewSalesmanDetectionTest(unittest.TestCase):
                 "BKG_SHPR_CST_NO": ["A", "B", "C"],
                 "fst_teu_num": [1.0, 1.0, 1.0],
                 "norm_lst_teu_num": [0.0, 0.0, 0.0],
+                "wos_norm_lst_teu_num": [0.0, 0.0, 0.0],
                 "is_w3": [True, True, False],
             }
         )
@@ -203,6 +204,7 @@ class NewSalesmanDetectionTest(unittest.TestCase):
                 "BKG_SHPR_CST_NO": ["C001", "C001", "C002", "C002", "C003"],
                 "fst_teu_num": [1.0] * 5,
                 "norm_lst_teu_num": [0.0] * 5,
+                "wos_norm_lst_teu_num": [0.0] * 5,
                 "is_w3": [True] * 5,
             }
         )
