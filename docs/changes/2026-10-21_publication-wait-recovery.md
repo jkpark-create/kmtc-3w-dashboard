@@ -31,8 +31,26 @@ opened exclusively and closed successfully. The Integrated registered task was
 restarted, and a notification-free October 21 consumer invocation is waiting for
 the new production receipt. Publication completion must be checked separately.
 
-Sales Target remains explicitly deferred in the installed batch. Its current
-builder requires reviewed monthly goal and official roster evidence; simply
-clearing the skip flag would run pending workbook mutation and then fail the
-builder's evidence guard. This lock repair does not authorize bypassing that
-guard or relabeling the previous Sales Target release as current.
+The Sales Target deferral was traced to two independent issues: the batch
+explicitly skipped the builder, and the legacy builder invocation omitted its
+required verified monthly source option. Read-only verification against the
+existing October 19 snapshot confirmed all July-December monthly inputs with
+no blocking reasons and no basis reconciliation pending.
+
+The installed batch now calls `refresh_sales_target_daily.py` after the main
+pipeline. It reads the latest official directory and the company-owned 2025
+actual basis through `--monthly-target-from-existing-sources`, pins the exact
+daily snapshot, builds into a separate directory and runs the immutable-release
+verifier before activating local staging. The previous local generation is
+retained. Legacy workbook mutation and the inline legacy builder remain disabled.
+
+`publish_verified_daily_runtime.py` checks that main and Sales Target dates
+match, uploads the new immutable dependencies, verifies them remotely, then
+updates and reads back the Sales Target pointer. It preserves historical owner
+audits and publishes today's customer-code quality checks separately. A failed
+generation or verification cannot publish a new pointer. Publication resume
+also checks the dated Sales Target release before skipping aggregation.
+
+Thirty-five relevant tests passed, including seven new build/activation and
+publication-order regression checks. Production publication and final browser
+readback are still pending the October 21 producer generation.
