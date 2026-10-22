@@ -1,0 +1,321 @@
+--- a/scripts/build_ts_backlog.py
++++ b/scripts/build_ts_backlog.py
+@@ -5,7 +5,7 @@
+ All later movements of the physical container (including other bookings) are
+ checked. CS001M supplies destination; CS008I supplies the onward connection.
+ """
+-import argparse,json,hashlib,time
++import argparse,json,hashlib,time,re
+ from collections import Counter,defaultdict
+ from datetime import datetime
+ from pathlib import Path
+@@ -56,21 +56,60 @@
+  return 'waiting','discharge_and_latest_stock',base
+ 
+ SOURCE_RECONNECTS=0
++def transient_source_error(exc):
++ return bool(exc.args and getattr(exc.args[0],'code',None) in (12805,3150,2063,3113,3114,3135))
++
++def serial_query(sql):
++ # Distributed source blocks can otherwise spawn remote parallel workers.
++ return re.sub(r'\bSELECT\b', 'SELECT /*+ NO_PARALLEL */', sql, flags=re.I)
++
++def in_predicate(column, names, chunk=900):
++ # Oracle IN lists remain below 1000 expressions. One source scan handles the
++ # complete confirmed stock universe instead of repeating it per 300 boxes.
++ if not names:return '1=0'
++ return '('+' OR '.join(column+' IN ('+','.join(names[i:i+chunk])+')' for i in range(0,len(names),chunk))+')'
++
++def stock_container_predicate(column):
++ # Both sources are on the same ICC link. Select the pinned stock keys at the
++ # source instead of sending thousands of client binds or repeating scans.
++ return f"{column} IN (SELECT e.cntr_no FROM ods_icc.eq056i e WHERE e.basc_dt=:stock_date AND e.cntr_mvnt_cd='TS' AND e.fe_cat_cd='F')"
++
+ def fetch(q,sql,params=None):
+  global SOURCE_RECONNECTS
+  for attempt in range(3):
+   try:
+-   q.execute(sql,params or {});names=[d[0] for d in q.description];return [dict(zip(names,r)) for r in q]
++   started=time.monotonic()
++   print(json.dumps({'stage':'source-query-start','binds':len(params or {})}),flush=True)
++   q.execute(serial_query(sql),params or {});names=[d[0] for d in q.description]
++   rows=[dict(zip(names,r)) for r in q]
++   print(json.dumps({'stage':'source-query-complete','rows':len(rows),'seconds':round(time.monotonic()-started,2)}),flush=True)
++   return rows
+   except Exception as exc:
+-   if getattr(exc.args[0],'code',None) not in (3150,2063) or attempt==2:raise
+-   q.connection.rollback();q.execute('SET TRANSACTION READ ONLY');SOURCE_RECONNECTS+=1
++   error=exc.args[0] if exc.args else None
++   if getattr(error,'code',None) not in (3150,2063,12805) or attempt==2:raise
++   q.connection.rollback()
++   q.execute('ALTER SESSION DISABLE PARALLEL QUERY')
++   q.execute('SET TRANSACTION READ ONLY');SOURCE_RECONNECTS+=1
+    print(json.dumps({'stage':'retry-database-link','attempt':attempt+1}),flush=True);time.sleep(2*(attempt+1))
+ 
+ def build(output=None):
++ global SOURCE_RECONNECTS
++ SOURCE_RECONNECTS=0
++ for attempt in range(3):
++  try:return _build_once(output)
++  except Exception as exc:
++   if not transient_source_error(exc) or attempt==2:raise
++   SOURCE_RECONNECTS+=1
++   print(json.dumps({'stage':'retry-stock-capture-new-session','attempt':attempt+1,'error':str(exc)}),flush=True)
++   time.sleep(5*(attempt+1))
++
++def _build_once(output=None):
+  import build_oracle_dashboard_data as builder
+  now=datetime.now(ZoneInfo('Asia/Seoul'));audit=Counter();records=[];reviews=[]
+  with builder.connect(attempts=2) as c:
+-  c.call_timeout=300000;q=c.cursor();q.arraysize=2000;q.execute('SET TRANSACTION READ ONLY')
++  c.call_timeout=300000;q=c.cursor();q.arraysize=2000
++  q.execute('ALTER SESSION DISABLE PARALLEL QUERY')
++  q.execute('SET TRANSACTION READ ONLY')
+   q.execute("SELECT MAX(basc_dt) FROM ods_icc.eq056i WHERE cntr_mvnt_cd='TS' AND fe_cat_cd='F'");date=str(q.fetchone()[0])
+   if len(date)!=8 or date>now.strftime('%Y%m%d'):raise RuntimeError('Invalid future stock snapshot')
+   stock=fetch(q,"""WITH inventory AS (
+@@ -86,7 +125,7 @@
+     CASE WHEN COUNT(DISTINCT b.biz_pic_nm)=1 THEN MIN(b.biz_pic_nm) END owner
+    FROM ods_icc.cs004r r JOIN (SELECT DISTINCT bl_no FROM inventory WHERE bl_no IS NOT NULL) k ON k.bl_no=r.bl_no
+    LEFT JOIN ods_icc.cs001m b ON b.bkg_no=r.bkg_no GROUP BY r.bl_no
+-  ) SELECT e.cntr_no "container",COALESCE(e.bkg_no,s.bkg_no) "bookingNo",e.bl_no "blNo",e.port_cd "tsPort",e.ctr_cd "tsCountry",e.cntr_sz_cd "size",e.cntr_typ_cd "type",e.mvnt_dt "day",e.mvnt_tm "time",e.cntr_sts_cd "state",
++  ) SELECT /*+ NO_PARALLEL */ e.cntr_no "container",COALESCE(e.bkg_no,s.bkg_no) "bookingNo",e.bl_no "blNo",e.port_cd "tsPort",e.ctr_cd "tsCountry",e.cntr_sz_cd "size",e.cntr_typ_cd "type",e.mvnt_dt "day",e.mvnt_tm "time",e.cntr_sts_cd "state",
+    COALESCE(b.dly_plc_cd,s.dly_plc_cd) "destination",COALESCE(b.dly_ctr_cd,s.dly_ctr_cd) "destinationCountry",COALESCE(b.por_plc_cd,s.por_plc_cd) "por",COALESCE(b.por_ctr_cd,s.por_ctr_cd) "porCountry",COALESCE(b.bkg_shpr_cst_enm,s.shipper) "shipperName",COALESCE(b.biz_pic_nm,s.owner) "owner",b.bkg_sts_cd "bookingStatus",s.booking_count "bookingCount"
+    FROM inventory e LEFT JOIN shipment s ON s.bl_no=e.bl_no LEFT JOIN ods_icc.cs001m b ON b.bkg_no=COALESCE(e.bkg_no,s.bkg_no)""",{'d':date})
+   q.execute("SELECT COUNT(*),COUNT(DISTINCT cntr_no) FROM ods_icc.eq056i WHERE basc_dt=:d AND cntr_mvnt_cd='TS' AND fe_cat_cd='F'",d=date);raw,unique=q.fetchone()
+@@ -100,35 +139,31 @@
+    if group[0]['state'] not in ('DIS','GTI'):audit['review:inventory_transfer']+=1;reviews.append(dict(group[0],reason='inventory_transfer'));continue
+    candidates.append(group[0])
+   print(json.dumps({'stage':'stock','sourceDate':date,'inventoryRows':raw,'containers':unique,'candidates':len(candidates),'preReview':dict(audit)}),flush=True)
+-  for start in range(0,len(candidates),300):
+-   batch=candidates[start:start+300];binds={};selectors=[]
+-   for i,s in enumerate(batch):
+-    selectors.append(f'SELECT :c{i} cntr_no,:b{i} bkg_no,:d{i} start_dt FROM dual');binds.update({f'c{i}':s['container'],f'b{i}':s['bookingNo'],f'd{i}':s['day'] or '19000101'})
+-   binds['cutoff']=date
+-   # Push the physical-container filter into the source and return only latest
+-   # states. Do not transfer a lifetime movement history for each container.
+-   ids={f'c{i}':s['container'] for i,s in enumerate(batch)};ids['cutoff']=date
+-   container_params=','.join(f':c{i}' for i in range(len(batch)))
++  batch_size=max(1,len(candidates))
++  for start in range(0,len(candidates),batch_size):
++   batch=candidates[start:start+batch_size]
++   ids={'cutoff':date,'stock_date':date}
++   container_filter=stock_container_predicate('c.cntr_no')
+    key="c.mvnt_dt||RPAD(NVL(c.mvnt_tm,'0'),6,'0')||LPAD(NVL(c.dt_seq,'0'),12,'0')"
+    columns='c.cntr_no "container",c.bkg_no "bookingNo",c.bl_no "blNo",c.plc_cd "tsPort",c.mvnt_dt "day",c.mvnt_tm "time",c.dt_seq "sequence",c.lst_upd_dtm "updated",c.cntr_mvnt_cd "movement",c.cntr_sts_cd "state",c.fe_cat_cd "full"'
+-   history=fetch(q,f"SELECT * FROM (SELECT {columns},DENSE_RANK() OVER(PARTITION BY c.cntr_no ORDER BY {key} DESC,NVL(c.lst_upd_dtm,'0') DESC) position,MAX(CASE WHEN c.cntr_sts_cd='LDG' OR (c.cntr_mvnt_cd='OB' AND c.cntr_sts_cd='GTO') THEN {key} END) OVER(PARTITION BY c.cntr_no) last_load FROM ods_icc.cc002i c WHERE c.cntr_no IN ({container_params}) AND c.mvnt_dt<=:cutoff) WHERE position=1",ids)
++   history=fetch(q,f"SELECT * FROM (SELECT {columns},DENSE_RANK() OVER(PARTITION BY c.cntr_no ORDER BY {key} DESC,NVL(c.lst_upd_dtm,'0') DESC) position,MAX(CASE WHEN c.cntr_sts_cd='LDG' OR (c.cntr_mvnt_cd='OB' AND c.cntr_sts_cd='GTO') THEN {key} END) OVER(PARTITION BY c.cntr_no) last_load FROM ods_icc.cc002i c WHERE {container_filter} AND c.mvnt_dt<=:cutoff) WHERE position=1",ids)
+    for latest in list(history):
+     load=latest.get('LAST_LOAD')
+     if load and load[:14]!=(latest['day']+str(latest.get('time') or '').ljust(6,'0')):
+      history.append(dict(latest,day=load[:8],time=load[8:14],sequence=load[14:],state='LDG',movement='TS',updated=''))
+-   books=list(dict.fromkeys(s['bookingNo'] for s in batch if s['bookingNo']));params={f'b{i}':v for i,v in enumerate(books)};placeholders=','.join(':'+k for k in params)
+-   history+=fetch(q,f"SELECT * FROM (SELECT {columns},DENSE_RANK() OVER(PARTITION BY c.cntr_no,c.bl_no,c.bkg_no,c.plc_cd ORDER BY {key} DESC,NVL(c.lst_upd_dtm,'0') DESC) position FROM ods_icc.cc002i c WHERE c.cntr_no IN ({container_params}) AND c.cntr_mvnt_cd='TS' AND c.cntr_sts_cd='DIS' AND c.fe_cat_cd='F' AND c.mvnt_dt<=:cutoff) WHERE position=1",ids)
++   books=list(dict.fromkeys(s['bookingNo'] for s in batch if s['bookingNo']));params={f'b{i}':v for i,v in enumerate(books)};book_filter=in_predicate('l.bkg_no',[':'+k for k in params])
++   history+=fetch(q,f"SELECT * FROM (SELECT {columns},DENSE_RANK() OVER(PARTITION BY c.cntr_no,c.bl_no,c.bkg_no,c.plc_cd ORDER BY {key} DESC,NVL(c.lst_upd_dtm,'0') DESC) position FROM ods_icc.cc002i c WHERE {container_filter} AND c.cntr_mvnt_cd='TS' AND c.cntr_sts_cd='DIS' AND c.fe_cat_cd='F' AND c.mvnt_dt<=:cutoff) WHERE position=1",ids)
+    by_container=defaultdict(list)
+    for r in history:by_container[r['container']].append(r)
+    legrows=fetch(q,f"""SELECT l.bkg_no "bookingNo",l.leg_seq "leg",l.tns_knd_cd "transport",l.pol_port_cd "pol",l.pod_port_cd "pod",l.vsl_cd "vessel",l.et_voy_no "voyage",l.pol_sch_seq "polCall",l.pod_sch_seq "podCall",l.etd_dt "etd",l.ts_hold_yn "hold",s.rte_cd "route"
+-    FROM ods_icc.cs008i l LEFT JOIN ods_icc.vo008i s ON s.vsl_cd=l.vsl_cd AND s.dpo_sch_seq=l.pol_sch_seq AND s.port_cd=l.pol_port_cd WHERE l.bkg_no IN ({placeholders})""",params) if books else []
++    FROM ods_icc.cs008i l LEFT JOIN ods_icc.vo008i s ON s.vsl_cd=l.vsl_cd AND s.dpo_sch_seq=l.pol_sch_seq AND s.port_cd=l.pol_port_cd WHERE {book_filter}""",params) if books else []
+    legs=defaultdict(list)
+    for r in legrows:legs[r['bookingNo']].append(r)
+    for s in batch:
+     status,reason,row=classify(s,by_container[s['container']],legs[s['bookingNo']],date);audit[status+':'+reason]+=1
+     if status=='waiting':records.append(row)
+     elif status=='review':reviews.append(dict(row,reason=reason))
+-   print(json.dumps({'stage':'movement-proof','processed':min(start+300,len(candidates)),'total':len(candidates),'waiting':len(records),'review':len(reviews),'audit':dict(audit)}),flush=True)
++   print(json.dumps({'stage':'movement-proof','processed':min(start+batch_size,len(candidates)),'total':len(candidates),'waiting':len(records),'review':len(reviews),'audit':dict(audit)}),flush=True)
+   q.execute("SELECT MAX(basc_dt) FROM ods_icc.eq056i WHERE cntr_mvnt_cd='TS' AND fe_cat_cd='F'")
+   if str(q.fetchone()[0])!=date:raise RuntimeError('Inventory snapshot changed')
+  if sum(audit.values())!=raw or len({r['container'] for r in records})!=len(records):raise RuntimeError('Container reconciliation failed')
+--- a/scripts/fetch_equipment_type_repair.py
++++ b/scripts/fetch_equipment_type_repair.py
+@@ -2,10 +2,22 @@
+ import argparse
+ import hashlib
+ import json
++import time
+ from datetime import datetime
+ from pathlib import Path
+ from zoneinfo import ZoneInfo
+ import build_oracle_dashboard_data as dashboard
++
++
++def equipment_query(identifier, table, numbers):
++    # One read per table, with each IN list below Oracle's expression limit.
++    binds={f'n{i}':number for i,number in enumerate(numbers)}
++    names=[':'+key for key in binds]
++    predicate=' OR '.join(f"{identifier} IN ({','.join(names[i:i+900])})" for i in range(0,len(names),900))
++    if not predicate:raise ValueError('Equipment source scope is empty')
++    return f'''SELECT /*+ NO_PARALLEL */ {identifier},cntr_sz_cd,cntr_typ_cd,COUNT(*)
++        FROM ods_icc.{table} WHERE ({predicate})
++        GROUP BY {identifier},cntr_sz_cd,cntr_typ_cd''',binds
+ 
+ 
+ def fetch(root):
+@@ -21,28 +33,43 @@
+         for kind,identifier,tables in [('Booking','bkg_no',['CS002I','CS007D']),('B/L','bl_no',['CS106I','CS107D'])]:
+             numbers=sorted(scope[kind])
+             for table in tables:
++                started=time.monotonic()
+                 result[table]={}
++                missing=[];values=[];cache_reads=0
+                 for start in range(0,len(numbers),300):
+                     batch=numbers[start:start+300]
+                     file=cache/f'{table}-{start}.json'
+                     if file.exists():
+-                        values=json.loads(file.read_text(encoding='utf-8'))
++                        values.extend(json.loads(file.read_text(encoding='utf-8')))
++                        cache_reads+=1
++                    else:
++                        missing.extend(batch)
++                bulk_file=cache/f'{table}-bulk-v1.json'
++                query_count=0
++                if missing:
++                    if bulk_file.exists():
++                        bulk=json.loads(bulk_file.read_text(encoding='utf-8'))
++                        if bulk['numbers']!=missing:raise RuntimeError('Equipment cache scope mismatch')
++                        values.extend(bulk['rows']);cache_reads+=1
+                     else:
+                         if connection is None:
+                             connection=dashboard.connect(attempts=1)
+-                            connection.call_timeout=90000
++                            connection.call_timeout=300000
++                            with connection.cursor() as cursor:
++                                cursor.execute('ALTER SESSION DISABLE PARALLEL QUERY')
++                        print(f'[equipment-type] {table}: querying {len(missing)} uncached documents in one statement',flush=True)
+                         with connection.cursor() as cursor:
+                             cursor.arraysize=2000
+-                            binds={f'n{i}':number for i,number in enumerate(batch)}
+-                            cursor.execute(f'''SELECT {identifier},cntr_sz_cd,cntr_typ_cd,COUNT(*)
+-                                FROM ods_icc.{table} WHERE {identifier} IN ({','.join(':'+key for key in binds)})
+-                                GROUP BY {identifier},cntr_sz_cd,cntr_typ_cd''',binds)
+-                            values=list(cursor)
+-                        temporary=file.with_suffix('.tmp')
+-                        temporary.write_text(json.dumps(values),encoding='utf-8')
+-                        temporary.replace(file)
+-                    for number,size,equipment,count in values:
+-                        result[table].setdefault(number,[]).append({'size':size,'type':equipment,'rows':count})
++                            sql,binds=equipment_query(identifier,table,missing)
++                            cursor.execute(sql,binds)
++                            fresh=list(cursor);query_count=1
++                        temporary=bulk_file.with_suffix('.tmp')
++                        temporary.write_text(json.dumps({'numbers':missing,'rows':fresh}),encoding='utf-8')
++                        temporary.replace(bulk_file)
++                        values.extend(fresh)
++                for number,size,equipment,count in values:
++                    result[table].setdefault(number,[]).append({'size':size,'type':equipment,'rows':count})
++                print(json.dumps({'stage':'equipment-query-complete','table':table,'queries':query_count,'cacheReads':cache_reads,'requestedDocuments':len(numbers),'returnedDocuments':len(result[table]),'seconds':round(time.monotonic()-started,2)}),flush=True)
+                 print(f'[equipment-type] {table}: {len(result[table])}/{len(numbers)} documents',flush=True)
+     finally:
+         if connection is not None:connection.close()
+--- /dev/null
++++ b/tests/test_ts_backlog_retry.py
+@@ -0,0 +1,44 @@
++import unittest
++from types import SimpleNamespace
++from unittest.mock import Mock,MagicMock,patch
++from scripts import build_ts_backlog as backlog
++
++class SourceRetryTest(unittest.TestCase):
++ def error(self, code):return Exception(SimpleNamespace(code=code))
++ def test_complete_stock_predicate_preserves_all_keys_with_bounded_in_lists(self):
++  names=[':c'+str(i) for i in range(15422)]
++  result=backlog.in_predicate('c.cntr_no',names)
++  groups=result[1:-1].split(' OR ')
++  self.assertEqual(sum(len(g[g.index('(')+1:-1].split(',')) for g in groups),len(names))
++  self.assertTrue(all(len(g[g.index('(')+1:-1].split(','))<=900 for g in groups))
++  self.assertIn(':c15421',result)
++ def test_history_scope_is_pinned_source_inventory_without_booking_or_age_cutoff(self):
++  predicate=backlog.stock_container_predicate('c.cntr_no')
++  self.assertIn('e.basc_dt=:stock_date',predicate)
++  self.assertIn("e.cntr_mvnt_cd='TS'",predicate)
++  self.assertIn("e.fe_cat_cd='F'",predicate)
++  self.assertNotIn('bkg_no',predicate)
++  self.assertNotIn('mvnt_dt',predicate)
++ def test_no_booking_keys_has_an_explicit_empty_predicate(self):
++  self.assertEqual(backlog.in_predicate('l.bkg_no',[]),'1=0')
++ def test_parallel_error_retries_readonly_query_with_serial_hints(self):
++  q=MagicMock();q.execute.side_effect=[self.error(12805),None,None,None];q.description=[('container',)];q.__iter__=Mock(return_value=iter([('C1',)]))
++  with patch.object(backlog.time,'sleep'):
++   self.assertEqual(backlog.fetch(q,'SELECT x FROM (SELECT x FROM source)'),[{'container':'C1'}])
++  self.assertEqual(q.execute.call_args_list[0].args[0].count('NO_PARALLEL'),2)
++  q.connection.rollback.assert_called_once()
++ def test_query_syntax_error_is_not_retried(self):
++  q=Mock();q.execute.side_effect=self.error(904)
++  with self.assertRaises(Exception):backlog.fetch(q,'SELECT missing FROM source')
++  self.assertEqual(q.execute.call_count,1)
++ def test_failed_connection_recaptures_in_a_new_session(self):
++  with patch.object(backlog,'_build_once',side_effect=[self.error(3114),{'meta':{'reconciled':True}}]) as build,patch.object(backlog.time,'sleep'):
++   self.assertTrue(backlog.build()['meta']['reconciled']);self.assertEqual(build.call_count,2)
++ def test_persistent_source_failure_is_bounded(self):
++  with patch.object(backlog,'_build_once',side_effect=self.error(12805)) as build,patch.object(backlog.time,'sleep'):
++   with self.assertRaises(Exception):backlog.build()
++   self.assertEqual(build.call_count,3)
++
++if __name__=='__main__':unittest.main()
++
++
+--- /dev/null
++++ b/tests/test_equipment_repair_set_query.py
+@@ -0,0 +1,59 @@
++import hashlib
++import json
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++from unittest.mock import MagicMock, patch
++
++sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
++import fetch_equipment_type_repair as repair
++
++
++class EquipmentSetQueryTests(unittest.TestCase):
++    def test_complete_scope_has_no_oracle_in_list_overflow(self):
++        numbers=[f'BL{i}' for i in range(17853)]
++        sql,binds=repair.equipment_query('bl_no','CS107D',numbers)
++        groups=sql.split('WHERE (')[1].split(')\n')[0].split(' OR ')
++        self.assertEqual(len(binds),17853)
++        self.assertEqual(list(binds.values()),numbers)
++        self.assertTrue(all(group.count(':')<=900 for group in groups))
++        self.assertIn('GROUP BY bl_no,cntr_sz_cd,cntr_typ_cd',sql)
++
++    def test_partial_legacy_cache_needs_one_read_per_table_and_resumes_without_reads(self):
++        with tempfile.TemporaryDirectory() as folder:
++            root=Path(folder);(root/'oracle-dashboard').mkdir()
++            numbers=[f'BL{i:05}' for i in range(701)]
++            scope={'Booking':[],'B/L':numbers}
++            (root/'missing-documents.json').write_text(json.dumps(scope))
++            (root/'oracle-dashboard/manifest.json').write_text(json.dumps({'sourceMeta':{'generatedAt':'pinned','sourceAsOfDate':'20261022'}}))
++            signature=hashlib.sha256(json.dumps(['pinned',scope],sort_keys=True).encode()).hexdigest()
++            cache=root/'equipment-query-cache'/signature;cache.mkdir(parents=True)
++            # Include multiple equipment groups and a document with no source row.
++            expected=[[n,'20','GP',2] for n in numbers[:-1]]+[[numbers[400],'40','HC',1]]
++            for table in ['CS106I','CS107D']:
++                (cache/f'{table}-0.json').write_text(json.dumps([r for r in expected if r[0] in numbers[:300]]))
++            queries=[];cursor=MagicMock();connection=MagicMock()
++            connection.cursor.return_value.__enter__.return_value=cursor
++            rows=[]
++            def execute(sql,binds=None):
++                rows.clear()
++                if binds:
++                    queries.append((sql,binds))
++                    rows.extend([r for r in expected if r[0] in set(binds.values())])
++            cursor.execute.side_effect=execute
++            cursor.__iter__.side_effect=lambda:iter(rows)
++            with patch.object(repair.dashboard,'connect',return_value=connection):repair.fetch(root)
++            result=json.loads((root/'equipment-lookup.json').read_text())
++            self.assertEqual(len(queries),2)
++            for table in ['CS106I','CS107D']:
++                wanted={}
++                for number,size,equipment,count in expected:wanted.setdefault(number,[]).append({'size':size,'type':equipment,'rows':count})
++                self.assertEqual(result[table],wanted)
++                self.assertNotIn(numbers[-1],result[table])
++            with patch.object(repair.dashboard,'connect',side_effect=AssertionError('Resume must not query')):repair.fetch(root)
++            resumed=json.loads((root/'equipment-lookup.json').read_text())
++            self.assertEqual(resumed['CS107D'],result['CS107D'])
++
++
++if __name__=='__main__':unittest.main()
